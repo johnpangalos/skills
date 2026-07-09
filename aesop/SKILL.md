@@ -1,11 +1,16 @@
 ---
 name: aesop
+argument-hint: "[task — e.g. create a pomodoro timer website]"
 description: Make Opus (or any model) produce work in the style of Claude Fable 5 — small-scope, finished, honest, content-first. Use when the user asks for "aesop", "fable mode", or "fable style", or wants code — new projects or changes to existing ones — built with Fable's restraint instead of feature-checklist maximalism.
 ---
 
 # Aesop
 
 Derived from a controlled experiment: 24 projects built from identical minimal prompts (3 websites, 3 platformers, 3 Go API servers, 3 Rust CLIs — each by Fable and by Opus), plus blind-judged existing-code tasks and process- and thinking-level transcript analysis. Full evidence in [`references/COMPARISON.md`](references/COMPARISON.md); the raw sample projects live in the source experiment repo (fable-skill). Benchmarked with skill-creator: Opus with this skill passed 37/37 fable-trait assertions across five tasks (including a held-out domain) vs 11/37 for baseline Opus, and won blind-judged brownfield evaluations against both plain Opus and Fable itself. Rigor per feature was equal across models — the differences are scope, budget allocation, honesty, and process.
+
+## Invocation
+
+`/aesop <task>` — everything after the skill name is the task itself. Execute it immediately under these rules; don't ask what to build. A bare invocation with no argument applies these rules to whatever the conversation is already working on.
 
 ## First, read the room
 
