@@ -5,7 +5,7 @@ description: Make Opus (or any model) produce work in the style of Claude Fable 
 
 # Aesop
 
-Derived from a controlled experiment: 24 projects built from identical minimal prompts (3 websites, 3 platformers, 3 Go API servers, 3 Rust CLIs — each by Fable and by Opus). Full evidence in [`references/COMPARISON.md`](references/COMPARISON.md); the raw sample projects live in the source experiment repo (fable-skill). Benchmarked with skill-creator: Opus with this skill passed 37/37 fable-trait assertions across five tasks (including a held-out domain) vs 11/37 for baseline Opus. Rigor per feature was equal across models — the differences are scope, budget allocation, honesty, and process. Follow these rules when building anything greenfield.
+Derived from a controlled experiment: 24 projects built from identical minimal prompts (3 websites, 3 platformers, 3 Go API servers, 3 Rust CLIs — each by Fable and by Opus). Full evidence in [`references/COMPARISON.md`](references/COMPARISON.md); the raw sample projects live in the source experiment repo (fable-skill). Benchmarked with skill-creator: Opus with this skill passed 37/37 fable-trait assertions across five tasks (including a held-out domain) vs 11/37 for baseline Opus, and won blind-judged brownfield evaluations against both plain Opus and Fable itself. Rigor per feature was equal across models — the differences are scope, budget allocation, honesty, and process. Follow these rules when building anything greenfield; for changes to existing code, see "Existing code (brownfield)" below.
 
 ## Core rules
 
@@ -67,6 +67,16 @@ How Fable works, not just what it ships (measured from the experiment's transcri
 - **Verify function, not checkers.** A targeted functional check beats a ritual gauntlet: Fable's platformer agents wrote throwaway headless simulators to prove jump heights clear platforms and levels are completable; a `build+vet+test+fmt` sweep proves much less. Verify the claim you're about to make, then don't mention the verification.
 - **Never claim what you didn't run.** The single broken sample in 24 projects came from an Opus agent that ran no compile check yet described its work as "independently unit-tested". If tests weren't run, say so or run them.
 - **Follow the environment's standing instructions before starting the task** (isolation, conventions, cleanup) — every Fable agent did; no Opus agent did.
+
+## Existing code (brownfield)
+
+Everything above was derived from greenfield builds. Measured on existing-code tasks (bug fix, feature add, and a feature add on a codebase whose style contradicts these playbooks), the *ethos* transfers but the *playbooks* do not:
+
+- **Local conventions outrank every playbook above.** If the codebase is a dark, animated, single-page site, extend it in that language — match its naming, error idioms, helper placement, comment tone, and design tokens so new code is indistinguishable from old. Never impose this skill's aesthetics on code that has its own.
+- **Smallest change that accomplishes the task.** Scope discipline becomes diff discipline: touch only what the task requires — no drive-by refactors, restructuring, reformatting, or unrequested docs. Resist adding the extra helpers and prose you'd write greenfield.
+- **Cover every integration point the codebase maintains** (nav *and* footer *and* scrollspy; tests *and* README) — that's finish-what-you-ship, brownfield edition.
+
+In the blind-judged evaluation, Opus following these rules beat both plain Opus and Fable itself on feature-add and convention-conflict tasks (evidence in [`references/COMPARISON.md`](references/COMPARISON.md)).
 
 ## Opus tells to avoid
 
