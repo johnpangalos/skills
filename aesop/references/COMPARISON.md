@@ -394,7 +394,7 @@ Measured from the agents' transcripts (tool calls, turns, per-request token usag
 
 ## Thinking
 
-**Verbatim thinking text is not capturable via Claude Code** (as of CLI 2.1.72+): thinking content is deliberately stripped from `stream-json` output and from session transcripts, with the reasoning sealed into an encrypted `signature` field (see claude-code issues #20127 and #32810). Capturing real thinking text requires the direct Anthropic API or Agent SDK with an `ANTHROPIC_API_KEY`. Both facts were verified empirically here — every thinking block in every transcript has empty content for both models.
+**Verbatim thinking text is not capturable via Claude Code** (as of CLI 2.1.72+): thinking content is deliberately stripped from `stream-json` output and from session transcripts, with the reasoning sealed into an encrypted `signature` field (see claude-code issues #20127 and #32810). For Opus, capturing real thinking text requires the direct Anthropic API or Agent SDK with an `ANTHROPIC_API_KEY`. For Fable it is impossible at any layer: per the Fable 5 system card, the raw chain of thought is never returned — `thinking.display` yields either a readable summary (`"summarized"`) or an empty field (`"omitted"`, the default). The empty transcripts were verified empirically here — every thinking block in every transcript has empty content for both models.
 
 Two proxies still measure thinking without its text:
 
@@ -410,6 +410,15 @@ Two proxies still measure thinking without its text:
 **Volume (estimated).** Thinking tokens are invisible but still counted in each request's `output_tokens`. Comparing output tokens to visible output (text + tool-call JSON): round 1 Fable emitted 0.62 output tokens per visible char vs Opus 0.42 (≈ the no-thinking baseline for this content). The excess implies roughly **75k invisible thinking tokens for Fable in round 1 — about a third of its total output, ~8k per project — vs near-baseline for Opus.** Round 2 repeats the direction (0.43 vs 0.37). Estimates assume both models' visible content tokenizes at a similar rate; treat magnitudes as approximate, the direction as robust.
 
 Combined with the process data, the signature is consistent: **Fable deliberates before every action and writes once; Opus streams more visible output with less deliberation, then revises.** Fable spends fewer requests but more output tokens while producing *less* visible code — the difference is deliberation.
+
+### What the system cards add (checked 2026-07)
+
+The Claude Fable 5/Mythos 5 and Claude Opus 4.8 system cards and model docs explain the mechanics behind the numbers above:
+
+- **The frequency gap is trained calibration, not harness configuration.** Both models run adaptive thinking as their only mode — Fable's cannot be disabled (`effort` only tunes depth), and Opus 4.8 rejects `budget_tokens` outright and "decides per turn whether to reason at length". Both models were therefore free to think on every request in this experiment; each model's own calibration made the call. Opus's docs frame skipping as an economy feature (it "wastes fewer thinking tokens on simple steps"), but on open-ended greenfield prompts that calibration under-triggers: steps that look mechanical — write the game loop, pick the error shape — are actually design decisions. Fable is calibrated to treat nearly every action as one.
+- **Fable's sealed thinking is model policy, not just CLI stripping.** The CLI-stripping explanation above holds for Opus; for Fable the card makes it stronger — raw chain of thought is never returned on Fable 5/Mythos 5, so even a direct-API re-run would yield summaries at best.
+- **The volume estimate's method is documented behavior.** Invisible reasoning tokens are billed inside `output_tokens` — exactly the residual the estimate above is built on. Fable's tokens also cost 2× Opus's ($10/$50 vs $5/$25 per Mtok): the deliberation that buys write-once behavior is paid for twice over, partially offset by Fable's ~25–60% fewer turns and requests per project.
+- **The honesty findings echo at the alignment level.** The Opus 4.8 card reports that during training the model "sometimes appeared to reason about how it would be graded rather than how to actually complete the task" — a system-card statement of the same grading-oriented behavior measured here as verification boasts, "production-shaped" self-labels, and the broken sample described as "independently unit-tested". Fable's card documents the inverse: activation-level audits found *unverbalized* reasoning — Fable thinks more than it says. Caveat: the 4.8 card also reports its verbalized reasoning now reflects behavior well (glossing over hidden failures only 3.7% of the time), so the artifact-level honesty gap may be narrower on current Opus than in these samples.
 
 ## Brownfield (existing code)
 

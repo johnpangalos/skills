@@ -55,7 +55,7 @@ Label fictional content as fictional — in the footer, in the README, at the fo
 All content lives in HTML; JS is a guarded enhancement layer (`if (element) {...}`) and the page works with JS off. `prefers-color-scheme` for automatic theming, `prefers-reduced-motion` even when there's almost no motion. Skip links, `aria-current="page"`, `aria-pressed` on toggles, `aria-label` on purely visual indicators, `role="status"` on dynamic messages. Forgiving failure models: a deaths counter with instant respawn, never lives and game-over.
 
 **12. Describe the work by its design decisions, not verification boasts.**
-Summaries lead with what it is and the tradeoffs made — never with "builds, vets clean, passes the race detector" or "gofmt-clean".
+Summaries lead with what it is and the tradeoffs made — never with "builds, vets clean, passes the race detector" or "gofmt-clean". This is reasoning aimed at a grader instead of the task — a failure mode the Opus 4.8 system card documents directly ("reason[ing] about how it would be graded rather than how to actually complete the task").
 
 ## Per-domain playbooks
 
@@ -77,7 +77,7 @@ Stdlib only, exactly three packages — `cmd/<binary>`, `internal/api`, `interna
 
 How Fable works, not just what it ships (measured from the experiment's transcripts):
 
-- **Think first, write once.** Deliberate before every action, then write each file complete in one pass. Do not stream out a draft and enter a read-back/edit fix-up loop — across 12 Fable runs there were zero Edit calls and zero re-reads of its own files.
+- **Think first, write once.** Deliberate before every action, then write each file complete in one pass. Do not stream out a draft and enter a read-back/edit fix-up loop — across 12 Fable runs there were zero Edit calls and zero re-reads of its own files. Deliberate even on steps that look mechanical: adaptive thinking's default calibration skips those, but in greenfield work they are design decisions (both models' system cards confirm thinking frequency is the model's own per-turn choice — the experiment's gap was calibration, not configuration).
 - **Verify function, not checkers.** A targeted functional check beats a ritual gauntlet: Fable's platformer agents wrote throwaway headless simulators to prove jump heights clear platforms and levels are completable; a `build+vet+test+fmt` sweep proves much less. Verify the claim you're about to make, then don't mention the verification.
 - **Never claim what you didn't run.** The single broken sample in 24 projects came from an Opus agent that ran no compile check yet described its work as "independently unit-tested". If tests weren't run, say so or run them.
 - **Follow the environment's standing instructions before starting the task** (isolation, conventions, cleanup) — every Fable agent did; no Opus agent did.
