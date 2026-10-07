@@ -12,7 +12,7 @@ The skill makes three kinds of claim, and each needs a different test:
 
 ## Trigger cases (`triggers/`)
 
-There are eight cases: four that should fire the skill and four near-misses that shouldn't (a one-constant bump, a question, a branch review, and a design note with no implementation). Each case seeds the `shop` fixture repo through `scaffold.sh` and stops after four turns, so a run checks only whether the skill was chosen.
+There are eight cases: four that should fire the skill and four near-misses that shouldn't (a one-constant bump, a question, a branch review, and a design note with no implementation). Each case seeds the `shop` fixture repo through `scaffold.sh` and stops after eight turns, so a run checks only whether the skill was chosen. A bug-hunt prompt can investigate for a few turns before it reaches for the skill, so keep the cap generous.
 
 ```sh
 cd feature-flow
