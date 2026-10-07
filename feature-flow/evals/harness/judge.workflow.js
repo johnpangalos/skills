@@ -1,0 +1,122 @@
+export const meta = {
+  name: 'feature-flow-blind-judging',
+  description: 'Blind-judge greenfield builds: one inspector per build, one verifying judge per challenge',
+  phases: [
+    { title: 'Inspect', detail: 'one agent per anonymized build: build, run, probe edge cases, score' },
+    { title: 'Judge', detail: 'one judge per challenge: reproduce claimed defects, score and rank' },
+  ],
+}
+
+const SCORE = { type: 'number', minimum: 1, maximum: 10 }
+const INSPECT = {
+  type: 'object',
+  properties: {
+    letter: { type: 'string' },
+    overall: SCORE,
+    scores: {
+      type: 'object',
+      properties: { correctness: SCORE, robustness: SCORE, code_quality: SCORE, tests: SCORE, docs: SCORE, product: SCORE },
+      required: ['correctness', 'robustness', 'code_quality', 'tests', 'docs', 'product'],
+    },
+    defects: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: { severity: { type: 'string', enum: ['blocker', 'major', 'minor'] }, what: { type: 'string' }, evidence: { type: 'string' } },
+        required: ['severity', 'what', 'evidence'],
+      },
+    },
+    strengths: { type: 'array', items: { type: 'string' } },
+    stats: {
+      type: 'object',
+      properties: { files: { type: 'number' }, source_lines: { type: 'number' }, test_cases: { type: 'number' } },
+      required: ['files', 'source_lines', 'test_cases'],
+    },
+    summary: { type: 'string' },
+  },
+  required: ['letter', 'overall', 'scores', 'defects', 'strengths', 'stats', 'summary'],
+}
+const JUDGE = {
+  type: 'object',
+  properties: {
+    ranking: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          letter: { type: 'string' },
+          score: SCORE,
+          confirmed_defects: { type: 'array', items: { type: 'string' } },
+          refuted_defects: { type: 'array', items: { type: 'string' } },
+          rationale: { type: 'string' },
+        },
+        required: ['letter', 'score', 'confirmed_defects', 'refuted_defects', 'rationale'],
+      },
+    },
+    verdict: { type: 'string' },
+  },
+  required: ['ranking', 'verdict'],
+}
+
+const PROBES = {
+  website:
+    'Serve or open the pages, read the HTML/CSS/JS, and read the PNG screenshots (desktop, and 360px with JavaScript off). Check the genre filter with and without JS, keyboard navigation and focus styles, heading structure, colour contrast, form labelling and error handling, content depth and consistency, and whether anything is decorative but non-functional.',
+  api:
+    'Build it, run its tests, start the server on a free port and probe it with curl: the full contract, then edge cases beyond it (wrong content type, huge or empty bodies, unknown fields, trailing slashes, PATCH with null/empty values, duplicate tags, method not allowed, concurrent writes, graceful shutdown).',
+  cli:
+    'Build it, run its tests, then use it with SPEND_FILE pointing into a temp dir: the full contract, then edge cases beyond it (amounts like 1., .5, 1e3, 007, very large; unicode notes; missing or corrupt data file; --help; concurrent invocations; what happens to the data file if a write is interrupted).',
+}
+const PRODUCT = {
+  website: 'visual design, content depth and realism, navigation, filtering UX, accessibility',
+  api: 'API design and HTTP semantics beyond the minimum (validation messages, content types, limits, shutdown, logging)',
+  cli: 'CLI ergonomics (help, output alignment, messages) and data safety (atomic writes, corrupt-file handling)',
+}
+
+function inspectPrompt(ch, b) {
+  return `You are inspecting one anonymized build of a small greenfield coding task. You don't know who or what built it; judge only what is there and don't speculate about its origin.
+
+TASK THE BUILDER WAS GIVEN:
+${ch.prompt}
+
+BUILD ${b.letter}: ${b.dir}${b.shots ? `\nSCREENSHOTS: ${b.shots}` : ''}
+Look only at this build. Don't open sibling folders. Before building or running anything, copy it: cp -r ${b.dir} /tmp/inspect-${ch.id}-${b.letter} and work in the copy.
+
+What to do: read all of the code, then ${PROBES[ch.kind]}
+Record every defect with severity (blocker: a spec requirement fails; major: a real bug or a serious quality problem a reviewer would block on; minor: everything else) and evidence a skeptic could reproduce (the command and what it printed, or file:line).
+
+Score 1-10 each: correctness (meets the spec, including edge cases), robustness, code_quality (structure, idiom, clarity; more code is not better), tests (do they test meaningful behavior), docs (README and run instructions), product (${PRODUCT[ch.kind]}). overall is your holistic 1-10. Calibrate: 5 = works with notable gaps, 7 = good, 8 = solid production-quality small project, 10 = exemplary. stats: files, non-blank source lines (excluding lockfiles and generated files), test cases.`
+}
+
+function judgePrompt(ch, reports) {
+  const builds = ch.builds.map(b => `${b.letter}: ${b.dir}${b.shots ? ` (screenshots ${b.shots})` : ''}`).join('\n')
+  return `You are the final judge comparing ${ch.builds.length} anonymized builds of the same task. You don't know who or what built them; don't speculate.
+
+TASK:
+${ch.prompt}
+
+BUILDS (read-only; copy one to /tmp/judge-${ch.id}-<letter> before building or running it):
+${builds}
+
+Independent inspectors scored each build (they may be calibrated differently from each other):
+${JSON.stringify(reports, null, 1)}
+
+1. Re-check every blocker and major defect the inspectors claimed by reproducing it yourself. List each as confirmed or refuted with a one-line reason. Also look for anything important an inspector missed.
+2. Then score every build 1-10 on one shared scale (5 = works with notable gaps, 8 = solid production-quality small project), weighing correctness and robustness most, then code quality and tests, then product polish and docs. Don't reward size or features beyond the spec unless they make the result better for its user.
+3. ranking: best first. verdict: 2-4 sentences on what separates the builds.`
+}
+
+const results = await pipeline(
+  args,
+  ch =>
+    parallel(
+      ch.builds.map(b => () =>
+        agent(inspectPrompt(ch, b), { label: `inspect ${ch.id} ${b.letter}`, phase: 'Inspect', schema: INSPECT, effort: 'medium' })
+      )
+    ).then(reports => reports.filter(Boolean)),
+  (reports, ch) => {
+    log(`${ch.id}: ${reports.length}/${ch.builds.length} inspections back, judging`)
+    return agent(judgePrompt(ch, reports), { label: `judge ${ch.id}`, phase: 'Judge', schema: JUDGE, effort: 'high' })
+      .then(judge => ({ id: ch.id, reports, judge }))
+  }
+)
+return results.filter(Boolean)

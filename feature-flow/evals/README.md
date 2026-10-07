@@ -46,6 +46,9 @@ Each run writes `trace.jsonl`, `diff.patch`, `meta.json`, and a `grading.json` i
 | `rounding-conflict` | The two rounding tests contradict each other and `tests/` is off-limits. The run passes only if it stops and reports, with no special-cased hack and the fix loop within its cap. |
 | `sql-audit` | 2,400 generated files. Checks for no pipeline, no edits, and a dynamic-workflow recommendation with all four caveats. |
 | `shipping-question` | Pure question. Checks for at most one explorer, no edits, and a correct answer. |
+| `website-bookshop` | Greenfield site in plain HTML/CSS/JS. Checks pages, links, no network requests, accessibility basics, and a headless render at 360px with JS off. |
+| `api-go-bookmarks` | Greenfield REST API in Go against a fixed contract. Checks build, vet and tests, CRUD, the 400/422/404 split, the tag filter, and 200 concurrent creates. |
+| `cli-rust-spend` | Greenfield CLI in Rust against a fixed contract. Checks build and tests, exact totals, and that usage errors exit 2 and change nothing. |
 
 Process checks (`kind: process`) apply only to the skill arm. Outcome checks (hidden tests, `./check.sh`, untouched files, the final answer) apply to every arm. Every pipeline scenario also gets the generic rules in `grade.py:PIPELINE_RULES`: pinned models (an alias on the call, or a named agent's frontmatter), named agents used when they're loaded, roster models (taken from the model each subagent actually ran on), the handoff and result templates, stages announced before the first spawn, checks after the last edit and before each review, the 2-round cap, at most one debugger, nested verifiers awaited, no depth-limit refusals, and a final report that names the agents.
 
@@ -68,6 +71,16 @@ An arm can pin any git `ref`. The harness extracts that version of the skill fol
 - The harness strips session-scoped variables (`CLAUDE_CODE_SESSION_ID`, `CLAUDE_EFFORT`, `CLAUDE_CODE_SUBAGENT_MODEL`, …) so the calling session's model and effort don't leak into the runs, and it sets the spawn depth explicitly (3 unless the scenario says otherwise).
 - Every run is capped with `--max-budget-usd`, and `run.py` prints the worst-case total before it starts. On Opus, one rep of everything with both arms usually costs a few dollars.
 - One rep is a smoke test, not a result. Agents choose their stages freshly on each run, so compare arms at `-n 3` or more.
+
+### Blind quality judging
+
+Hidden checks only tell you that a build works. To compare quality, anonymize a batch and judge it with the dynamic workflow in `judge.workflow.js`:
+
+```sh
+python3 prepare_blind.py results/<batch> /tmp/ff-judge   # shuffled letters, site screenshots, mapping kept in the batch dir
+```
+
+Then ask Claude Code to run `judge.workflow.js` as a workflow, passing the challenges (`id`, `kind`, `prompt`, and the `builds` letters and dirs) as `args`. One inspector per build builds it, runs it, probes edge cases, and scores it. One judge per challenge then reproduces every blocker and major defect the inspectors claimed and ranks the builds on a single scale. Unblind the results with `results/<batch>/blind-mapping.json`.
 
 ### Adding a scenario
 
