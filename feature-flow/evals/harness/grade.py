@@ -404,7 +404,7 @@ PIPELINE_RULES = [
 
 def run_command(check, workspace, scenario_id):
     env = dict(os.environ, HIDDEN=str(HERE / "hidden" / scenario_id), PYTHONPATH=str(workspace), PYTHONDONTWRITEBYTECODE="1")
-    proc = subprocess.run(check["cmd"], shell=True, cwd=workspace, env=env, capture_output=True, text=True, timeout=300)
+    proc = subprocess.run(check["cmd"], shell=True, cwd=workspace, env=env, capture_output=True, text=True, timeout=900)
     tail = (proc.stdout + proc.stderr).strip().splitlines()[-3:]
     return proc.returncode == 0, " | ".join(tail) or f"exit {proc.returncode}"
 

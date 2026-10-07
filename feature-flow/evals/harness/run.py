@@ -41,7 +41,10 @@ SCRUB = [
 
 def prepare(workspace, scenario, arm):
     skip = shutil.ignore_patterns("__pycache__", ".ruff_cache")
-    shutil.copytree(FIXTURES / "shop", workspace, ignore=skip)
+    if scenario.get("fixture") == "empty":
+        workspace.mkdir(parents=True)  # greenfield: an empty repo
+    else:
+        shutil.copytree(FIXTURES / "shop", workspace, ignore=skip)
     if scenario.get("overlay"):
         shutil.copytree(FIXTURES / "overlays" / scenario["overlay"], workspace, ignore=skip, dirs_exist_ok=True)
     env = dict(os.environ, FIXTURES=str(FIXTURES))
@@ -50,9 +53,9 @@ def prepare(workspace, scenario, arm):
     git = ["git", "-c", "user.name=eval", "-c", "user.email=eval@example.invalid"]
     subprocess.run(["git", "init", "-q", "-b", "main"], cwd=workspace, check=True)
     subprocess.run(git + ["add", "-A"], cwd=workspace, check=True)
-    subprocess.run(git + ["commit", "-qm", "fixture"], cwd=workspace, check=True)
+    subprocess.run(git + ["commit", "-qm", "fixture", "--allow-empty"], cwd=workspace, check=True)
     with open(workspace / ".git" / "info" / "exclude", "a") as f:
-        f.write("__pycache__/\n.claude/\n")
+        f.write("__pycache__/\n.claude/\ntarget/\nbin/\nnode_modules/\n")
     if arm["skill"] == "project":
         target = workspace / ".claude" / "skills" / "feature-flow"
         target.mkdir(parents=True)
