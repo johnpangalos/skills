@@ -9,17 +9,24 @@ from html.parser import HTMLParser
 class Page(HTMLParser):
     def __init__(self):
         super().__init__()
-        self.tags = []  # (tag, attrs)
+        self.tags = []  # (tag, attrs); form fields inside a <label> get "_wrapped"
         self.title = ""
         self._in_title = False
+        self._labels = 0
 
     def handle_starttag(self, tag, attrs):
-        self.tags.append((tag, dict(attrs)))
+        attrs = dict(attrs)
+        if self._labels:
+            attrs["_wrapped"] = True
+        self.tags.append((tag, attrs))
         self._in_title = tag == "title"
+        self._labels += tag == "label"
 
     def handle_endtag(self, tag):
         if tag == "title":
             self._in_title = False
+        if tag == "label" and self._labels:
+            self._labels -= 1
 
     def handle_data(self, data):
         if self._in_title:
@@ -77,7 +84,7 @@ elif part == "a11y":
         labelled = {a.get("for") for t, a in tags if t == "label"}
         for t, a in tags:
             if t in ("input", "select", "textarea") and a.get("type") not in ("hidden", "submit", "button"):
-                if a.get("id") not in labelled and not a.get("aria-label") and not a.get("aria-labelledby"):
+                if a.get("id") not in labelled and not a.get("_wrapped") and not a.get("aria-label") and not a.get("aria-labelledby"):
                     problems.append(f"{p}: unlabelled {t} {a.get('name') or a.get('id')}")
 
 if problems:
