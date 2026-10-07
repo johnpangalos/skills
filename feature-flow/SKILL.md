@@ -27,36 +27,45 @@ Do not use for:
 
 ## Roster
 
-Use model aliases (`opus`, `sonnet`, `haiku`), never full model IDs. Set the model with `model:`
-in agent frontmatter or the `model` parameter on the Agent call (the per-call value overrides
-frontmatter). This brief does not confirm a mechanism for pinning effort per subagent; check
-what your Claude Code version supports, and if effort cannot be set, treat the effort column as
-the target and keep the prompt scoped accordingly.
+Each role is a named agent in this skill's `agents/` folder, with its model, effort and tools
+pinned in frontmatter. Spawn a role by its agent type, `feature-flow:<agent>` (for example
+`feature-flow:implementor`), and leave `model` and `effort` off the Agent call so the pins hold.
+Pass them on the call only to escalate (see "Loop and escalation rules"); a per-call value wins
+over frontmatter.
 
-Only agents with `Agent` in `tools` can spawn subagents. Nesting depth is limited (default 3,
-`CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH`); main -> implementor -> verifier is depth 2.
+The agents load when the skill folder loads as a plugin: installed under `~/.claude/skills/`
+(its `.claude-plugin/plugin.json` makes it a skills-directory plugin) or passed with
+`--plugin-dir`. A copy under a project's `.claude/skills/` loads them only after the workspace
+trust prompt. If no `feature-flow:*` agent types are listed, fall back to `general-purpose`:
+pass the role's model alias (`opus`, `sonnet`, `haiku`, never a full model ID) and its effort if
+the Agent tool takes one, start the prompt with `ROLE: <role>`, state the role's tool limits,
+and end it with the result template.
+
+No agent has the `Agent` tool, so roles never spawn subagents; the main conversation spawns
+every role. The flow then works when nesting is off (`CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=1`,
+as in some cloud sessions), and every result comes back through one place.
 
 ### Core roles
 
-| Role | Model | Effort | Tools | When to spawn |
+| Role (agent) | Model | Effort | Tools | When to spawn |
 |---|---|---|---|---|
-| Investigator | sonnet (haiku if it only locates files) | low | Read-only (Read, Grep, Glob) | Before implementing, unless triage skipped it. Returns paths, findings, short summary. |
-| Implementor | sonnet | medium (high on retry or a known-tricky task, never by default) | Read, Edit, Write, Bash, `Agent` | Every run. May spawn the verifier itself. |
-| Simplifier | haiku (or sonnet / low) | medium (low if sonnet) | Read, Edit | Only when the diff is non-trivial. Bounded, behavior-preserving cleanup. |
-| Reviewer | sonnet; opus only for risky diffs | high (medium if opus) | Read-only, Bash for running checks | After mechanical checks pass. Opus for auth, payments, migrations, concurrency. |
+| Investigator (`investigator`) | sonnet (`explorer` on haiku if it only locates files) | low | Read, Grep, Glob | Before implementing, unless triage skipped it. Returns paths, findings, short summary. |
+| Implementor (`implementor`) | sonnet | medium (high on retry or a known-tricky task, never by default) | Read, Edit, Write, Bash, Grep, Glob | Every run. Returns a diff summary; the main conversation then spawns the verifier. |
+| Simplifier (`simplifier`) | haiku (or sonnet / low, passed on the call) | medium | Read, Edit, Grep, Glob | Only when the diff is non-trivial. Bounded, behavior-preserving cleanup. |
+| Reviewer (`reviewer`; `risky-reviewer` for risky diffs) | sonnet; `risky-reviewer` is opus | high (`risky-reviewer`: medium) | Read, Grep, Glob, Bash for running checks | After mechanical checks pass. `risky-reviewer` for auth, payments, migrations, concurrency. |
 
 ### Supporting roles
 
-| Role | Model | Effort | Tools | When to spawn |
+| Role (agent) | Model | Effort | Tools | When to spawn |
 |---|---|---|---|---|
-| Explorer / mapper | haiku | low | Read-only | Cheap codebase search; returns paths and short summaries. |
-| Verifier / browser checker | haiku | low | Bash, Read (no `Agent`) | Runs tests, linters, Chrome DevTools CLI checks. Reports pass/fail only. |
-| Test writer | sonnet | low | Read, Edit, Write, Bash | Only when tests are needed. Kept separate so tests are not shaped by the implementation. |
-| Debugger | sonnet | medium | Read, Bash, Edit | Only when the fix loop stalls. |
-| Docs writer | haiku | low | Read, Edit, Write | Once, at the end, from the final diff. |
-| Summarizer / compactor | haiku | low | Read | Only on long flows, to pass a compact summary between phases. |
-| Security reviewer | sonnet | medium | Read-only | Only for sensitive diffs (auth, secrets, input handling, payments). |
-| Migration agent | sonnet | low | Read, Edit, Bash | Rule-based mechanical changes with an explicit rule set. |
+| Explorer / mapper (`explorer`) | haiku | low | Read, Grep, Glob | Cheap codebase search; returns paths and short summaries. |
+| Verifier / browser checker (`verifier`) | haiku | low | Bash, Read | Runs tests, linters, Chrome DevTools CLI checks. Reports pass/fail only. |
+| Test writer (`test-writer`) | sonnet | low | Read, Edit, Write, Bash, Grep, Glob | Only when tests are needed. Kept separate so tests are not shaped by the implementation. |
+| Debugger (`debugger`) | sonnet | medium | Read, Bash, Edit, Grep, Glob | Only when the fix loop stalls. |
+| Docs writer (`docs-writer`) | haiku | low | Read, Edit, Write, Grep, Glob | Once, at the end, from the final diff. |
+| Summarizer / compactor (`summarizer`) | haiku | low | Read | Only on long flows, to pass a compact summary between phases. |
+| Security reviewer (`security-reviewer`) | sonnet | medium | Read, Grep, Glob, Bash for reading diffs | Only for sensitive diffs (auth, secrets, input handling, payments). |
+| Migration agent (`migration`) | sonnet | low | Read, Edit, Bash, Grep, Glob | Rule-based mechanical changes with an explicit rule set. |
 
 ### Deliberately not in the roster
 
@@ -74,7 +83,7 @@ Decide size and risk, then pick stages:
 | One-file tweak | implementor (or main directly) -> verifier. Skip investigator and simplifier. |
 | Typical feature / fix | investigator -> implementor (+ verifier) -> checks -> reviewer -> fix loop |
 | Needs new tests | add test writer, briefed from the spec, not the implementation |
-| Risky area (auth, payments, migrations, concurrency) | reviewer on opus / medium; add security reviewer if sensitive |
+| Risky area (auth, payments, migrations, concurrency) | `risky-reviewer` (opus / medium) instead of `reviewer`; add `security-reviewer` if sensitive |
 | Codebase-wide or thousands of files | do not use this flow; see escalation section |
 
 State the chosen stages to the user in one line before starting.
@@ -85,8 +94,8 @@ State the chosen stages to the user in one line before starting.
    behavior, constraints, and risks.
 2. **Test writer** (if needed): writes tests from the acceptance criteria. Can run in parallel
    with the implementor since it works from the spec.
-3. **Implementor**: makes the change, then spawns the **verifier** (haiku) to run the relevant
-   tests and linters. Returns diff summary plus verifier result.
+3. **Implementor**: makes the change and returns a diff summary. The main conversation then
+   spawns the **verifier** (haiku) to run the relevant tests and linters.
 4. **Simplifier** (only if the diff is non-trivial): cleanup without behavior change; re-run the
    verifier afterwards.
 5. **Mechanical checks before review**: lint, type check, tests must pass before the reviewer
@@ -101,8 +110,9 @@ State the chosen stages to the user in one line before starting.
 - **Fix loop cap: 2 rounds.** A round is implementor fix -> verifier -> reviewer.
 - **Round 2 review is incremental**: send the reviewer only the changed hunks plus its own
   round-1 findings, not the whole diff again.
-- **On failure, escalate effort before model**: retry the implementor at high effort first.
-  Only after that may any role be escalated to opus.
+- **On failure, escalate effort before model**: retry the implementor at high effort first
+  (`effort: high` on the Agent call). Only after that may any role be escalated to opus
+  (`model: opus` on the call).
 - **Stalled loop** (same failure twice, or no progress): spawn the debugger once instead of
   another blind implementor retry.
 - **After the cap, stop.** Report to the user: what passed, what still fails, reviewer's open
@@ -117,7 +127,6 @@ Subagents do not inherit the parent conversation. Every handoff prompt must be s
 ### Handoff prompt template
 
 ```
-ROLE: <role> (<model>/<effort>)
 GOAL: <one or two sentences: what done looks like>
 FILES: <exact paths to read or change; note which the explorer already summarized>
 CONTEXT: <prior findings, verbatim and compact; do not re-read what is summarized here>
@@ -126,10 +135,14 @@ ACCEPTANCE CRITERIA:
 - <testable criterion>
 - <testable criterion>
 CHECKS: <exact commands to run, e.g. test and lint commands>
-RETURN: the structured result format below, nothing else. Keep it under ~30 lines.
 ```
 
+The named agents already know their role and return the result template below, so a handoff
+restates neither: every line of it is Opus output.
+
 ### Subagent result template
+
+Every agent's instructions end with this format:
 
 ```
 STATUS: pass | fail | blocked
@@ -169,5 +182,5 @@ subagents. When recommending it, tell the user:
 - Start with a scoped task (one directory, one bug class, one migration rule) before a full run.
 - It is unconfirmed whether model and effort can be pinned per workflow subagent, so spend is
   harder to control than here.
-- Use this flow's reviewer (sonnet / high, or opus / medium if risky) as the final check on the
+- Use this flow's `reviewer` (or `risky-reviewer` if risky) as the final check on the
   workflow's output before merging.

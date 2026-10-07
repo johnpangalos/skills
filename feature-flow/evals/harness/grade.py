@@ -99,6 +99,7 @@ class Trace:
         self.tools = []  # every tool_use: (idx, name, input, parent)
         self.main_texts = []  # (idx, text) from the main conversation
         self.sub_texts = {}  # spawn id -> [(idx, text)]
+        self.sub_models = {}  # spawn id -> model the subagent actually ran on
         self.started = {}  # spawn id -> task_started event
         self.finished = {}  # spawn id -> (idx, task_notification event)
         self.init = None
@@ -115,6 +116,8 @@ class Trace:
             elif kind == "result":
                 self.result = e
             elif kind == "assistant":
+                if parent and e["message"].get("model"):
+                    self.sub_models.setdefault(parent, e["message"]["model"])
                 for block in e["message"].get("content") or []:
                     if block.get("type") == "text":
                         if parent:
@@ -139,8 +142,12 @@ class Trace:
                             )
         for spawn in self.spawns:
             spawn["role"] = role_of(spawn)
-            spawn["family"] = family(spawn["model"])
+            spawn["family"] = family(self.sub_models.get(spawn["id"]) or spawn["model"])
             spawn["depth"] = (self.started.get(spawn["id"]) or {}).get("spawn_depth")
+
+    @property
+    def named_agents_loaded(self):
+        return any(a.startswith("feature-flow:") for a in (self.init or {}).get("agents") or [])
 
     @property
     def main_spawns(self):
@@ -161,7 +168,24 @@ class Trace:
         return done[1].get("summary") or "" if done else ""
 
 
+# the skill's named agents (agents/*.md), loaded as feature-flow:<agent>
+AGENT_ROLES = {
+    "investigator": "investigator", "explorer": "explorer", "implementor": "implementor",
+    "simplifier": "simplifier", "reviewer": "reviewer", "risky-reviewer": "reviewer",
+    "verifier": "verifier", "test-writer": "test_writer", "debugger": "debugger",
+    "docs-writer": "docs", "summarizer": "summarizer", "security-reviewer": "security",
+    "migration": "migration",
+}
+
+
+def named_agent(spawn):
+    kind = spawn["type"] or ""
+    return kind.split(":", 1)[1] if kind.startswith("feature-flow:") else None
+
+
 def role_of(spawn):
+    if named_agent(spawn) in AGENT_ROLES:
+        return AGENT_ROLES[named_agent(spawn)]
     match = re.search(r"^\s*ROLE:\s*(.+)$", spawn["prompt"], re.M)
     text = match.group(1) if match else spawn["description"] + "\n" + spawn["prompt"][:400]
     for role, pattern in ROLE_PATTERNS:
@@ -179,8 +203,18 @@ def describe(spawns):
 
 
 def spawn_models_are_aliases(t, sc, rule):
-    bad = [s for s in t.spawns if s["model"] not in ("opus", "sonnet", "haiku")]
+    bad = [
+        s for s in t.spawns
+        if s["model"] not in ("opus", "sonnet", "haiku") and not (s["model"] is None and named_agent(s))
+    ]
     return not bad, f"unpinned or full-ID spawns: {describe(bad)}" if bad else f"all {len(t.spawns)} spawns pinned"
+
+
+def named_agents_used(t, sc, rule):
+    if not t.named_agents_loaded:
+        return True, "named agents not loaded (n/a)"
+    bad = [s for s in t.main_spawns if not named_agent(s)]
+    return not bad, f"generic spawns: {[s['type'] for s in bad]}" if bad else f"{len(t.main_spawns)} spawns used named agents"
 
 
 def roles_use_roster_models(t, sc, rule):
@@ -201,7 +235,7 @@ def handoffs_use_template(t, sc, rule):
     bad = []
     for s in t.main_spawns:
         prompt = (t.started.get(s["id"]) or {}).get("prompt") or s["prompt"]
-        need = ["ROLE", "GOAL", "RETURN"]
+        need = ["GOAL"] if named_agent(s) else ["ROLE", "GOAL", "RETURN"]
         if s["role"] in ("implementor", "reviewer", "test_writer"):
             need.append("ACCEPTANCE CRITERIA")
         missing = [field for field in need if not re.search(rf"^\W*{field}\b", prompt, re.M | re.I)]
@@ -345,7 +379,7 @@ def final_regex(t, sc, rule):
 
 
 RULES = {f.__name__: f for f in [
-    spawn_models_are_aliases, roles_use_roster_models, handoffs_use_template, results_use_template,
+    spawn_models_are_aliases, named_agents_used, roles_use_roster_models, handoffs_use_template, results_use_template,
     stages_announced_first, checks_before_review, fix_rounds_capped, debugger_at_most_once,
     nested_verifier_awaited, no_depth_refusals, main_does_not_edit, report_lists_agents, role_count, role_before,
     max_agents, role_model, heavy_step_announced, no_edits, final_regex,
@@ -353,6 +387,7 @@ RULES = {f.__name__: f for f in [
 
 PIPELINE_RULES = [
     {"name": "every spawn pins a model alias", "rule": "spawn_models_are_aliases"},
+    {"name": "spawns use the named agents when loaded", "rule": "named_agents_used"},
     {"name": "roles run on their roster models", "rule": "roles_use_roster_models"},
     {"name": "handoff prompts use the template", "rule": "handoffs_use_template"},
     {"name": "subagents return the result template", "rule": "results_use_template"},
@@ -388,7 +423,10 @@ def metrics(t):
         "cost_usd": round(total, 4),
         "cost_by_model": by_model,
         "opus_share": round(by_model.get("opus", 0) / total, 3) if total else None,
-        "spawns": [f"{s['role']}:{s['family']}/{s['effort'] or '-'}" + (" (nested)" if s["parent"] else "") for s in t.spawns],
+        "spawns": [
+            f"{s['role']}:{s['family']}/{s['effort'] or ('fm' if named_agent(s) else '-')}" + (" (nested)" if s["parent"] else "")
+            for s in t.spawns
+        ],
         "main_tool_calls": main_tools,
         "subagent_stats": t.result.get("subagent_stats"),
         "duration_s": round((t.result.get("duration_ms") or 0) / 1000, 1),
@@ -403,8 +441,8 @@ def grade(run_dir, scenario, arm):
     t = Trace(load_trace(run_dir / "trace.jsonl"))
     workspace = pathlib.Path(json.loads((run_dir / "meta.json").read_text())["workspace"])
     checks = []
-    loaded = "feature-flow" in ((t.init or {}).get("skills") or [])
-    if arm["skill"] != loaded:
+    loaded = any(re.fullmatch(r"(feature-flow:)?feature-flow", name) for name in (t.init or {}).get("skills") or [])
+    if bool(arm["skill"]) != loaded:
         checks.append(("setup", "arm loaded the skill as configured", False, f"skill loaded={loaded}, expected {arm['skill']}"))
     rules = list(scenario.get("checks", []))
     if scenario.get("pipeline", True):

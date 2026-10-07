@@ -23,7 +23,7 @@ Pass `--ablation none` here, because a no-skill arm can never fire the skill. Ru
 
 ## Harness (`harness/`)
 
-`run.py` copies `fixtures/shop` into a fresh temp git repo for each run and runs `claude -p` there with `--output-format stream-json --verbose --forward-subagent-text`. In the `skill` arm the skill is installed as a project skill and invoked with `/feature-flow`, which separates "does it behave" from "does it trigger". `grade.py` then reads the trace and runs the hidden checks against the workspace.
+`run.py` copies `fixtures/shop` into a fresh temp git repo for each run and runs `claude -p` there with `--output-format stream-json --verbose --forward-subagent-text`. In the `skill` arm the skill folder loads with `--plugin-dir`, so its named agents load too, and the run invokes it as `/feature-flow:feature-flow`. That separates "does it behave" from "does it trigger". `grade.py` then reads the trace and runs the hidden checks against the workspace.
 
 ```sh
 cd feature-flow/evals/harness
@@ -47,11 +47,20 @@ Each run writes `trace.jsonl`, `diff.patch`, `meta.json`, and a `grading.json` i
 | `sql-audit` | 2,400 generated files. Checks for no pipeline, no edits, and a dynamic-workflow recommendation with all four caveats. |
 | `shipping-question` | Pure question. Checks for at most one explorer, no edits, and a correct answer. |
 
-Process checks (`kind: process`) apply only to the skill arm. Outcome checks (hidden tests, `./check.sh`, untouched files, the final answer) apply to every arm. Every pipeline scenario also gets the generic rules in `grade.py:PIPELINE_RULES`: pinned model aliases, roster models, the handoff and result templates, stages announced before the first spawn, checks after the last edit and before each review, the 2-round cap, at most one debugger, nested verifiers awaited, no depth-limit refusals, and a final report that names the agents.
+Process checks (`kind: process`) apply only to the skill arm. Outcome checks (hidden tests, `./check.sh`, untouched files, the final answer) apply to every arm. Every pipeline scenario also gets the generic rules in `grade.py:PIPELINE_RULES`: pinned models (an alias on the call, or a named agent's frontmatter), named agents used when they're loaded, roster models (taken from the model each subagent actually ran on), the handoff and result templates, stages announced before the first spawn, checks after the last edit and before each review, the 2-round cap, at most one debugger, nested verifiers awaited, no depth-limit refusals, and a final report that names the agents.
 
 ### Arms
 
-`scenarios.json` defines `skill` (Opus at medium effort, with the skill), `baseline` (Opus at medium effort, without it) and `sonnet-solo` (Sonnet, without it). The skill's value claim is that `skill` matches `baseline` on outcomes for less money. Running `sonnet-solo` too answers whether the cheaper main model alone gets the same result.
+`scenarios.json` defines four arms. All of them run the main session on Opus at medium effort, except `sonnet-solo`:
+
+| Arm | What runs |
+|---|---|
+| `skill` | The working-tree skill, loaded as a plugin with its named agents |
+| `skill-v0` | The skill as first committed (`ref: 0263562`), loaded as a bare project skill with no agents, so you can measure a change against it |
+| `baseline` | No skill |
+| `sonnet-solo` | No skill, with Sonnet as the main model |
+
+An arm can pin any git `ref`. The harness extracts that version of the skill folder with `git archive`. The skill's value claim is that `skill` matches `baseline` on outcomes for less money. Running `sonnet-solo` too answers whether the cheaper main model alone gets the same result.
 
 ### Gotchas
 

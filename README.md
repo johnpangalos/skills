@@ -11,5 +11,7 @@ Agent skills by [@johnpangalos](https://github.com/johnpangalos).
 
 ```sh
 npx skills add johnpangalos/skills@aesop
-npx skills add johnpangalos/skills@feature-flow
+npx skills add johnpangalos/skills@feature-flow -g
 ```
+
+feature-flow ships 13 named subagents (`feature-flow:implementor`, `feature-flow:reviewer`, and so on) with their model, effort and tools pinned. They load when the skill is installed at user level (`-g`, into `~/.claude/skills/`), where its `.claude-plugin/plugin.json` makes it a skills-directory plugin. A project-level install loads them only after you accept Claude Code's workspace trust prompt. Without the agents, the skill falls back to general-purpose subagents.

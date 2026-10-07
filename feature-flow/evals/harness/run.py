@@ -6,8 +6,9 @@
     python3 run.py --regrade results/<ts>            # re-apply changed checks to old runs
 
 Each run copies fixtures/shop into a fresh temp git repo (plus the scenario's
-overlay and setup), installs the skill as a project skill for the "skill" arm,
-runs `claude -p` with a stream-json trace, then grades it with grade.py.
+overlay and setup), loads the skill the way its arm says (as a plugin with its
+named agents, or as a bare project skill, optionally from a git ref), runs
+`claude -p` with a stream-json trace, then grades it with grade.py.
 Results land in results/<timestamp>/<scenario>/<arm>/rep-<n>/ with a summary.md.
 """
 
@@ -25,7 +26,7 @@ import time
 import grade
 
 HERE = pathlib.Path(__file__).resolve().parent
-SKILL = HERE.parent.parent / "SKILL.md"
+SKILL_DIR = HERE.parent.parent
 FIXTURES = HERE / "fixtures"
 TOOLS = "Bash,Read,Edit,Write,Glob,Grep,Agent,Skill"
 
@@ -52,16 +53,33 @@ def prepare(workspace, scenario, arm):
     subprocess.run(git + ["commit", "-qm", "fixture"], cwd=workspace, check=True)
     with open(workspace / ".git" / "info" / "exclude", "a") as f:
         f.write("__pycache__/\n.claude/\n")
-    if arm["skill"]:
+    if arm["skill"] == "project":
         target = workspace / ".claude" / "skills" / "feature-flow"
         target.mkdir(parents=True)
-        shutil.copy(SKILL, target / "SKILL.md")
+        shutil.copy(arm["source"] / "SKILL.md", target / "SKILL.md")
+
+
+def skill_source(ref):
+    """The skill folder at a git ref (or the working tree when ref is None)."""
+    if not ref:
+        return SKILL_DIR
+    def git(*args):
+        return subprocess.run(["git", *args], cwd=SKILL_DIR, capture_output=True, check=True).stdout
+
+    prefix = git("rev-parse", "--show-prefix").decode().strip()
+    root = git("rev-parse", "--show-toplevel").decode().strip()
+    dest = pathlib.Path(tempfile.mkdtemp(prefix="ff-skill-"))
+    archive = subprocess.run(["git", "archive", ref, "--", prefix], cwd=root, capture_output=True, check=True).stdout
+    subprocess.run(["tar", "-x", "-C", str(dest)], input=archive, check=True)
+    return dest / prefix
 
 
 def command(scenario, arm, prompt):
-    text = f"/feature-flow {prompt}" if arm["skill"] else prompt
+    # a plugin-loaded skill is namespaced under its plugin name
+    prefix = {"plugin": "/feature-flow:feature-flow ", "project": "/feature-flow "}.get(arm["skill"], "")
+    plugin = ["--plugin-dir", str(arm["source"])] if arm["skill"] == "plugin" else []
     return [
-        "claude", "-p", text,
+        "claude", "-p", prefix + prompt, *plugin,
         "--model", arm["model"], "--effort", arm["effort"],
         "--output-format", "stream-json", "--verbose", "--forward-subagent-text",
         "--permission-mode", "acceptEdits", "--allowedTools", TOOLS, "--permission-prompts", "none",
@@ -158,6 +176,10 @@ def main():
         summarize(args.regrade, results)
         return
 
+    for name in args.arms.split(","):
+        arm = config["arms"][name]
+        if arm["skill"]:
+            arm["source"] = skill_source(arm.get("ref"))
     jobs = []
     for sid in args.scenarios.split(","):
         scenario = by_id[sid]
