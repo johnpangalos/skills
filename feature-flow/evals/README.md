@@ -72,6 +72,14 @@ An arm can pin any git `ref`. The harness extracts that version of the skill fol
 - Every run is capped with `--max-budget-usd`, and `run.py` prints the worst-case total before it starts. On Opus, one rep of everything with both arms usually costs a few dollars.
 - One rep is a smoke test, not a result. Agents choose their stages freshly on each run, so compare arms at `-n 3` or more.
 
+### Main thread vs subagents
+
+```sh
+python3 threads.py results/<batch> [results/<batch> ...]
+```
+
+`threads.py` splits each run's cost into the main thread and its subagents, and splits each of those into cache reads, cache writes, fresh input and output. It also reports the main thread's final context size and what one follow-up turn would cost to re-read it, with a warm cache (within the main thread's one-hour TTL) and with a cold one. Input and cache tokens come from each message's usage. Output tokens come from the run's per-model totals, because streamed events record output at the start of a message. The script's totals match the reported cost exactly.
+
 ### Blind quality judging
 
 Hidden checks only tell you that a build works. To compare quality, anonymize a batch and judge it with the dynamic workflow in `judge.workflow.js`:
