@@ -453,6 +453,8 @@ def grade(run_dir, scenario, arm):
     if bool(arm["skill"]) != loaded:
         checks.append(("setup", "arm loaded the skill as configured", False, f"skill loaded={loaded}, expected {arm['skill']}"))
     scenario = dict(scenario, _pinned_model=(arm.get("agents") or {}).get("model"))
+    if not t.result:
+        checks.append(("setup", "run reported a result", False, "the trace has no result event, so cost and timing are unknown; re-run it"))
     stats = t.result.get("subagent_stats") or {}
     settled = stats.get("completed", 0) + stats.get("failed", 0) + sum((stats.get("killed") or {}).values())
     if stats.get("spawned", 0) > settled:

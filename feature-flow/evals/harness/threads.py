@@ -122,5 +122,12 @@ def analyze(run_dir):
 
 
 if __name__ == "__main__":
-    rows = [analyze(m.parent) for b in sys.argv[1:] for m in sorted(pathlib.Path(b).glob("*/*/rep-*/meta.json"))]
+    rows = []
+    for batch in sys.argv[1:]:
+        for meta in sorted(pathlib.Path(batch).glob("*/*/rep-*/meta.json")):
+            row = analyze(meta.parent)
+            if row["reported_cost"]:  # a run with no result event has no cost to split
+                rows.append(row)
+            else:
+                print(f"skipped {meta.parent}: no result event", file=sys.stderr)
     print(json.dumps(rows, indent=1))
