@@ -1,6 +1,6 @@
 ---
 name: feature-flow
-description: Use when implementing a feature or non-trivial fix through a multi-subagent pipeline (investigate, implement, verify, review, fix) under a tight AI spend budget. The main Opus conversation orchestrates; cheaper Sonnet and Haiku subagents do the work.
+description: Use when implementing a feature, building a small project, or tracking down and fixing a bug across files, through a capped subagent pipeline (investigate, implement, verify, review, fix) under a tight AI spend budget. The main Opus conversation orchestrates or builds directly; cheaper Sonnet and Haiku subagents implement, verify and review.
 ---
 
 # Feature Flow
@@ -12,11 +12,17 @@ hand-written "dynamic workflow": the main conversation (Opus 5.5, medium effort)
 orchestrates, and subagents (mostly Sonnet 5.5, some Haiku 5.5) do the work. The aim is
 consistent results at the lowest spend that still gives a trustworthy review.
 
+Orchestration has a fixed cost: the main conversation spends roughly $0.30-0.50 planning,
+writing handoffs and reading results, about what it costs Opus to build a small project
+outright. So small work takes the direct path (Opus builds, a subagent reviews), and the full
+pipeline is for work big enough that delegating the bulk of it to Sonnet pays for that overhead.
+
 ## When to use / not use
 
 Use for:
 - A feature or fix that touches more than one file, or needs investigation, tests, or review.
-- Work where a cheap pipeline with a capped review loop is preferable to ad-hoc prompting.
+- A small new project built to a spec.
+- Tracking down a bug whose cause isn't obvious, then fixing it with a regression test.
 
 Do not use for:
 - One-line or one-file tweaks with an obvious fix: do them directly in the main conversation
@@ -49,10 +55,10 @@ as in some cloud sessions), and every result comes back through one place.
 
 | Role (agent) | Model | Effort | Tools | When to spawn |
 |---|---|---|---|---|
-| Investigator (`investigator`) | sonnet (`explorer` on haiku if it only locates files) | low | Read, Grep, Glob | Before implementing, unless triage skipped it. Returns paths, findings, short summary. |
-| Implementor (`implementor`) | sonnet | medium (high on retry or a known-tricky task, never by default) | Read, Edit, Write, Bash, Grep, Glob | Every run. Returns a diff summary; the main conversation then spawns the verifier. |
+| Investigator (`investigator`) | sonnet (`explorer` on haiku if it only locates files) | low | Read, Grep, Glob | Only on an existing codebase too large to read the relevant parts directly. Skip it on a new project or a small repo. |
+| Implementor (`implementor`) | sonnet | medium (high on retry or a known-tricky task, never by default) | Read, Edit, Write, Bash, Grep, Glob | Pipeline path. Returns a diff summary; the main conversation then spawns the verifier. |
 | Simplifier (`simplifier`) | haiku (or sonnet / low, passed on the call) | medium | Read, Edit, Grep, Glob | Only when the diff is non-trivial. Bounded, behavior-preserving cleanup. |
-| Reviewer (`reviewer`; `risky-reviewer` for risky diffs) | sonnet; `risky-reviewer` is opus | high (`risky-reviewer`: medium) | Read, Grep, Glob, Bash for running checks | After mechanical checks pass. `risky-reviewer` for auth, payments, migrations, concurrency. |
+| Reviewer (`reviewer`; `risky-reviewer` for risky diffs) | sonnet; `risky-reviewer` is opus | high (`risky-reviewer`: medium) | Read, Grep, Glob, Bash for running checks | Every run, after mechanical checks pass. Works through its checklist and reproduces edge cases. `risky-reviewer` for auth, payments, migrations, concurrency. |
 
 ### Supporting roles
 
@@ -76,21 +82,45 @@ as in some cloud sessions), and every result comes back through one place.
 
 ### 1. Triage (main conversation, no subagent)
 
-Decide size and risk, then pick stages:
+Decide size and risk, then pick a path:
 
-| Change | Stages |
+| Change | Path |
 |---|---|
-| One-file tweak | implementor (or main directly) -> verifier. Skip investigator and simplifier. |
-| Typical feature / fix | investigator -> implementor (+ verifier) -> checks -> reviewer -> fix loop |
-| Needs new tests | add test writer, briefed from the spec, not the implementation |
+| One-file tweak | main directly -> verifier. |
+| Small: a new small project, or a change you could write yourself in one sitting (roughly under 600 changed lines) | **Direct path**: main builds it, runs the checks, then spawns the reviewer. Fix what it finds yourself. |
+| Large: a feature in an existing codebase, or more than you'd write in one sitting | **Pipeline**: (investigator) -> implementor -> verifier -> reviewer -> fix loop |
+| Needs new tests (pipeline) | add test writer, briefed from the acceptance criteria, not the implementation |
 | Risky area (auth, payments, migrations, concurrency) | `risky-reviewer` (opus / medium) instead of `reviewer`; add `security-reviewer` if sensitive |
 | Codebase-wide or thousands of files | do not use this flow; see escalation section |
 
-State the chosen stages to the user in one line before starting.
+Every path ends with a reviewer. Plain Opus builds without one, and the review is what this
+flow adds.
 
-### 2. Typical run
+### 2. Write the acceptance criteria once
 
-1. **Investigator** (or explorer if only locating files): returns relevant paths, current
+Before building or spawning anything, write the acceptance criteria: a short list of testable
+statements of what done looks like. Include the requirements the request only implies, and
+spell out how they combine. "A catalog you can filter" plus "works without JavaScript" means
+"the filter works with JavaScript off", not two separate checks. "Dated today" means the
+user's local day. "Safe under concurrent requests" means concurrent writes lose nothing. For a
+new project, a short README with run instructions is a criterion unless the user says
+otherwise.
+
+Every handoff carries this list word for word under `ACCEPTANCE CRITERIA:`, and the reviewer
+checks against it. Numbers in a spec ("at least 8 titles") are floors: build what a careful
+senior developer would ship, not the minimum that passes.
+
+### 3. Direct path
+
+1. Main builds the change and runs the project's checks.
+2. **Reviewer** (or `risky-reviewer`): reviews against the acceptance criteria and its
+   checklist, reproducing edge cases. Returns findings ranked by severity.
+3. Main fixes the blocking findings itself, re-runs the checks, and sends the reviewer the
+   changed hunks for one incremental re-review if a finding was blocking. Same cap as below.
+
+### 4. Pipeline path
+
+1. **Investigator** (only on a large existing codebase): returns relevant paths, current
    behavior, constraints, and risks.
 2. **Test writer** (if needed): writes tests from the acceptance criteria. Can run in parallel
    with the implementor since it works from the spec.
@@ -100,8 +130,8 @@ State the chosen stages to the user in one line before starting.
    verifier afterwards.
 5. **Mechanical checks before review**: lint, type check, tests must pass before the reviewer
    runs. Never pay a reviewer to find what a linter finds.
-6. **Reviewer**: reviews the diff against the acceptance criteria, including a short
-   adversarial pass. Returns findings ranked by severity.
+6. **Reviewer**: reviews the diff against the acceptance criteria and its checklist, including
+   a short adversarial pass. Returns findings ranked by severity.
 7. **Fix loop** (see below), then **docs writer** once if docs are affected.
 8. Main conversation reports the outcome to the user.
 
@@ -132,13 +162,14 @@ FILES: <exact paths to read or change; note which the explorer already summarize
 CONTEXT: <prior findings, verbatim and compact; do not re-read what is summarized here>
 CONSTRAINTS: <scope limits, files not to touch, style rules, no new dependencies, etc.>
 ACCEPTANCE CRITERIA:
-- <testable criterion>
-- <testable criterion>
+- <the list from triage, word for word>
 CHECKS: <exact commands to run, e.g. test and lint commands>
 ```
 
-The named agents already know their role and return the result template below, so a handoff
-restates neither: every line of it is Opus output.
+The `ACCEPTANCE CRITERIA:` block is required in every handoff to an implementor, test writer
+or reviewer; don't rename it or fold it into another section. The named agents already know
+their role and return the result template below, so a handoff restates neither: every line of
+it is Opus output.
 
 ### Subagent result template
 
@@ -180,7 +211,7 @@ subagents. When recommending it, tell the user:
 
 - Dynamic workflows can use substantially more tokens than this flow.
 - Start with a scoped task (one directory, one bug class, one migration rule) before a full run.
-- It is unconfirmed whether model and effort can be pinned per workflow subagent, so spend is
+- A workflow can name a model per agent, but per-agent effort isn't documented, so spend is
   harder to control than here.
 - Use this flow's `reviewer` (or `risky-reviewer` if risky) as the final check on the
   workflow's output before merging.

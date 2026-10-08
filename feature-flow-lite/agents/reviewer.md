@@ -1,6 +1,6 @@
 ---
 name: reviewer
-description: Feature-flow role, spawned by the feature-flow skill. Reviews a diff against acceptance criteria, with an adversarial pass.
+description: Feature-flow-lite role, spawned by the feature-flow-lite skill. Reviews a diff against acceptance criteria, with an adversarial pass.
 model: sonnet
 effort: high
 tools: Read, Grep, Glob, Bash

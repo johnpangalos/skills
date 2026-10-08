@@ -147,7 +147,7 @@ class Trace:
 
     @property
     def named_agents_loaded(self):
-        return any(a.startswith("feature-flow:") for a in (self.init or {}).get("agents") or [])
+        return any(a.split(":")[0] in SKILL_PLUGINS for a in (self.init or {}).get("agents") or [] if ":" in a)
 
     @property
     def main_spawns(self):
@@ -178,9 +178,12 @@ AGENT_ROLES = {
 }
 
 
+SKILL_PLUGINS = ("feature-flow", "feature-flow-lite")
+
+
 def named_agent(spawn):
-    kind = spawn["type"] or ""
-    return kind.split(":", 1)[1] if kind.startswith("feature-flow:") else None
+    plugin, _, agent = (spawn["type"] or "").partition(":")
+    return agent if plugin in SKILL_PLUGINS and agent else None
 
 
 def role_of(spawn):
@@ -323,6 +326,8 @@ def no_depth_refusals(t, sc, rule):
 
 
 def main_does_not_edit(t, sc, rule):
+    if not t.of_role("implementor"):
+        return True, "no implementor spawned: main built it directly (n/a)"
     edits = [args.get("file_path", "") for _, name, args, parent in t.tools if name in EDIT_TOOLS and not parent]
     return not edits, f"main conversation edited {edits[:5]}" if edits else "all edits made by subagents"
 
@@ -398,6 +403,7 @@ PIPELINE_RULES = [
     {"name": "nested verifier awaited by its implementor", "rule": "nested_verifier_awaited"},
     {"name": "no spawns refused at the depth limit", "rule": "no_depth_refusals"},
     {"name": "main conversation leaves edits to subagents", "rule": "main_does_not_edit"},
+    {"name": "a reviewer checked the result", "rule": "role_count", "role": "reviewer", "min": 1},
     {"name": "final report lists the agents that ran", "rule": "report_lists_agents"},
 ]
 
@@ -441,7 +447,7 @@ def grade(run_dir, scenario, arm):
     t = Trace(load_trace(run_dir / "trace.jsonl"))
     workspace = pathlib.Path(json.loads((run_dir / "meta.json").read_text())["workspace"])
     checks = []
-    loaded = any(re.fullmatch(r"(feature-flow:)?feature-flow", name) for name in (t.init or {}).get("skills") or [])
+    loaded = any(re.fullmatch(r"((feature-flow(-lite)?):)?feature-flow(-lite)?", name) for name in (t.init or {}).get("skills") or [])
     if bool(arm["skill"]) != loaded:
         checks.append(("setup", "arm loaded the skill as configured", False, f"skill loaded={loaded}, expected {arm['skill']}"))
     rules = list(scenario.get("checks", []))

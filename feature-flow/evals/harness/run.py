@@ -51,9 +51,10 @@ def prepare(workspace, scenario, arm):
     if scenario.get("setup"):
         subprocess.run(scenario["setup"], shell=True, cwd=workspace, env=env, check=True)
     git = ["git", "-c", "user.name=eval", "-c", "user.email=eval@example.invalid"]
-    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=workspace, check=True)
-    subprocess.run(git + ["add", "-A"], cwd=workspace, check=True)
-    subprocess.run(git + ["commit", "-qm", "fixture", "--allow-empty"], cwd=workspace, check=True)
+    if not (workspace / ".git").exists():  # a setup that checks out a real repo brings its own history
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=workspace, check=True)
+        subprocess.run(git + ["add", "-A"], cwd=workspace, check=True)
+        subprocess.run(git + ["commit", "-qm", "fixture", "--allow-empty"], cwd=workspace, check=True)
     with open(workspace / ".git" / "info" / "exclude", "a") as f:
         f.write("__pycache__/\n.claude/\ntarget/\nbin/\nnode_modules/\n")
     if arm["skill"] == "project":
@@ -62,8 +63,10 @@ def prepare(workspace, scenario, arm):
         shutil.copy(arm["source"] / "SKILL.md", target / "SKILL.md")
 
 
-def skill_source(ref):
-    """The skill folder at a git ref (or the working tree when ref is None)."""
+def skill_source(ref, folder=None):
+    """A skill folder (default feature-flow) at a git ref, or in the working tree when ref is None."""
+    if folder:
+        return (SKILL_DIR.parent / folder).resolve()
     if not ref:
         return SKILL_DIR
     def git(*args):
@@ -79,7 +82,8 @@ def skill_source(ref):
 
 def command(scenario, arm, prompt):
     # a plugin-loaded skill is namespaced under its plugin name
-    prefix = {"plugin": "/feature-flow:feature-flow ", "project": "/feature-flow "}.get(arm["skill"], "")
+    name = arm["source"].name if arm["skill"] else ""
+    prefix = {"plugin": f"/{name}:{name} ", "project": f"/{name} "}.get(arm["skill"], "")
     plugin = ["--plugin-dir", str(arm["source"])] if arm["skill"] == "plugin" else []
     return [
         "claude", "-p", prefix + prompt, *plugin,
@@ -182,7 +186,7 @@ def main():
     for name in args.arms.split(","):
         arm = config["arms"][name]
         if arm["skill"]:
-            arm["source"] = skill_source(arm.get("ref"))
+            arm["source"] = skill_source(arm.get("ref"), arm.get("folder"))
     jobs = []
     for sid in args.scenarios.split(","):
         scenario = by_id[sid]
