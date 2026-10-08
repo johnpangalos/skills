@@ -10,6 +10,17 @@ The skill makes three kinds of claim, and each needs a different test:
 
 `claude plugin eval` covers the first claim well. It can't do the other two: it has no grader that runs commands after the agent finishes, so hidden tests are out, and it reports cost but not cost per model. The harness covers those.
 
+## Results so far
+
+Four rounds, every build judged blind (full report: https://claude.ai/artifact/DndzbF6C6S6GTzvykA9RQs):
+
+| Round | Tasks | Finding |
+|---|---|---|
+| 1 | website, Go API, Rust CLI | v1 (named agents) scored 6.5 against plain Opus's 6.8 and cost more; its reviewer passed every build. |
+| 2 | the same three plus Tailwind; six arms | A reviewer checklist and written acceptance criteria lifted v2 and lite; lite with Haiku agents scored highest (8.0) for the least money ($0.52). |
+| 3 | features in Tailwind, chi, click, fd | Lite with Haiku agents beat plain Opus in every repo (7.9 against 7.4); a Sonnet orchestrator with an Opus planner cost the most. |
+| 4 | round 3's features with stronger checks, plus a chi bug hunt and a click cross-module change | The shipped lite scored 7.9 against 7.7 for plain Opus at the same cost and took 5.7 minutes against 2.3; a low-effort implementor and a parallel reviewer didn't pay. |
+
 ## Trigger cases (`triggers/`)
 
 There are eight cases: four that should fire the skill and four near-misses that shouldn't (a one-constant bump, a question, a branch review, and a design note with no implementation). Each case seeds the `shop` fixture repo through `scaffold.sh` and stops after eight turns, so a run checks only whether the skill was chosen. A bug-hunt prompt can investigate for a few turns before it reaches for the skill, so keep the cap generous.
