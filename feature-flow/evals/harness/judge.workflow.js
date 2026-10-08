@@ -82,7 +82,7 @@ TASK THE BUILDER WAS GIVEN:
 ${ch.prompt}
 
 BUILD ${b.letter}: ${b.dir}${b.shots ? `\nSCREENSHOTS: ${b.shots}` : ''}${b.diff ? `\nCHANGE (diff against the original repo): ${b.diff}` : ''}
-Look only at this build. Don't open sibling folders. Before building or running anything, copy it: cp -r ${b.dir} /tmp/inspect-${ch.id}-${b.letter} and work in the copy.
+Look only at this build. Don't open sibling folders. Before building or running anything, copy it to a fresh folder: rm -rf /tmp/inspect-${ch.id}-${b.letter} && cp -r ${b.dir} /tmp/inspect-${ch.id}-${b.letter}, and work in the copy.
 
 What to do: read all of the code, then ${PROBES[ch.kind]}
 Record every defect with severity (blocker: a spec requirement fails; major: a real bug or a serious quality problem a reviewer would block on; minor: everything else) and evidence a skeptic could reproduce (the command and what it printed, or file:line).
@@ -97,7 +97,7 @@ function judgePrompt(ch, reports) {
 TASK:
 ${ch.prompt}
 
-BUILDS (read-only; copy one to /tmp/judge-${ch.id}-<letter> before building or running it):
+BUILDS (read-only; before building or running one, copy it to a fresh folder: rm -rf /tmp/judge-${ch.id}-<letter> && cp -r <dir> /tmp/judge-${ch.id}-<letter>):
 ${builds}
 
 Independent inspectors scored each build (they may be calibrated differently from each other):
@@ -112,10 +112,10 @@ const results = await pipeline(
   args,
   ch =>
     parallel(
-      ch.builds.map(b => () =>
+      ch.builds.filter(b => !(ch.reports || []).some(r => r.letter === b.letter)).map(b => () =>
         agent(inspectPrompt(ch, b), { label: `inspect ${ch.id} ${b.letter}`, phase: 'Inspect', schema: INSPECT, effort: 'medium' })
       )
-    ).then(reports => reports.filter(Boolean)),
+    ).then(reports => [...(ch.reports || []), ...reports.filter(Boolean)].sort((a, b) => a.letter.localeCompare(b.letter))),
   (reports, ch) => {
     log(`${ch.id}: ${reports.length}/${ch.builds.length} inspections back, judging`)
     return agent(judgePrompt(ch, reports), { label: `judge ${ch.id}`, phase: 'Judge', schema: JUDGE, effort: 'high' })
