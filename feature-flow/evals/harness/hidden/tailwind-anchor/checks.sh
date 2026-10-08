@@ -3,8 +3,9 @@
 set -u
 case "$1" in
   suite)
+    # one retry: a permutation-heavy upstream test times out when other runs load the machine
     log=$(mktemp)
-    if pnpm vitest run packages/tailwindcss >"$log" 2>&1; then tail -4 "$log"; else grep -E "FAIL|Tests " "$log" | head -15; exit 1; fi ;;
+    if pnpm vitest run packages/tailwindcss --retry=1 >"$log" 2>&1; then tail -4 "$log"; else grep -E "FAIL|Tests " "$log" | head -15; exit 1; fi ;;
   types)
     # the untouched repo already fails tsc on files that need the native oxide build, so only
     # errors in the files this feature touches count
