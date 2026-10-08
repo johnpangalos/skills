@@ -19,6 +19,8 @@ cd feature-flow
 claude plugin eval . --tag trigger --ablation none --scaffold --trust-plugin --no-publish --max-cost-usd 15
 ```
 
+feature-flow-lite has the same eight cases in `feature-flow-lite/evals/triggers/`, graded on its own skill name; run the same command from `feature-flow-lite/`. Its first run fired on 11 of 12 should-trigger runs (one `gift-cards-on-a-budget` run answered without it) and on none of the 12 near-miss runs, for $4.42.
+
 Pass `--ablation none` here, because a no-skill arm can never fire the skill. Runs execute in an isolated home directory, so other installed skills don't compete for the trigger. Expect about $0.50 per run on Opus. The default is three runs per case.
 
 ## Harness (`harness/`)
