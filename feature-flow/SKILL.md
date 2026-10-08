@@ -1,6 +1,6 @@
 ---
 name: feature-flow
-description: Use when implementing a feature, building a small project, or tracking down and fixing a bug across files, through a capped subagent pipeline (investigate, implement, verify, review, fix) under a tight AI spend budget. The main Opus conversation orchestrates or builds directly; cheaper Sonnet and Haiku subagents implement, verify and review.
+description: Use when implementing a feature, building a small project, or tracking down and fixing a bug across files, through a capped subagent pipeline (investigate, implement, verify, review, fix) under a tight AI spend budget. The main Opus conversation orchestrates; cheaper Sonnet and Haiku subagents implement, verify and review.
 ---
 
 # Feature Flow
@@ -12,10 +12,15 @@ hand-written "dynamic workflow": the main conversation (Opus 5.5, medium effort)
 orchestrates, and subagents (mostly Sonnet 5.5, some Haiku 5.5) do the work. The aim is
 consistent results at the lowest spend that still gives a trustworthy review.
 
-Orchestration has a fixed cost: the main conversation spends roughly $0.30-0.50 planning,
+Orchestration has a fixed cost: the main conversation spends roughly $0.30-0.40 planning,
 writing handoffs and reading results, about what it costs Opus to build a small project
-outright. So small work takes the direct path (Opus builds, a subagent reviews), and the full
-pipeline is for work big enough that delegating the bulk of it to Sonnet pays for that overhead.
+outright. The savings come from keeping Opus out of the building and fixing: in benchmarks, a
+path where Opus built the change and then worked through review findings cost the most of any
+setup. So every path below hands the building to a subagent.
+
+For a typical feature or fix, the leaner `feature-flow-lite` skill (four roles, Haiku
+subagents) matched or beat this one on quality for less money. Use this skill when you need its
+extra roles: test writer, verifier, debugger, docs writer, security review or migrations.
 
 ## When to use / not use
 
@@ -87,7 +92,7 @@ Decide size and risk, then pick a path:
 | Change | Path |
 |---|---|
 | One-file tweak | main directly -> verifier. |
-| Small: a new small project, or a change you could write yourself in one sitting (roughly under 600 changed lines) | **Direct path**: main builds it, runs the checks, then spawns the reviewer. Fix what it finds yourself. |
+| Small: a new small project, or a change you could write yourself in one sitting (roughly under 600 changed lines) | **Short path**: implementor -> checks (main) -> reviewer -> fix loop |
 | Large: a feature in an existing codebase, or more than you'd write in one sitting | **Pipeline**: (investigator) -> implementor -> verifier -> reviewer -> fix loop |
 | Needs new tests (pipeline) | add test writer, briefed from the acceptance criteria, not the implementation |
 | Risky area (auth, payments, migrations, concurrency) | `risky-reviewer` (opus / medium) instead of `reviewer`; add `security-reviewer` if sensitive |
@@ -110,13 +115,15 @@ Every handoff carries this list word for word under `ACCEPTANCE CRITERIA:`, and 
 checks against it. Numbers in a spec ("at least 8 titles") are floors: build what a careful
 senior developer would ship, not the minimum that passes.
 
-### 3. Direct path
+### 3. Short path
 
-1. Main builds the change and runs the project's checks.
-2. **Reviewer** (or `risky-reviewer`): reviews against the acceptance criteria and its
+1. **Implementor**: builds the change from the acceptance criteria.
+2. Main runs the project's full checks once. Failures go back to the implementor as a fix
+   round.
+3. **Reviewer** (or `risky-reviewer`): reviews against the acceptance criteria and its
    checklist, reproducing edge cases. Returns findings ranked by severity.
-3. Main fixes the blocking findings itself, re-runs the checks, and sends the reviewer the
-   changed hunks for one incremental re-review if a finding was blocking. Same cap as below.
+4. Blocking findings go back to the implementor, then the checks, then one incremental
+   re-review. Same cap as below. Main doesn't edit code on this path.
 
 ### 4. Pipeline path
 

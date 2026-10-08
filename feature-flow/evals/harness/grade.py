@@ -461,7 +461,7 @@ def grade(run_dir, scenario, arm):
     loaded = any(re.fullmatch(r"((feature-flow(-lite)?):)?feature-flow(-lite)?", name) for name in (t.init or {}).get("skills") or [])
     if bool(arm["skill"]) != loaded:
         checks.append(("setup", "arm loaded the skill as configured", False, f"skill loaded={loaded}, expected {arm['skill']}"))
-    scenario = dict(scenario, _pinned_model=(arm.get("agents") or {}).get("model"))
+    scenario = dict(scenario, _pinned_model=(arm.get("agents") or {}).get("model") or arm.get("roster_model"))
     if not t.result:
         checks.append(("setup", "run reported a result", False, "the trace has no result event, so cost and timing are unknown; re-run it"))
     stats = t.result.get("subagent_stats") or {}

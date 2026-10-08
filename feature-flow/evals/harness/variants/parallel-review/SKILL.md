@@ -24,7 +24,7 @@ prompt with `ROLE: <role>`, and end it with the result template.
 | `investigator` | haiku / low | Read, Grep, Glob | Only on an existing codebase too large to read the relevant parts directly. |
 | `implementor` | haiku / medium | Read, Edit, Write, Bash, Grep, Glob | Every run: builds the change, running targeted tests as it goes and the full checks once at the end. |
 | `simplifier` | haiku / medium | Read, Edit, Grep, Glob | Only when the diff is large. Behavior-preserving cleanup. |
-| `reviewer` | haiku / medium | Read, Grep, Glob, Bash | Every run, after the checks pass. For auth, payments, migrations or concurrency, pass `model: opus` and `effort: medium` on the call. |
+| `reviewer` | haiku / medium | Read, Grep, Glob, Bash | Every run, in parallel with the checks. For auth, payments, migrations or concurrency, pass `model: opus` and `effort: medium` on the call. |
 
 No agent can spawn another; the main conversation spawns all of them.
 
@@ -42,11 +42,13 @@ No agent can spawn another; the main conversation spawns all of them.
 3. **Implementor** with the handoff below. Its CHECKS include a targeted test command (the
    test file or package for the code it changes), so it doesn't run the full suite while it
    works.
-4. **Checks.** Run the project's full test suite and linters yourself, once per round. If they
-   fail, send the failing lines back to the implementor; this counts as a fix round.
-5. **Simplifier**, only for a large diff; re-run the checks after it.
-6. **Reviewer** with the same acceptance criteria. It works through its checklist and
-   reproduces edge cases.
+4. **Checks and review together.** When the implementor returns, spawn the reviewer in the
+   background with the same acceptance criteria, and run the project's full test suite and
+   linters yourself while the reviewer works.
+5. **Simplifier**, only for a large diff, after the review; re-run the checks after it.
+6. **Merge the results.** Wait for the reviewer. If the checks failed or the reviewer found
+   blocking issues, send the failing lines and the findings to the implementor together; that
+   is one fix round. The reviewer works through its checklist and reproduces edge cases.
 7. **Fix loop.** Blocking findings go back to the implementor, then checks, then an
    incremental review of only the changed hunks plus the reviewer's earlier findings. Stop
    after two rounds and report what passed, what still fails, and the open findings. Style

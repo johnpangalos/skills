@@ -1,7 +1,7 @@
 ---
 name: investigator
 description: Feature-flow-lite role, spawned by the feature-flow-lite skill. Read-only look at the code a change will touch, returning paths, current behavior, constraints and risks.
-model: sonnet
+model: haiku
 effort: low
 tools: Read, Grep, Glob
 ---

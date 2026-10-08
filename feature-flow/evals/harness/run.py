@@ -66,12 +66,11 @@ def prepare(workspace, scenario, arm):
 
 def skill_source(ref, folder=None):
     """A skill folder (default feature-flow) at a git ref, or in the working tree when ref is None."""
-    if folder:
-        return (SKILL_DIR.parent / folder).resolve()
+    source = (SKILL_DIR.parent / folder).resolve() if folder else SKILL_DIR
     if not ref:
-        return SKILL_DIR
+        return source
     def git(*args):
-        return subprocess.run(["git", *args], cwd=SKILL_DIR, capture_output=True, check=True).stdout
+        return subprocess.run(["git", *args], cwd=source, capture_output=True, check=True).stdout
 
     prefix = git("rev-parse", "--show-prefix").decode().strip()
     root = git("rev-parse", "--show-toplevel").decode().strip()
@@ -89,8 +88,13 @@ def customize(source, variant=None, agents=None):
     if variant:
         shutil.copytree(HERE / "variants" / variant, dest, dirs_exist_ok=True)
     for agent in (dest / "agents").glob("*.md") if agents else ():
-        text = re.sub(r"^model: .*$", f"model: {agents['model']}", agent.read_text(), count=1, flags=re.M)
-        agent.write_text(re.sub(r"^effort: .*$", f"effort: {agents['effort']}", text, count=1, flags=re.M))
+        # "model"/"effort" pin every agent; "only" pins named agents and wins over the rest
+        pin = {k: agents[k] for k in ("model", "effort") if k in agents}
+        pin.update((agents.get("only") or {}).get(agent.stem, {}))
+        text = agent.read_text()
+        for key, value in pin.items():
+            text = re.sub(rf"^{key}: .*$", f"{key}: {value}", text, count=1, flags=re.M)
+        agent.write_text(text)
     return dest
 
 
