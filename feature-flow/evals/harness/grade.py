@@ -224,6 +224,8 @@ def roles_use_roster_models(t, sc, rule):
     bad = []
     for s in t.main_spawns:
         allowed = set(ROSTER.get(s["role"], ROSTER["other"]))
+        if sc.get("_pinned_model"):
+            allowed = {sc["_pinned_model"]}  # the arm pins every agent to one model
         if sc.get("risky") and s["role"] == "reviewer":
             allowed.add("opus")
         earlier = [p for p in t.of_role(s["role"]) if p["idx"] < s["idx"]]
@@ -450,6 +452,7 @@ def grade(run_dir, scenario, arm):
     loaded = any(re.fullmatch(r"((feature-flow(-lite)?):)?feature-flow(-lite)?", name) for name in (t.init or {}).get("skills") or [])
     if bool(arm["skill"]) != loaded:
         checks.append(("setup", "arm loaded the skill as configured", False, f"skill loaded={loaded}, expected {arm['skill']}"))
+    scenario = dict(scenario, _pinned_model=(arm.get("agents") or {}).get("model"))
     rules = list(scenario.get("checks", []))
     if scenario.get("pipeline", True):
         rules = [dict(r, kind="process") for r in PIPELINE_RULES] + rules

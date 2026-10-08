@@ -17,6 +17,7 @@ import concurrent.futures
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -78,6 +79,16 @@ def skill_source(ref, folder=None):
     archive = subprocess.run(["git", "archive", ref, "--", prefix], cwd=root, capture_output=True, check=True).stdout
     subprocess.run(["tar", "-x", "-C", str(dest)], input=archive, check=True)
     return dest / prefix
+
+
+def pin_agents(source, model, effort):
+    """A temp copy of a skill folder with every agent's model and effort rewritten."""
+    dest = pathlib.Path(tempfile.mkdtemp(prefix="ff-skill-pinned-")) / source.name
+    shutil.copytree(source, dest, ignore=shutil.ignore_patterns("evals"))
+    for agent in (dest / "agents").glob("*.md"):
+        text = re.sub(r"^model: .*$", f"model: {model}", agent.read_text(), count=1, flags=re.M)
+        agent.write_text(re.sub(r"^effort: .*$", f"effort: {effort}", text, count=1, flags=re.M))
+    return dest
 
 
 def command(scenario, arm, prompt):
@@ -187,6 +198,8 @@ def main():
         arm = config["arms"][name]
         if arm["skill"]:
             arm["source"] = skill_source(arm.get("ref"), arm.get("folder"))
+            if arm.get("agents"):
+                arm["source"] = pin_agents(arm["source"], arm["agents"]["model"], arm["agents"]["effort"])
     jobs = []
     for sid in args.scenarios.split(","):
         scenario = by_id[sid]
