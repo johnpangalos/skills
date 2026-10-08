@@ -49,12 +49,18 @@ Each run writes `trace.jsonl`, `diff.patch`, `meta.json`, and a `grading.json` i
 | `website-bookshop` | Greenfield site in plain HTML/CSS/JS. Checks pages, links, no network requests, accessibility basics, and a headless render at 360px with JS off. |
 | `api-go-bookmarks` | Greenfield REST API in Go against a fixed contract. Checks build, vet and tests, CRUD, the 400/422/404 split, the tag filter, and 200 concurrent creates. |
 | `cli-rust-spend` | Greenfield CLI in Rust against a fixed contract. Checks build and tests, exact totals, and that usage errors exit 2 and change nothing. |
+| `tailwind-anchor` | Feature in tailwindlabs/tailwindcss (TypeScript): anchor-positioning utilities. Hidden vitest file, full package suite, tsc on touched files, Prettier, changelog. |
+| `chi-etag` | Feature in go-chi/chi (Go): an ETag middleware. Hidden tests in their own package with `-race`, full suite, vet, gofmt, README table row. |
+| `click-duration` | Feature in pallets/click (Python): a `Duration` parameter type. Hidden pytest file, full suite, strict mypy, ruff, changelog, docs. |
+| `fd-count` | Feature in sharkdp/fd (Rust): `--count`. Black-box tests against the built binary, full suite, clippy, fmt, changelog, man page, and the zsh completion (a convention the prompt doesn't mention). |
+
+The four feature scenarios clone the repo at a pinned commit through `fixtures/setup_repo.sh` (or `setup_tailwind.sh`), caching clones and builds under `~/.cache/ff-evals`. Each hidden folder holds a `reference.patch`; the hidden checks fail on the untouched repo and pass with it applied.
 
 Process checks (`kind: process`) apply only to the skill arm. Outcome checks (hidden tests, `./check.sh`, untouched files, the final answer) apply to every arm. Every pipeline scenario also gets the generic rules in `grade.py:PIPELINE_RULES`: pinned models (an alias on the call, or a named agent's frontmatter), named agents used when they're loaded, roster models (taken from the model each subagent actually ran on), the handoff and result templates, stages announced before the first spawn, checks after the last edit and before each review, the 2-round cap, at most one debugger, nested verifiers awaited, no depth-limit refusals, and a final report that names the agents.
 
 ### Arms
 
-`scenarios.json` defines four arms. All of them run the main session on Opus at medium effort, except `sonnet-solo`:
+`scenarios.json` defines these arms. All of them run the main session on Opus at medium effort, except `sonnet-solo` and `sonnet-planner`:
 
 | Arm | What runs |
 |---|---|
@@ -62,8 +68,11 @@ Process checks (`kind: process`) apply only to the skill arm. Outcome checks (hi
 | `skill-v0` | The skill as first committed (`ref: 0263562`), loaded as a bare project skill with no agents, so you can measure a change against it |
 | `baseline` | No skill |
 | `sonnet-solo` | No skill, with Sonnet as the main model |
+| `skill-v1`, `lite`, `skill-haiku`, `lite-haiku` | v1 at its ref; feature-flow-lite; v2 and lite with every agent pinned to Haiku at high effort |
+| `lite-haiku-medium-wo` | lite with Haiku agents at medium effort and the `write-once` implementor variant |
+| `sonnet-planner` | Sonnet main session running lite with the `sonnet-planner` variant: an Opus `planner` agent writes the plan and acceptance criteria |
 
-An arm can pin any git `ref`. The harness extracts that version of the skill folder with `git archive`. The skill's value claim is that `skill` matches `baseline` on outcomes for less money. Running `sonnet-solo` too answers whether the cheaper main model alone gets the same result.
+An arm can pin any git `ref`, load another skill `folder`, lay a variant's files over the skill (`variant`: `harness/variants/<name>/`, which can replace SKILL.md or add and replace agents), and pin every agent's model and effort (`agents`). The harness extracts that version of the skill folder with `git archive`. The skill's value claim is that `skill` matches `baseline` on outcomes for less money. Running `sonnet-solo` too answers whether the cheaper main model alone gets the same result.
 
 ### Gotchas
 
@@ -88,7 +97,7 @@ Hidden checks only tell you that a build works. To compare quality, anonymize a 
 python3 prepare_blind.py /tmp/ff-judge results/<batch> [results/<batch> ...]   # shuffled letters, site screenshots, diffs for repo runs
 ```
 
-Then ask Claude Code to run `judge.workflow.js` as a workflow, passing the challenges (`id`, `kind`, `prompt`, and the `builds` letters and dirs) as `args`. One inspector per build builds it, runs it, probes edge cases, and scores it. One judge per challenge then reproduces every blocker and major defect the inspectors claimed and ranks the builds on a single scale. Unblind the results with `results/<batch>/blind-mapping.json`.
+Then ask Claude Code to run `judge.workflow.js` as a workflow, passing the challenges (`id`, `kind`, `prompt`, and the `builds` letters and dirs) as `args`. For a change in an existing repo use `kind: "feature"`, pass each build's `diff`, and give a `probe`: the commands to run in the inspector's copy and the edge cases to try. Blind copies leave out build output and virtualenvs, so probes should rebuild or re-sync first. One inspector per build builds it, runs it, probes edge cases, and scores it. One judge per challenge then reproduces every blocker and major defect the inspectors claimed and ranks the builds on a single scale. Unblind the results with `results/<batch>/blind-mapping.json`.
 
 ### Adding a scenario
 
