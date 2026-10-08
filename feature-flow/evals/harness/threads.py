@@ -4,7 +4,8 @@
 
 Reads per-message usage from each trace (deduplicated by message id), prices it, and
 reports for each run: main-thread vs subagent cost, how much of each was cache reads,
-cache writes, fresh input and output, and the main thread's final context size. That
+cache writes, fresh input and output, the main thread's final context size, and speed
+(wall-clock, time waiting on the model, summed subagent time). That
 context is what every follow-up turn in the same session re-reads, so it sets the cost
 of continuing the conversation after the task.
 """
@@ -78,6 +79,7 @@ def fix_output(usage, trace):
                 result = json.loads(line)
             except json.JSONDecodeError:
                 pass
+    usage["_result"] = result
     for model, mu in (result.get("modelUsage") or {}).items():
         fam = family(model)
         slots = [usage[t][fam] for t in usage if fam in usage[t]]
@@ -90,10 +92,21 @@ def analyze(run_dir):
     run_dir = pathlib.Path(run_dir)
     usage, context = thread_usage(run_dir / "trace.jsonl")
     fix_output(usage, run_dir / "trace.jsonl")
+    result = usage.pop("_result")
+    subagent_s = 0.0
+    for line in open(run_dir / "trace.jsonl", errors="replace"):
+        if "task_notification" in line:
+            try:
+                subagent_s += ((json.loads(line).get("usage") or {}).get("duration_ms") or 0) / 1000
+            except json.JSONDecodeError:
+                pass
     meta = json.loads((run_dir / "meta.json").read_text())
     grading = json.loads((run_dir / "grading.json").read_text())
     row = {"scenario": meta["scenario"], "arm": meta["arm"], "rep": meta["rep"],
-           "reported_cost": grading["metrics"]["cost_usd"], "main_context_tokens": context}
+           "reported_cost": grading["metrics"]["cost_usd"], "main_context_tokens": context,
+           # wall: the whole claude run; api: time waiting on the model; subagents: summed subagent run time
+           "wall_s": meta.get("wall_s"), "api_s": round((result.get("duration_api_ms") or 0) / 1000, 1),
+           "subagent_s": round(subagent_s, 1)}
     for thread in ("main", "sub"):
         total = {"read": 0, "write": 0, "input": 0, "output": 0}
         for fam, s in usage.get(thread, {}).items():
