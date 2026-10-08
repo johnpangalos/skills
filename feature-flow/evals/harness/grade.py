@@ -453,6 +453,11 @@ def grade(run_dir, scenario, arm):
     if bool(arm["skill"]) != loaded:
         checks.append(("setup", "arm loaded the skill as configured", False, f"skill loaded={loaded}, expected {arm['skill']}"))
     scenario = dict(scenario, _pinned_model=(arm.get("agents") or {}).get("model"))
+    stats = t.result.get("subagent_stats") or {}
+    settled = stats.get("completed", 0) + stats.get("failed", 0) + sum((stats.get("killed") or {}).values())
+    if stats.get("spawned", 0) > settled:
+        checks.append(("setup", "run waited for its subagents", False,
+                       f"{stats['spawned'] - settled} of {stats['spawned']} subagents still running when the run ended; re-run it"))
     rules = list(scenario.get("checks", []))
     if scenario.get("pipeline", True):
         rules = [dict(r, kind="process") for r in PIPELINE_RULES] + rules
