@@ -5,11 +5,11 @@ description: Use when implementing a feature, building a small project, or track
 
 # Feature Flow Lite
 
-The core of feature-flow with nothing else: four named agents and one loop. The main
-conversation (Opus) writes the acceptance criteria, hands the work to Haiku, runs the checks
-itself, and stops after two fix rounds. In blind-judged benchmarks on features in real repos,
-this beat plain Opus on quality at about the same cost; it takes roughly three times as long.
-The acceptance criteria and the reviewer's checklist matter more than the subagents' model.
+Four named agents and one loop. The main conversation (Opus) writes the acceptance criteria,
+hands the work to Haiku, runs the checks itself, and stops after two fix rounds. In
+blind-judged benchmarks on features and bug fixes in real repos, this scored above plain Opus
+at about the same cost, and took about two and a half times as long. The acceptance criteria
+and the reviewer's checklist matter more than the subagents' model.
 
 ## Roles
 
