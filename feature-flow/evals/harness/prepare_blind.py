@@ -18,7 +18,7 @@ import subprocess
 import sys
 
 HERE = pathlib.Path(__file__).resolve().parent
-BUILD_OUTPUT = ("target", "bin", "node_modules", "__pycache__", ".ruff_cache", ".turbo", "dist")
+BUILD_OUTPUT = ("target", "bin", "node_modules", "__pycache__", ".ruff_cache", ".mypy_cache", ".venv", ".turbo", "dist")
 
 
 def has_history(workspace):

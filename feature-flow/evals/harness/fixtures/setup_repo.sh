@@ -14,7 +14,7 @@ git clone -q --no-checkout "$cache" .
 git remote remove origin
 git checkout -q -B main "$commit"
 case "$name" in
-  chi) go mod download ;;
+  chi) go mod download 2>/dev/null ;;
   click) uv sync -q --frozen ;;
   fd)
     # seed target/ from a cached build so each run only recompiles fd itself
