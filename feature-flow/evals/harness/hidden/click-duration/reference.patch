@@ -1,0 +1,192 @@
+diff --git a/CHANGES.md b/CHANGES.md
+index 0c26e01..af7cda6 100644
+--- a/CHANGES.md
++++ b/CHANGES.md
+@@ -19,6 +19,9 @@ Unreleased
+   for options, so its value changes from `my_option` to `--my-option`. Click no
+   longer reads it, and a subclass that overrides it gets a warning when the class
+   is defined. {pr}`3877`
++- Add the {class}`Duration` parameter type, which converts values like `90s`,
++  `5m` and `1h30m` to {class}`~datetime.timedelta`, with optional `min` and
++  `max` bounds.
+ 
+ ## Version 8.5.1
+ 
+diff --git a/docs/api.md b/docs/api.md
+index df62cf5..23c0d94 100644
+--- a/docs/api.md
++++ b/docs/api.md
+@@ -256,6 +256,10 @@ classes and functions.
+ .. autoclass:: DateTime
+ ```
+ 
++```{eval-rst}
++.. autoclass:: Duration
++```
++
+ ```{eval-rst}
+ .. autoclass:: Tuple
+ ```
+diff --git a/docs/parameter-types.md b/docs/parameter-types.md
+index 470eb07..8a92b06 100644
+--- a/docs/parameter-types.md
++++ b/docs/parameter-types.md
+@@ -133,6 +133,11 @@ The supported parameter {ref}`click-api-types` are
+        :noindex:
+ ```
+ 
++```{eval-rst}
++*   .. autoclass:: Duration
++       :noindex:
++```
++
+ ```{eval-rst}
+ *   .. autoclass:: File
+        :noindex:
+diff --git a/src/click/__init__.py b/src/click/__init__.py
+index a34ab02..61f8c42 100644
+--- a/src/click/__init__.py
++++ b/src/click/__init__.py
+@@ -56,6 +56,7 @@ from .termui import unstyle as unstyle
+ from .types import BOOL as BOOL
+ from .types import Choice as Choice
+ from .types import DateTime as DateTime
++from .types import Duration as Duration
+ from .types import File as File
+ from .types import FLOAT as FLOAT
+ from .types import FloatRange as FloatRange
+diff --git a/src/click/types.py b/src/click/types.py
+index b6e98a9..4a02d2a 100644
+--- a/src/click/types.py
++++ b/src/click/types.py
+@@ -4,11 +4,13 @@ import abc
+ import collections.abc as cabc
+ import enum
+ import os
++import re
+ import stat
+ import sys
+ import typing as t
+ import uuid
+ from datetime import datetime
++from datetime import timedelta
+ from gettext import gettext as _
+ from gettext import ngettext
+ 
+@@ -590,6 +592,116 @@ class DateTime(ParamType[datetime]):
+         return "DateTime"
+ 
+ 
++class DurationInfoDict(ParamTypeInfoDict):
++    min: timedelta | None
++    max: timedelta | None
++
++
++_DURATION_RE = re.compile(
++    r"(?:(?P<d>\d+)d)?(?:(?P<h>\d+)h)?(?:(?P<m>\d+)m(?!s))?"
++    r"(?:(?P<s>\d+)s)?(?:(?P<ms>\d+)ms)?"
++)
++
++
++class Duration(ParamType[timedelta]):
++    """The Duration type converts strings like ``90s``, ``5m``,
++    ``1h30m`` or ``2d4h`` into :class:`~datetime.timedelta` objects.
++
++    A value is one or more ``<integer><unit>`` parts, largest unit first
++    and each unit at most once, using ``d``, ``h``, ``m``, ``s`` and
++    ``ms``. A bare integer is a number of seconds.
++
++    :param min: The smallest accepted duration, inclusive.
++    :param max: The largest accepted duration, inclusive.
++
++    .. versionadded:: 8.6
++    """
++
++    name = "duration"
++
++    def __init__(
++        self, min: timedelta | None = None, max: timedelta | None = None
++    ) -> None:
++        self.min = min
++        self.max = max
++
++    def to_info_dict(self) -> DurationInfoDict:
++        return {"min": self.min, "max": self.max, **super().to_info_dict()}
++
++    def _parse(self, value: str) -> timedelta | None:
++        value = value.strip()
++
++        if value.isdigit():
++            return timedelta(seconds=int(value))
++
++        match = _DURATION_RE.fullmatch(value)
++
++        if not value or match is None:
++            return None
++
++        parts = {k: int(v) for k, v in match.groupdict().items() if v is not None}
++        return timedelta(
++            days=parts.get("d", 0),
++            hours=parts.get("h", 0),
++            minutes=parts.get("m", 0),
++            seconds=parts.get("s", 0),
++            milliseconds=parts.get("ms", 0),
++        )
++
++    def convert(
++        self, value: t.Any, param: Parameter | None, ctx: Context | None
++    ) -> timedelta:
++        if isinstance(value, timedelta):
++            rv: timedelta | None = value
++        else:
++            try:
++                rv = self._parse(str(value))
++            except OverflowError:
++                self.fail(
++                    _("{value!r} is too long a duration.").format(value=value),
++                    param,
++                    ctx,
++                )
++
++        if rv is None:
++            self.fail(
++                _(
++                    "{value!r} is not a valid duration. Use values like"
++                    " '90s', '5m' or '1h30m'."
++                ).format(value=value),
++                param,
++                ctx,
++            )
++
++        if (self.min is not None and rv < self.min) or (
++            self.max is not None and rv > self.max
++        ):
++            self.fail(
++                _("{value} is not in the range {range}.").format(
++                    value=rv, range=self._describe_range()
++                ),
++                param,
++                ctx,
++            )
++
++        return rv
++
++    def _describe_range(self) -> str:
++        if self.min is None:
++            return f"x<={self.max}"
++
++        if self.max is None:
++            return f"x>={self.min}"
++
++        return f"{self.min}<=x<={self.max}"
++
++    def __repr__(self) -> str:
++        if self.min is None and self.max is None:
++            return "Duration"
++
++        return f"<Duration {self._describe_range()}>"
++
++
+ class _NumberParamTypeBase(
+     ParamType[_ValueT_co], t.Generic[_ValueT_contra, _ValueT_co]
+ ):

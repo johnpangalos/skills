@@ -81,13 +81,16 @@ def skill_source(ref, folder=None):
     return dest / prefix
 
 
-def pin_agents(source, model, effort):
-    """A temp copy of a skill folder with every agent's model and effort rewritten."""
-    dest = pathlib.Path(tempfile.mkdtemp(prefix="ff-skill-pinned-")) / source.name
+def customize(source, variant=None, agents=None):
+    """A temp copy of a skill folder with a variant's files laid over it (variants/<name>/, which
+    can replace SKILL.md or add and replace agents), then every agent's model and effort pinned."""
+    dest = pathlib.Path(tempfile.mkdtemp(prefix="ff-skill-custom-")) / source.name
     shutil.copytree(source, dest, ignore=shutil.ignore_patterns("evals"))
-    for agent in (dest / "agents").glob("*.md"):
-        text = re.sub(r"^model: .*$", f"model: {model}", agent.read_text(), count=1, flags=re.M)
-        agent.write_text(re.sub(r"^effort: .*$", f"effort: {effort}", text, count=1, flags=re.M))
+    if variant:
+        shutil.copytree(HERE / "variants" / variant, dest, dirs_exist_ok=True)
+    for agent in (dest / "agents").glob("*.md") if agents else ():
+        text = re.sub(r"^model: .*$", f"model: {agents['model']}", agent.read_text(), count=1, flags=re.M)
+        agent.write_text(re.sub(r"^effort: .*$", f"effort: {agents['effort']}", text, count=1, flags=re.M))
     return dest
 
 
@@ -198,8 +201,8 @@ def main():
         arm = config["arms"][name]
         if arm["skill"]:
             arm["source"] = skill_source(arm.get("ref"), arm.get("folder"))
-            if arm.get("agents"):
-                arm["source"] = pin_agents(arm["source"], arm["agents"]["model"], arm["agents"]["effort"])
+            if arm.get("variant") or arm.get("agents"):
+                arm["source"] = customize(arm["source"], arm.get("variant"), arm.get("agents"))
     jobs = []
     for sid in args.scenarios.split(","):
         scenario = by_id[sid]

@@ -22,6 +22,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 ROLE_PATTERNS = [
     ("security", r"secur"),
     ("test_writer", r"test[ -]?writer|write (the )?tests|tests? author"),
+    ("planner", r"plann"),
     ("investigator", r"investigat"),
     ("explorer", r"explor|mapper|locat"),
     ("implementor", r"implement"),
@@ -36,6 +37,7 @@ ROLE_PATTERNS = [
 
 # models the skill's roster allows per role
 ROSTER = {
+    "planner": {"opus"},
     "investigator": {"sonnet", "haiku"},
     "explorer": {"haiku"},
     "implementor": {"sonnet"},
@@ -53,6 +55,7 @@ ROSTER = {
 
 # how the final report may name each role
 ROLE_WORDS = {
+    "planner": r"plann",
     "investigator": r"investigat",
     "explorer": r"explor",
     "implementor": r"implement",
@@ -174,7 +177,7 @@ AGENT_ROLES = {
     "simplifier": "simplifier", "reviewer": "reviewer", "risky-reviewer": "reviewer",
     "verifier": "verifier", "test-writer": "test_writer", "debugger": "debugger",
     "docs-writer": "docs", "summarizer": "summarizer", "security-reviewer": "security",
-    "migration": "migration",
+    "migration": "migration", "planner": "planner",
 }
 
 
@@ -239,6 +242,8 @@ def roles_use_roster_models(t, sc, rule):
 def handoffs_use_template(t, sc, rule):
     bad = []
     for s in t.main_spawns:
+        if s["role"] == "planner":
+            continue  # the planner gets the user's request as it is
         prompt = (t.started.get(s["id"]) or {}).get("prompt") or s["prompt"]
         need = ["GOAL"] if named_agent(s) else ["ROLE", "GOAL", "RETURN"]
         if s["role"] in ("implementor", "reviewer", "test_writer"):
@@ -255,6 +260,10 @@ def results_use_template(t, sc, rule):
     for s in t.main_spawns:
         text = t.returned_text(s)
         lines = len(text.strip().splitlines())
+        if s["role"] == "planner":  # the planner returns its own template, at up to 60 lines
+            if "ACCEPTANCE CRITERIA:" not in text or lines > max(limit, 60):
+                bad.append(f"planner returned {lines} lines, ACCEPTANCE CRITERIA {'present' if 'ACCEPTANCE CRITERIA:' in text else 'missing'}")
+            continue
         if "STATUS:" not in text:
             bad.append(f"{s['role']} returned no STATUS line")
         elif lines > limit:
