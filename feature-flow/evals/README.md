@@ -54,7 +54,10 @@ Each run writes `trace.jsonl`, `diff.patch`, `meta.json`, and a `grading.json` i
 | `click-duration` | Feature in pallets/click (Python): a `Duration` parameter type. Hidden pytest file, full suite, strict mypy, ruff, changelog, docs. |
 | `fd-count` | Feature in sharkdp/fd (Rust): `--count`. Black-box tests against the built binary, full suite, clippy, fmt, changelog, man page, and the zsh completion (a convention the prompt doesn't mention). |
 
-The four feature scenarios clone the repo at a pinned commit through `fixtures/setup_repo.sh` (or `setup_tailwind.sh`), caching clones and builds under `~/.cache/ff-evals`. Each hidden folder holds a `reference.patch`; the hidden checks fail on the untouched repo and pass with it applied.
+| `chi-mount-routes` | Bug hunt in go-chi/chi, pinned just before the upstream fix for #830: Walk and Routes() drop a handler that shares a pattern with Route()/Mount(). The prompt is the symptom, not the cause. Hidden checks are the upstream regression tests (renamed) plus one more, the suite, vet, gofmt, a regression test added, and no edits to middleware/. |
+| `click-param-spec` | Cross-module feature in pallets/click, pinned just before upstream #3877: `Parameter.spec`, `get_help_spec` moved to `Parameter`, specs in error messages, and a `human_readable_name` deprecation that warns on subclass overrides. Hidden checks are the upstream tests plus extras, the suite (an existing test must be updated), mypy, ruff, changelog, upgrade guide and parameters docs. |
+
+The feature and bug-hunt scenarios clone the repo at a pinned commit through `fixtures/setup_repo.sh` (or `setup_tailwind.sh`), caching clones and builds under `~/.cache/ff-evals`. Each hidden folder holds a `reference.patch`; the hidden checks fail on the untouched repo and pass with it applied.
 
 Process checks (`kind: process`) apply only to the skill arm. Outcome checks (hidden tests, `./check.sh`, untouched files, the final answer) apply to every arm. Every pipeline scenario also gets the generic rules in `grade.py:PIPELINE_RULES`: pinned models (an alias on the call, or a named agent's frontmatter), named agents used when they're loaded, roster models (taken from the model each subagent actually ran on), the handoff and result templates, stages announced before the first spawn, checks after the last edit and before each review, the 2-round cap, at most one debugger, nested verifiers awaited, no depth-limit refusals, and a final report that names the agents.
 
@@ -71,6 +74,11 @@ Process checks (`kind: process`) apply only to the skill arm. Outcome checks (hi
 | `skill-v1`, `lite`, `skill-haiku`, `lite-haiku` | v1 at its ref; feature-flow-lite; v2 and lite with every agent pinned to Haiku at high effort |
 | `lite-haiku-medium-wo` | lite with Haiku agents at medium effort and the `write-once` implementor variant |
 | `sonnet-planner` | Sonnet main session running lite with the `sonnet-planner` variant: an Opus `planner` agent writes the plan and acceptance criteria |
+| `lite-v2` | The working-tree feature-flow-lite: Haiku agents at medium effort, write-once implementor with targeted tests, conventions in the acceptance criteria |
+| `lite-v2-impl-low` | lite-v2 with only the implementor at low effort (`agents.only`) |
+| `lite-v2-parallel` | lite-v2 with the `parallel-review` variant: the reviewer runs in the background while the orchestrator runs the checks |
+
+The round-3 arms (`lite`, `lite-haiku`, `lite-haiku-medium-wo`, `sonnet-planner`, `skill-haiku`) and `skill-v2` pin `ref: 2540fb3`, the commit before lite moved to Haiku and v2 lost its direct path, so they stay reproducible. `roster_model` tells the grader which model every role should run on for an arm whose skill pins one model throughout.
 
 An arm can pin any git `ref`, load another skill `folder`, lay a variant's files over the skill (`variant`: `harness/variants/<name>/`, which can replace SKILL.md or add and replace agents), and pin every agent's model and effort (`agents`). The harness extracts that version of the skill folder with `git archive`. The skill's value claim is that `skill` matches `baseline` on outcomes for less money. Running `sonnet-solo` too answers whether the cheaper main model alone gets the same result.
 
@@ -97,7 +105,7 @@ Hidden checks only tell you that a build works. To compare quality, anonymize a 
 python3 prepare_blind.py /tmp/ff-judge results/<batch> [results/<batch> ...]   # shuffled letters, site screenshots, diffs for repo runs
 ```
 
-Then ask Claude Code to run `judge.workflow.js` as a workflow, passing the challenges (`id`, `kind`, `prompt`, and the `builds` letters and dirs) as `args`. For a change in an existing repo use `kind: "feature"`, pass each build's `diff`, and give a `probe`: the commands to run in the inspector's copy and the edge cases to try. Blind copies leave out build output and virtualenvs, so probes should rebuild or re-sync first. One inspector per build builds it, runs it, probes edge cases, and scores it. One judge per challenge then reproduces every blocker and major defect the inspectors claimed and ranks the builds on a single scale. Unblind the results with `results/<batch>/blind-mapping.json`.
+Then ask Claude Code to run `judge.workflow.js` as a workflow, passing the challenges (`id`, `kind`, `prompt`, and the `builds` letters and dirs) as `args`. For a change in an existing repo use `kind: "feature"`, pass each build's `diff`, and give a `probe`: the commands to run in the inspector's copy and the edge cases to try. Blind copies leave out build output and virtualenvs, so probes should rebuild or re-sync first. One inspector per build builds it, runs it, probes edge cases, and scores it. One judge per challenge (or `judges: N` independent ones, to measure judge noise) then reproduces every blocker and major defect the inspectors claimed and ranks the builds on a single scale. Unblind the results with `results/<batch>/blind-mapping.json`.
 
 ### Adding a scenario
 
