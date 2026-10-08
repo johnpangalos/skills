@@ -36,7 +36,7 @@ def main(dest, *batches):
     mapping = {}
     for scenario, runs in by_scenario.items():
         runs.sort(key=lambda r: hashlib.sha256(str(r[0]).encode()).hexdigest())
-        for letter, (run_dir, meta) in zip("ABCDEFGHIJKL", runs):
+        for letter, (run_dir, meta) in zip("ABCDEFGHIJKLMNOPQRSTUVWX", runs):
             workspace = pathlib.Path(meta["workspace"])
             keep_git = has_history(workspace)
             target = dest / scenario / letter

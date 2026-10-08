@@ -1,8 +1,10 @@
 package etaghidden
 
 import (
+	"bufio"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -51,6 +53,21 @@ func server(t *testing.T) *httptest.Server {
 	r.Post("/hello", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusCreated)
 		w.Write([]byte("posted"))
+	})
+	r.Get("/flushed", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("part1"))
+		http.NewResponseController(w).Flush() // the error, if any, is fine: the response is buffered
+		w.Write([]byte("part2"))
+	})
+	r.Get("/upgrade", func(w http.ResponseWriter, r *http.Request) {
+		conn, buf, err := http.NewResponseController(w).Hijack()
+		if err != nil {
+			http.Error(w, "hijack failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer conn.Close()
+		buf.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: test\r\n\r\nhello")
+		buf.Flush()
 	})
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
@@ -240,5 +257,30 @@ func TestConcurrentRequests(t *testing.T) {
 	close(errs)
 	for e := range errs {
 		t.Fatal(e)
+	}
+}
+
+func TestFlushDoesNotBypassTheBuffer(t *testing.T) {
+	srv := server(t)
+	r := do(t, srv, "GET", "/flushed")
+	if r.status != 200 || r.body != "part1part2" || r.etag == "" {
+		t.Fatalf("got %d %q etag %q", r.status, r.body, r.etag)
+	}
+	if c := do(t, srv, "GET", "/flushed", r.etag); c.status != 304 || c.body != "" {
+		t.Fatalf("conditional request after a handler Flush: %d %q", c.status, c.body)
+	}
+}
+
+func TestHijackPassesThrough(t *testing.T) {
+	srv := server(t)
+	conn, err := net.Dial("tcp", strings.TrimPrefix(srv.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	fmt.Fprintf(conn, "GET /upgrade HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: test\r\n\r\n")
+	line, err := bufio.NewReader(conn).ReadString('\n')
+	if err != nil || !strings.Contains(line, "101") {
+		t.Fatalf("an upgrade behind ETag should hijack the connection; got %q (%v)", line, err)
 	}
 }

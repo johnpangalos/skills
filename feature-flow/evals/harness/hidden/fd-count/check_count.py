@@ -72,6 +72,11 @@ with tempfile.TemporaryDirectory() as root:
         r = fd(*args, "--count", cwd=root) if args[0] not in ("-x", "-X") else r
         check(f"{args[0]} before --count also conflicts", r.returncode == 2, f"exit {r.returncode}")
 
+    # the usage error names only the flags the user passed
+    for args, absent in [(["-l"], "--exec"), (["-x", "echo"], "--list-details"), (["-0"], "--exec")]:
+        r = fd("--count", *args, cwd=root)
+        check(f"--count {args[0]} error doesn't mention {absent}", absent not in r.stderr, r.stderr.strip()[:160])
+
 with tempfile.TemporaryDirectory() as root:
     # enough results that fd switches from buffering to streaming mode
     for d in range(30):

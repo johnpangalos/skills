@@ -1,5 +1,5 @@
 #!/bin/bash
-# checks.sh <part>: suite | types | format | changelog
+# checks.sh <part>: suite | types | format | order | changelog
 set -u
 case "$1" in
   suite)
@@ -16,6 +16,10 @@ case "$1" in
     files=$(git diff --name-only HEAD -- '*.ts' 'CHANGELOG.md'; git ls-files --others --exclude-standard -- '*.ts')
     [ -z "$files" ] && { echo "no changed files"; exit 1; }
     echo "$files" | xargs pnpm exec prettier --check 2>&1 | tail -5 ;;
+  order)
+    # new properties go into property-order.ts so the utilities sort next to related ones
+    f=packages/tailwindcss/src/property-order.ts
+    if grep -q "'anchor-name'" "$f" && grep -q "'position-anchor'" "$f"; then echo "both properties in property-order.ts"; else echo "anchor-name or position-anchor missing from property-order.ts"; exit 1; fi ;;
   changelog)
     python3 - <<'PY'
 import re, sys

@@ -123,9 +123,13 @@ const results = await pipeline(
       )
     ).then(reports => [...(ch.reports || []), ...reports.filter(Boolean)].sort((a, b) => a.letter.localeCompare(b.letter))),
   (reports, ch) => {
-    log(`${ch.id}: ${reports.length}/${ch.builds.length} inspections back, judging`)
-    return agent(judgePrompt(ch, reports), { label: `judge ${ch.id}`, phase: 'Judge', schema: JUDGE, effort: 'high' })
-      .then(judge => ({ id: ch.id, reports, judge }))
+    // ch.judges independent judges (default 1) score the same reports; their spread measures judge noise
+    const n = ch.judges || 1
+    log(`${ch.id}: ${reports.length}/${ch.builds.length} inspections back, ${n} judge(s)`)
+    return parallel(Array.from({ length: n }, (_, i) => () =>
+      agent(judgePrompt(ch, reports) + (n > 1 ? `\n\n(You are judge ${i + 1} of ${n}; the others work independently.)` : ''),
+        { label: `judge ${ch.id}${n > 1 ? ` #${i + 1}` : ''}`, phase: 'Judge', schema: JUDGE, effort: 'high' })
+    )).then(judges => ({ id: ch.id, reports, judge: judges.filter(Boolean)[0], judges: judges.filter(Boolean) }))
   }
 )
 return results.filter(Boolean)

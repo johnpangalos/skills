@@ -107,3 +107,30 @@ def test_info_dict():
     info = click.Duration().to_info_dict()
     assert info["param_type"] == "Duration"
     assert info["name"] == "duration"
+
+
+@pytest.mark.parametrize("value", ["9" * 5000, "9" * 5000 + "s", "1" + "0" * 4400 + "ms"])
+def test_huge_numbers_are_usage_errors(runner, value):
+    result = run(runner, click.Duration(), ["--wait", value])
+    assert result.exit_code == 2, (result.output, result.exception)
+    assert isinstance(result.exception, SystemExit)
+
+
+def test_integer_default_means_seconds(runner):
+    result = run(runner, click.Duration(), [], default=90)
+    assert result.exit_code == 0, (result.output, result.exception)
+    assert "wait=datetime.timedelta(seconds=90)" in result.output
+
+
+def test_negative_timedelta_default_fails(runner):
+    result = run(runner, click.Duration(), [], default=timedelta(seconds=-5))
+    assert result.exit_code != 0
+    assert "wait=" not in result.output
+
+
+def test_bounds_shown_in_help_like_intrange(runner):
+    bounded = click.Duration(min=timedelta(seconds=1), max=timedelta(hours=1))
+    result = run(runner, bounded, ["--help"], help="How long.")
+    line = next(l for l in result.output.splitlines() if "--wait" in l)
+    assert any(s in line for s in ("1s", "0:00:01", "1 s")), line
+    assert any(s in line for s in ("1h", "1:00:00", "3600")), line
