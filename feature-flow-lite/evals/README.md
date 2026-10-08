@@ -12,7 +12,7 @@ The skill makes three kinds of claim, and each needs a different test:
 
 ## Results so far
 
-Four rounds, every build judged blind (full report: https://claude.ai/artifact/DndzbF6C6S6GTzvykA9RQs):
+Four rounds, every build judged blind (full report: https://claude.ai/artifact/DndzbF6C6S6GTzvykA9RQs). Round 4 is the only one run on the released skill and this harness. Its raw results (traces, diffs, gradings, cost split, judging reports and trigger evals) are attached to the `feature-flow-lite-v1` release as `feature-flow-lite-benchmark-round4.tar.gz`. Rounds 1–3 tested earlier skill versions and are kept only as summaries:
 
 | Round | Tasks | Finding |
 |---|---|---|
