@@ -1,12 +1,13 @@
-"""Copy a batch's workspaces into anonymized folders for blind judging.
+"""Copy one or more batches' workspaces into anonymized folders for blind judging.
 
-    python3 prepare_blind.py results/<batch> /tmp/ff-judge
+    python3 prepare_blind.py /tmp/ff-judge results/<batch> [results/<batch> ...]
 
-Each run's workspace lands in <dest>/<scenario>/<letter>/ without .git, .claude,
-build output, or anything else that names the arm. Letters are shuffled per
-scenario by a hash of the run path, so they don't follow arm order. Websites
-also get desktop and no-JS mobile screenshots in <letter>-shots/. The letter ->
-arm mapping goes to <batch>/blind-mapping.json, outside the judges' folders.
+Each run's workspace lands in <dest>/<scenario>/<letter>/ without .claude, build output, or
+anything else that names the arm. Letters are shuffled per scenario by a hash of the run path,
+so they don't follow arm order. For runs on an existing repo (a workspace with prior history),
+git history is kept and the change is also written to <letter>.diff. Websites get desktop and
+no-JS mobile screenshots in <letter>-shots/. The letter -> arm mapping goes to
+<first batch>/blind-mapping.json, outside the judges' folders.
 """
 
 import hashlib
@@ -17,22 +18,34 @@ import subprocess
 import sys
 
 HERE = pathlib.Path(__file__).resolve().parent
-DROP = shutil.ignore_patterns(".git", ".claude", "target", "bin", "node_modules", "__pycache__", ".ruff_cache")
+BUILD_OUTPUT = ("target", "bin", "node_modules", "__pycache__", ".ruff_cache", ".turbo", "dist")
 
 
-def main(batch, dest):
-    batch, dest = pathlib.Path(batch).resolve(), pathlib.Path(dest).resolve()
+def has_history(workspace):
+    out = subprocess.run(["git", "rev-list", "--count", "HEAD"], cwd=workspace, capture_output=True, text=True)
+    return out.returncode == 0 and int(out.stdout.strip() or 0) > 1
+
+
+def main(dest, *batches):
+    dest = pathlib.Path(dest).resolve()
     by_scenario = {}
-    for meta_path in sorted(batch.glob("*/*/rep-*/meta.json")):
-        meta = json.loads(meta_path.read_text())
-        by_scenario.setdefault(meta["scenario"], []).append((meta_path.parent, meta))
+    for batch in batches:
+        for meta_path in sorted(pathlib.Path(batch).resolve().glob("*/*/rep-*/meta.json")):
+            meta = json.loads(meta_path.read_text())
+            by_scenario.setdefault(meta["scenario"], []).append((meta_path.parent, meta))
     mapping = {}
     for scenario, runs in by_scenario.items():
         runs.sort(key=lambda r: hashlib.sha256(str(r[0]).encode()).hexdigest())
         for letter, (run_dir, meta) in zip("ABCDEFGHIJKL", runs):
+            workspace = pathlib.Path(meta["workspace"])
+            keep_git = has_history(workspace)
             target = dest / scenario / letter
             shutil.rmtree(target, ignore_errors=True)
-            shutil.copytree(meta["workspace"], target, ignore=DROP)
+            drop = BUILD_OUTPUT + (".claude",) + (() if keep_git else (".git",))
+            shutil.copytree(workspace, target, ignore=shutil.ignore_patterns(*drop), symlinks=True)
+            if keep_git:
+                diff = subprocess.run("git add -A -N . && git diff HEAD", shell=True, cwd=target, capture_output=True, text=True).stdout
+                (dest / scenario / f"{letter}.diff").write_text(diff)
             if scenario.startswith("website"):
                 shots = dest / scenario / f"{letter}-shots"
                 shots.mkdir(parents=True, exist_ok=True)
@@ -45,9 +58,10 @@ def main(batch, dest):
                 "cost_usd": grading["metrics"]["cost_usd"],
                 "outcome_pass_rate": grading["summary"]["outcome_pass_rate"],
             }
-    (batch / "blind-mapping.json").write_text(json.dumps(mapping, indent=2))
-    print(json.dumps({s: sorted(m) for s, m in mapping.items()}))
+    out = pathlib.Path(batches[0]).resolve() / "blind-mapping.json"
+    out.write_text(json.dumps(mapping, indent=2))
+    print(json.dumps({s: sorted(m) for s, m in mapping.items()}), "->", out)
 
 
 if __name__ == "__main__":
-    main(*sys.argv[1:3])
+    main(*sys.argv[1:])

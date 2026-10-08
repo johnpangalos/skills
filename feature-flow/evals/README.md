@@ -77,7 +77,7 @@ An arm can pin any git `ref`. The harness extracts that version of the skill fol
 Hidden checks only tell you that a build works. To compare quality, anonymize a batch and judge it with the dynamic workflow in `judge.workflow.js`:
 
 ```sh
-python3 prepare_blind.py results/<batch> /tmp/ff-judge   # shuffled letters, site screenshots, mapping kept in the batch dir
+python3 prepare_blind.py /tmp/ff-judge results/<batch> [results/<batch> ...]   # shuffled letters, site screenshots, diffs for repo runs
 ```
 
 Then ask Claude Code to run `judge.workflow.js` as a workflow, passing the challenges (`id`, `kind`, `prompt`, and the `builds` letters and dirs) as `args`. One inspector per build builds it, runs it, probes edge cases, and scores it. One judge per challenge then reproduces every blocker and major defect the inspectors claimed and ranks the builds on a single scale. Unblind the results with `results/<batch>/blind-mapping.json`.

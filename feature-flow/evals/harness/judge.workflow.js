@@ -1,6 +1,6 @@
 export const meta = {
   name: 'feature-flow-blind-judging',
-  description: 'Blind-judge greenfield builds: one inspector per build, one verifying judge per challenge',
+  description: 'Blind-judge builds: one inspector per build, one verifying judge per challenge',
   phases: [
     { title: 'Inspect', detail: 'one agent per anonymized build: build, run, probe edge cases, score' },
     { title: 'Judge', detail: 'one judge per challenge: reproduce claimed defects, score and rank' },
@@ -63,6 +63,8 @@ const PROBES = {
     'Serve or open the pages, read the HTML/CSS/JS, and read the PNG screenshots (desktop, and 360px with JavaScript off). Check the genre filter with and without JS, keyboard navigation and focus styles, heading structure, colour contrast, form labelling and error handling, content depth and consistency, and whether anything is decorative but non-functional.',
   api:
     'Build it, run its tests, start the server on a free port and probe it with curl: the full contract, then edge cases beyond it (wrong content type, huge or empty bodies, unknown fields, trailing slashes, PATCH with null/empty values, duplicate tags, method not allowed, concurrent writes, graceful shutdown).',
+  library:
+    'Install dependencies in your copy (pnpm install --frozen-lockfile --ignore-scripts --prefer-offline), read the change in the .diff file next to the build, run the new tests and `pnpm vitest run packages/tailwindcss`, then probe the behavior with small throwaway vitest files that call the package\'s compile API (see src/test-utils/run.ts): edge cases beyond the spec (names with digits, uppercase or escapes; arbitrary values with spaces or underscores; variants, important and the prefix option; ordering among other utilities; IntelliSense listing), and how well the change follows the repo\'s existing patterns (registration style, doc comments, test style, changelog wording).',
   cli:
     'Build it, run its tests, then use it with SPEND_FILE pointing into a temp dir: the full contract, then edge cases beyond it (amounts like 1., .5, 1e3, 007, very large; unicode notes; missing or corrupt data file; --help; concurrent invocations; what happens to the data file if a write is interrupted).',
 }
@@ -70,6 +72,7 @@ const PRODUCT = {
   website: 'visual design, content depth and realism, navigation, filtering UX, accessibility',
   api: 'API design and HTTP semantics beyond the minimum (validation messages, content types, limits, shutdown, logging)',
   cli: 'CLI ergonomics (help, output alignment, messages) and data safety (atomic writes, corrupt-file handling)',
+  library: 'fit with the codebase: follows its existing patterns, naming, doc comments, test style and changelog conventions; a maintainer would merge it as is',
 }
 
 function inspectPrompt(ch, b) {
@@ -78,7 +81,7 @@ function inspectPrompt(ch, b) {
 TASK THE BUILDER WAS GIVEN:
 ${ch.prompt}
 
-BUILD ${b.letter}: ${b.dir}${b.shots ? `\nSCREENSHOTS: ${b.shots}` : ''}
+BUILD ${b.letter}: ${b.dir}${b.shots ? `\nSCREENSHOTS: ${b.shots}` : ''}${b.diff ? `\nCHANGE (diff against the original repo): ${b.diff}` : ''}
 Look only at this build. Don't open sibling folders. Before building or running anything, copy it: cp -r ${b.dir} /tmp/inspect-${ch.id}-${b.letter} and work in the copy.
 
 What to do: read all of the code, then ${PROBES[ch.kind]}
@@ -88,7 +91,7 @@ Score 1-10 each: correctness (meets the spec, including edge cases), robustness,
 }
 
 function judgePrompt(ch, reports) {
-  const builds = ch.builds.map(b => `${b.letter}: ${b.dir}${b.shots ? ` (screenshots ${b.shots})` : ''}`).join('\n')
+  const builds = ch.builds.map(b => `${b.letter}: ${b.dir}${b.shots ? ` (screenshots ${b.shots})` : ''}${b.diff ? ` (diff ${b.diff})` : ''}`).join('\n')
   return `You are the final judge comparing ${ch.builds.length} anonymized builds of the same task. You don't know who or what built them; don't speculate.
 
 TASK:
