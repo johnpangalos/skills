@@ -24,11 +24,14 @@ prompt with `ROLE: <role>`, and end it with the result template.
 | `investigator` | haiku / low | Read, Grep, Glob | Only on an existing codebase too large to read the relevant parts directly. |
 | `implementor` | haiku / medium | Read, Edit, Write, Bash, Grep, Glob | Every run: builds the change, running targeted tests as it goes and the full checks once at the end. |
 | `simplifier` | haiku / medium | Read, Edit, Grep, Glob | Only when the diff is large. Behavior-preserving cleanup. |
-| `reviewer` | haiku / medium | Read, Grep, Glob, Bash | Every run, after the checks pass. Red team: writes and runs probes to break the change. For auth, payments, migrations or concurrency, pass `model: opus` and `effort: medium` on the call. |
+| `reviewer` | haiku / high | Read, Grep, Glob, Bash | Every run, after the checks pass. Red team: writes and runs probes to break the change. For auth, payments, migrations or concurrency, pass `model: opus` and `effort: medium` on the call. |
 
 No agent can spawn another; the main conversation spawns all of them.
 
 ## Flow
+
+Run steps 1 to 9 without stopping to report or ask. Stop early only when an agent returns
+`blocked` on something only the user can decide, or before a destructive step outside the repo.
 
 1. **Acceptance criteria.** Before spawning anything, write a short list of testable
    statements of what done looks like. Include the requirements the request only implies and
@@ -56,6 +59,10 @@ No agent can spawn another; the main conversation spawns all of them.
    reserved word, a case where the right answer can't be computed, where omitting beats
    emitting something wrong). They go to the implementor as cases to test and to
    the reviewer as cases to reproduce.
+
+   Write the criteria, hostile inputs and sibling path to a scratch file outside the repo
+   (`mktemp`), paste it into each handoff unchanged, and re-read the file, not the scrollback,
+   before triage and before the final read.
 2. **Investigator**, only if the codebase is too large to read the relevant parts yourself.
 3. **Implementor** with the handoff below. Its CHECKS include a targeted test command (the
    test file or package for the code it changes), so it doesn't run the full suite while it
@@ -87,7 +94,8 @@ No agent can spawn another; the main conversation spawns all of them.
    hole. Demote to [minor] anything that needs an exotic input (zero-width characters, CSS
    escapes, contrived navigation sequences), anything about the build's own tests or helper
    scripts rather than the product, and anything a maintainer would merge as is. Only what
-   survives triage starts a fix round.
+   survives triage starts a fix round. Before a fix round, re-run the command quoted for each
+   blocking finding yourself; one that doesn't reproduce drops to [minor].
 7. **Fix loop.** Blocking findings that survive triage go back to the implementor as targeted
    fixes (edit the lines involved; don't rewrite files), then checks, then all three
    reviewers again in parallel, each with its `FOCUS:`, the changed hunks, and all earlier
@@ -99,7 +107,9 @@ No agent can spawn another; the main conversation spawns all of them.
    hostile inputs, as a maintainer reviewing it would. Anything they'd send back (a missing
    capability, a wrong edge case, a docs sentence the code doesn't back, an edit to an
    unrelated line) goes back to the implementor if a fix round is left; otherwise report it.
-9. **Report** the outcome and which agents ran.
+9. **Report** under three headings: **Needs you** (failing criteria, open blocking findings,
+   decisions only the user can make, or "nothing"), **Changed** (what was built, in a few
+   lines), **Found** (minor findings worth knowing). Then which agents ran.
 
 ## Handoff
 
