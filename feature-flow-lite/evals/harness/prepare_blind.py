@@ -12,6 +12,7 @@ no-JS mobile screenshots in <letter>-shots/. The letter -> arm mapping goes to
 
 import hashlib
 import json
+import os
 import pathlib
 import shutil
 import subprocess
@@ -49,7 +50,8 @@ def main(dest, *batches):
             if scenario.startswith("website"):
                 shots = dest / scenario / f"{letter}-shots"
                 shots.mkdir(parents=True, exist_ok=True)
-                subprocess.run(["node", str(HERE / "hidden" / "website-bookshop" / "render.js"), str(target), str(shots)], capture_output=True)
+                subprocess.run(["node", str(HERE / "hidden" / "website-bookshop" / "render.js"), str(target), str(shots)], capture_output=True,
+                               env=dict(os.environ, NODE_PATH=os.environ.get("NODE_PATH", "/opt/node22/lib/node_modules")))
             grading = json.loads((run_dir / "grading.json").read_text())
             mapping.setdefault(scenario, {})[letter] = {
                 "arm": meta["arm"],
