@@ -24,7 +24,7 @@ prompt with `ROLE: <role>`, and end it with the result template.
 | `investigator` | haiku / low | Read, Grep, Glob | Only on an existing codebase too large to read the relevant parts directly. |
 | `implementor` | haiku / medium | Read, Edit, Write, Bash, Grep, Glob | Every run: builds the change, running targeted tests as it goes and the full checks once at the end. |
 | `simplifier` | haiku / medium | Read, Edit, Grep, Glob | Only when the diff is large. Behavior-preserving cleanup. |
-| `reviewer` | haiku / medium | Read, Grep, Glob, Bash | Every run, after the checks pass. Red team: writes and runs probes to break the change. For auth, payments, migrations or concurrency, pass `model: opus` and `effort: medium` on the call. |
+| `reviewer` | haiku / medium | Read, Grep, Glob, Bash | Every run, after the checks pass. For auth, payments, migrations or concurrency, pass `model: opus` and `effort: medium` on the call. |
 
 No agent can spawn another; the main conversation spawns all of them.
 
@@ -65,10 +65,8 @@ No agent can spawn another; the main conversation spawns all of them.
 4. **Checks.** Run that full set yourself, once per round. If they
    fail, send the failing lines back to the implementor; this counts as a fix round.
 5. **Simplifier**, only for a large diff; re-run the checks after it.
-6. **Reviewer** with the same acceptance criteria and hostile inputs. It is a red team: it
-   writes and runs probes that try to break each criterion and hostile input, and only
-   reproduced failures count as blocking. Pass along the commands it needs to run the project
-   (test runner, server start, page render).
+6. **Reviewer** with the same acceptance criteria. It works through its checklist and
+   reproduces edge cases.
 7. **Fix loop.** Blocking findings go back to the implementor, then checks, then an
    incremental review of only the changed hunks plus the reviewer's earlier findings. Stop
    after two rounds and report what passed, what still fails, and the open findings. Style

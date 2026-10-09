@@ -1,0 +1,162 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 258c5d1..e3a2e03 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -1,7 +1,7 @@
+ # Upcoming Release
+ 
+ ## Features
+--
++- Add `--count` to print the number of search results instead of the results
+ 
+ ## Bugfixes
+ - Accept `--format` templates that start with `-` when passed as a separate argument, see #2126 (@vulragrag-star)
+diff --git a/contrib/completion/_fd b/contrib/completion/_fd
+index 8055467..5f70cf0 100644
+--- a/contrib/completion/_fd
++++ b/contrib/completion/_fd
+@@ -91,6 +91,7 @@ _fd() {
+     '(abs-path null-sep max-results exec-cmds)'{-l,--list-details}'[use a long listing format with file metadata]'
+ 
+     + '(max-results)' # max number of results
++    '(long-listing exec-cmds null-sep)--count[print the number of search results]'
+     '(long-listing exec-cmds)--max-results=[limit number of search results to given count and quit]:count'
+     '(long-listing exec-cmds)-1[limit to a single search result and quit]'
+ 
+diff --git a/doc/fd.1 b/doc/fd.1
+index 83b7948..df281b4 100644
+--- a/doc/fd.1
++++ b/doc/fd.1
+@@ -158,6 +158,11 @@ Limit the number of search results to 'count' and quit immediately.
+ .B \-1
+ Limit the search to a single result and quit immediately. This is an alias for '--max-results=1'.
+ .TP
++.B \-\-count
++Print the number of search results instead of the results themselves. Combined with
++.BR \-\-max\-results ,
++the count is capped at the given limit.
++.TP
+ .B \-q, \-\-quiet
+ When the flag is present, the program does not print anything and will instead exit with a code of 0 if there is at least one search result.
+ Otherwise, the exit code will be 1.
+diff --git a/src/cli.rs b/src/cli.rs
+index 2cb9d67..410f343 100644
+--- a/src/cli.rs
++++ b/src/cli.rs
+@@ -600,6 +600,17 @@ pub struct Opts {
+     )]
+     pub quiet: bool,
+ 
++    /// Print the number of search results instead of the results themselves.
++    /// Combined with '--max-results', the count is capped at the given limit.
++    #[arg(
++        long,
++        hide_short_help = true,
++        conflicts_with_all(["quiet", "null_separator", "format", "list_details", "exec", "exec_batch"]),
++        help = "Print the number of search results",
++        long_help
++    )]
++    pub count: bool,
++
+     /// Enable the display of filesystem errors for situations such as
+     /// insufficient permissions or dead symlinks.
+     #[arg(
+diff --git a/src/config.rs b/src/config.rs
+index a027812..c13a47e 100644
+--- a/src/config.rs
++++ b/src/config.rs
+@@ -65,6 +65,9 @@ pub struct Config {
+     /// if there's at least one match. Otherwise, the exit code will be 1.
+     pub quiet: bool,
+ 
++    /// Whether to print the number of results instead of the results.
++    pub count: bool,
++
+     /// Time to buffer results internally before streaming to the console. This is useful to
+     /// provide a sorted output, in case the total execution time is shorter than
+     /// `max_buffer_time`.
+diff --git a/src/main.rs b/src/main.rs
+index edb59ff..5d5ff2e 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -327,6 +327,7 @@ fn construct_config(mut opts: Opts, pattern_regexps: &[String]) -> Result<Config
+         one_file_system: opts.one_file_system,
+         null_separator: opts.null_separator,
+         quiet: opts.quiet,
++        count: opts.count,
+         max_depth: opts.max_depth(),
+         min_depth: opts.min_depth(),
+         prune: opts.prune,
+diff --git a/src/walk.rs b/src/walk.rs
+index 88683d7..1713172 100644
+--- a/src/walk.rs
++++ b/src/walk.rs
+@@ -204,15 +204,19 @@ impl<'a, W: Write> ReceiverBuffer<'a, W> {
+                                 return Err(ExitCode::HasResults(true));
+                             }
+ 
+-                            match self.mode {
+-                                ReceiverMode::Buffering => {
+-                                    self.buffer.push(dir_entry);
+-                                    if self.buffer.len() > MAX_BUFFER_LENGTH {
+-                                        self.stream()?;
++                            if self.config.count {
++                                // nothing to print until the end
++                            } else {
++                                match self.mode {
++                                    ReceiverMode::Buffering => {
++                                        self.buffer.push(dir_entry);
++                                        if self.buffer.len() > MAX_BUFFER_LENGTH {
++                                            self.stream()?;
++                                        }
++                                    }
++                                    ReceiverMode::Streaming => {
++                                        self.print(&dir_entry)?;
+                                     }
+-                                }
+-                                ReceiverMode::Streaming => {
+-                                    self.print(&dir_entry)?;
+                                 }
+                             }
+ 
+@@ -279,6 +283,17 @@ impl<'a, W: Write> ReceiverBuffer<'a, W> {
+ 
+     /// Stop looping.
+     fn stop(&mut self) -> Result<(), ExitCode> {
++        if self.config.count {
++            if let Err(e) = writeln!(self.stdout, "{}", self.num_results)
++                && e.kind() != ::std::io::ErrorKind::BrokenPipe
++            {
++                print_error!("Could not write to output: {}", e);
++                return Err(ExitCode::GeneralError);
++            }
++            self.flush()?;
++            return Err(ExitCode::Success);
++        }
++
+         if self.mode == ReceiverMode::Buffering {
+             self.buffer.sort();
+             self.stream()?;
+diff --git a/tests/tests.rs b/tests/tests.rs
+index c24545f..f08b0d1 100644
+--- a/tests/tests.rs
++++ b/tests/tests.rs
+@@ -2806,6 +2806,18 @@ fn test_max_results() {
+     te.assert_failure(&["thing", "--max-results=1", "-1", "--exec=cat"]);
+ }
+ 
++/// Counting results (--count)
++#[test]
++fn test_count() {
++    let te = TestEnv::new(DEFAULT_DIRS, DEFAULT_FILES);
++
++    te.assert_output(&["--count", "c.foo"], "2");
++    te.assert_output(&["--count", "--max-results=1", "c.foo"], "1");
++    te.assert_output(&["--count", "nothing-matches-this"], "0");
++    te.assert_failure(&["--count", "--exec=cat"]);
++    te.assert_failure(&["--count", "--quiet"]);
++}
++
+ /// Filenames with non-utf8 paths are passed to the executed program unchanged
+ ///
+ /// Note:

@@ -65,14 +65,22 @@ No agent can spawn another; the main conversation spawns all of them.
 4. **Checks.** Run that full set yourself, once per round. If they
    fail, send the failing lines back to the implementor; this counts as a fix round.
 5. **Simplifier**, only for a large diff; re-run the checks after it.
-6. **Reviewer** with the same acceptance criteria and hostile inputs. It is a red team: it
-   writes and runs probes that try to break each criterion and hostile input, and only
-   reproduced failures count as blocking. Pass along the commands it needs to run the project
-   (test runner, server start, page render).
-7. **Fix loop.** Blocking findings go back to the implementor, then checks, then an
-   incremental review of only the changed hunks plus the reviewer's earlier findings. Stop
-   after two rounds and report what passed, what still fails, and the open findings. Style
-   nits are reported, not looped on.
+6. **Reviewers**: spawn three red-team reviewers in parallel, in one message, each with the
+   same acceptance criteria and hostile inputs and one `FOCUS:` line:
+   - `FOCUS: criteria`: every acceptance criterion, implied ones included, exercised end to end.
+   - `FOCUS: composition`: the pieces used together and over time: nesting, two instances at
+     once, props or data changing while in use, controlled vs uncontrolled, repeated and
+     out-of-order calls, interaction with the code around it.
+   - `FOCUS: hostile`: the hostile inputs and anything past them (empty, huge, malformed,
+     unicode, interrupted, concurrent), plus docs and help that the code doesn't back.
+   Each writes and runs probes that try to break the change; only reproduced failures count as
+   blocking. Pass along the commands they need to run the project (test runner, server
+   start, page render). Merge their findings and drop duplicates.
+7. **Fix loop.** Blocking findings go back to the implementor, then checks, then all three
+   reviewers again in parallel, each with its `FOCUS:`, the changed hunks, and all earlier
+   findings: each re-runs the probes behind earlier blocking findings and attacks the change
+   again from its angle. Stop after two fix rounds (three review passes in all) and report what
+   passed, what still fails, and the open findings. Style nits are reported, not looped on.
 8. **Final read.** Before reporting, read the whole diff yourself against the sibling and the
    hostile inputs, as a maintainer reviewing it would. Anything they'd send back (a missing
    capability, a wrong edge case, a docs sentence the code doesn't back, an edit to an
