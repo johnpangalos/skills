@@ -59,6 +59,8 @@ const JUDGE = {
 }
 
 const PROBES = {
+  component:
+    'Install dependencies in your copy (pnpm install --frozen-lockfile --prefer-offline), run `pnpm test` and `pnpm typecheck`, then write throwaway Testing Library tests in your copy that drive each component against its WAI-ARIA pattern: roles, names and ids; roving tabindex and every key (arrows, Home, End, Tab, Shift+Tab, Escape, Enter) including wrap and disabled items; controlled vs uncontrolled use and a parent changing the value; Dialog focus trap with zero or one focusable child, nested portals, focus return when the trigger is gone, backdrop clicks vs clicks inside; Combobox filtering with no matches, all options disabled, options changing while open, clearing the value, and aria-activedescendant pointing at a real element. Check the exported types and the README.',
   website:
     'Serve or open the pages, read the HTML/CSS/JS, and read the PNG screenshots (desktop, and 360px with JavaScript off). Check the genre filter with and without JS, keyboard navigation and focus styles, heading structure, colour contrast, form labelling and error handling, content depth and consistency, and whether anything is decorative but non-functional.',
   api:
@@ -69,6 +71,7 @@ const PROBES = {
     'Build it, run its tests, then use it with SPEND_FILE pointing into a temp dir: the full contract, then edge cases beyond it (amounts like 1., .5, 1e3, 007, very large; unicode notes; missing or corrupt data file; --help; concurrent invocations; what happens to the data file if a write is interrupted).',
 }
 const PRODUCT = {
+  component: 'API design (prop names, controlled/uncontrolled, types a consumer would want), accessibility beyond the minimum, and README quality',
   website: 'visual design, content depth and realism, navigation, filtering UX, accessibility',
   api: 'API design and HTTP semantics beyond the minimum (validation messages, content types, limits, shutdown, logging)',
   cli: 'CLI ergonomics (help, output alignment, messages) and data safety (atomic writes, corrupt-file handling)',

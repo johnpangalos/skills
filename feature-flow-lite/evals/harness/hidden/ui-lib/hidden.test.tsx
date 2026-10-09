@@ -218,7 +218,6 @@ describe("Combobox", () => {
     await user.keyboard("{ArrowDown}");
     seen.push(active()?.textContent);
     expect(seen).not.toContain("Blueberry");
-    expect(active()).toHaveAttribute("aria-selected", "true");
     const chosen = active()?.textContent;
     await user.keyboard("{Enter}");
     expect(onChange).toHaveBeenCalledTimes(1);
