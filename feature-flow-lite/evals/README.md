@@ -12,7 +12,7 @@ The skill makes three kinds of claim, and each needs a different test:
 
 ## Results so far
 
-Four rounds, every build judged blind (full report: https://claude.ai/artifact/DndzbF6C6S6GTzvykA9RQs). Round 4 is the only one run on the released skill and this harness. Its raw results (traces, diffs, gradings, cost split, judging reports and trigger evals) are attached to the `feature-flow-lite-v1` release as `feature-flow-lite-benchmark-round4.tar.gz`. Rounds 1–3 tested earlier skill versions and are kept only as summaries:
+Five rounds, every build judged blind (full report: https://claude.ai/artifact/DndzbF6C6S6GTzvykA9RQs). Round 4 is the only one run on the released skill and this harness. Its raw results (traces, diffs, gradings, cost split, judging reports and trigger evals) are attached to the `feature-flow-lite-v1` release as `feature-flow-lite-benchmark-round4.tar.gz`. Rounds 1–3 tested earlier skill versions and are kept only as summaries:
 
 | Round | Tasks | Finding |
 |---|---|---|
@@ -20,6 +20,7 @@ Four rounds, every build judged blind (full report: https://claude.ai/artifact/D
 | 2 | the same three plus Tailwind; six arms | A reviewer checklist and written acceptance criteria lifted v2 and lite; lite with Haiku agents scored highest (8.0) for the least money ($0.52). |
 | 3 | features in Tailwind, chi, click, fd | Lite with Haiku agents beat plain Opus in every repo (7.9 against 7.4); a Sonnet orchestrator with an Opus planner cost the most. |
 | 4 | round 3's features with stronger checks, plus a chi bug hunt and a click cross-module change | The shipped lite scored 7.9 against 7.7 for plain Opus at the same cost and took 5.7 minutes against 2.3; a low-effort implementor and a parallel reviewer didn't pay. |
+| 5 | round 4's tasks with Sonnet and Opus subagents, then the sibling/hostile-input changes | Subagent model didn't move the score (Haiku 7.55, Opus 7.45, Sonnet 7.29, plain Opus 7.32); Opus agents doubled the cost. The sibling and hostile-input steps tied the shipped skill on these tasks (7.56) and led on one unseen task (8.52 against 8.30). |
 
 ## Trigger cases (`triggers/`)
 
@@ -78,8 +79,11 @@ Process checks (`kind: process`) apply only to skill arms. Outcome checks (hidde
 
 | Arm | What runs |
 |---|---|
-| `lite-v2` | feature-flow-lite from the working tree, as shipped: Haiku agents at medium effort, a write-once implementor with targeted tests, conventions in the acceptance criteria |
+| `lite-v2` | feature-flow-lite as first released (`eefc1bc`): Haiku agents at medium effort, a write-once implementor with targeted tests, conventions in the acceptance criteria |
 | `lite-v2-impl-low` | lite-v2 with only the implementor at low effort (`agents.only`) |
+| `lite-v3` | feature-flow-lite from the working tree, with the sibling and hostile-input steps |
+| `lite-v2-sonnet`, `lite-v2-opus` | the shipped skill with every agent on Sonnet or Opus |
+| `lite-v2-sibling` | the shipped skill with the `sibling-criteria` variant (the sibling and hostile-input steps plus a docs-truth reviewer check) |
 | `baseline` | No skill |
 | `sonnet-solo` | No skill, with Sonnet as the main model |
 | `lite`, `lite-haiku` | feature-flow-lite at `2540fb3`, before it moved to Haiku: Sonnet agents, or every agent pinned to Haiku at high effort |
