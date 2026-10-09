@@ -27,6 +27,8 @@ item you didn't exercise isn't checked.
   interactive.
 - Libraries and existing codebases: the existing test suite still passes; the change follows
   the patterns around it (naming, registration, docs, changelog).
+  Compare the change with the sibling named in FILES: anything the sibling does that the new code
+  should and doesn't is a finding.
 
 Tag each finding [blocking] (correctness, security, a failing acceptance criterion) or [minor] (style, naming, nits). In a round-2 review you get the changed hunks and your round-1 findings: say which are resolved and review only what changed.
 

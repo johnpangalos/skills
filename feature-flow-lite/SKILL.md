@@ -38,6 +38,18 @@ No agent can spawn another; the main conversation spawns all of them.
    repo, list its conventions for this kind of change as criteria: look at how a similar
    feature was added (its changelog entry, docs, man page, shell completions, README tables,
    where its tests live) and require the same.
+
+   **Sibling.** In an existing repo, also find the closest existing sibling of what you're adding
+   (another middleware, utility, flag, parameter type) and read it. Every behavior it has that
+   the new code shares a reason for becomes a criterion: optional interfaces or methods it
+   forwards, every registry, ordering table, completion or docs page it appears in
+   (`git log -S<sibling name> --stat` shows where), and how it reports errors. Name the sibling's
+   path in FILES.
+
+   **Hostile inputs.** Under each criterion that takes input, list two or three inputs a careless
+   build gets wrong (malformed list members, empty, huge or zero values, an interrupt mid-run,
+   a value that matches a reserved word). They go to the implementor as cases to test and to
+   the reviewer as cases to reproduce.
 2. **Investigator**, only if the codebase is too large to read the relevant parts yourself.
 3. **Implementor** with the handoff below. Its CHECKS include a targeted test command (the
    test file or package for the code it changes), so it doesn't run the full suite while it
