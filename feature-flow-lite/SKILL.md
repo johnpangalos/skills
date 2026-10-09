@@ -24,7 +24,7 @@ prompt with `ROLE: <role>`, and end it with the result template.
 | `investigator` | haiku / low | Read, Grep, Glob | Only on an existing codebase too large to read the relevant parts directly. |
 | `implementor` | haiku / medium | Read, Edit, Write, Bash, Grep, Glob | Every run: builds the change, running targeted tests as it goes and the full checks once at the end. |
 | `simplifier` | haiku / medium | Read, Edit, Grep, Glob | Only when the diff is large. Behavior-preserving cleanup. |
-| `reviewer` | haiku / medium | Read, Grep, Glob, Bash | Every run, after the checks pass. For auth, payments, migrations or concurrency, pass `model: opus` and `effort: medium` on the call. |
+| `reviewer` | haiku / medium | Read, Grep, Glob, Bash | Every run, after the checks pass. Red team: writes and runs probes to break the change. For auth, payments, migrations or concurrency, pass `model: opus` and `effort: medium` on the call. |
 
 No agent can spawn another; the main conversation spawns all of them.
 
@@ -43,27 +43,41 @@ No agent can spawn another; the main conversation spawns all of them.
    (another middleware, utility, flag, parameter type) and read it. Every behavior it has that
    the new code shares a reason for becomes a criterion: optional interfaces or methods it
    forwards, every registry, ordering table, completion or docs page it appears in
-   (`git log -S<sibling name> --stat` shows where), and how it reports errors. Name the sibling's
-   path in FILES.
+   (`git log -S<sibling name> --stat` shows where), and how it reports errors. If the new code
+   wraps or stands in for something (a response writer, a stream, a handler, a parameter type),
+   list every optional interface or capability the wrapped thing can have and require the new
+   code to forward or handle each one the way the sibling does. Copy the sibling's user-facing
+   behavior too: how it shows in help output, how its errors, bounds and defaults are worded.
+   Name the sibling's path in FILES.
 
    **Hostile inputs.** Under each criterion that takes input, list two or three inputs a careless
-   build gets wrong (malformed list members, empty, huge or zero values, an interrupt mid-run,
-   a value that matches a reserved word). They go to the implementor as cases to test and to
+   build gets wrong (malformed list members, empty, huge or zero values, values past the
+   integer range, an interrupt mid-run, output that fails to write, a value that matches a
+   reserved word, a case where the right answer can't be computed, where omitting beats
+   emitting something wrong). They go to the implementor as cases to test and to
    the reviewer as cases to reproduce.
 2. **Investigator**, only if the codebase is too large to read the relevant parts yourself.
 3. **Implementor** with the handoff below. Its CHECKS include a targeted test command (the
    test file or package for the code it changes), so it doesn't run the full suite while it
-   works.
-4. **Checks.** Run the project's full test suite and linters yourself, once per round. If they
+   works. The end-of-work CHECKS are the repo's own full set: the test suite plus every lint,
+   format and typecheck the project runs (its CI workflow, package scripts, Makefile), even
+   ones the request didn't name.
+4. **Checks.** Run that full set yourself, once per round. If they
    fail, send the failing lines back to the implementor; this counts as a fix round.
 5. **Simplifier**, only for a large diff; re-run the checks after it.
-6. **Reviewer** with the same acceptance criteria. It works through its checklist and
-   reproduces edge cases.
+6. **Reviewer** with the same acceptance criteria and hostile inputs. It is a red team: it
+   writes and runs probes that try to break each criterion and hostile input, and only
+   reproduced failures count as blocking. Pass along the commands it needs to run the project
+   (test runner, server start, page render).
 7. **Fix loop.** Blocking findings go back to the implementor, then checks, then an
    incremental review of only the changed hunks plus the reviewer's earlier findings. Stop
    after two rounds and report what passed, what still fails, and the open findings. Style
    nits are reported, not looped on.
-8. **Report** the outcome and which agents ran.
+8. **Final read.** Before reporting, read the whole diff yourself against the sibling and the
+   hostile inputs, as a maintainer reviewing it would. Anything they'd send back (a missing
+   capability, a wrong edge case, a docs sentence the code doesn't back, an edit to an
+   unrelated line) goes back to the implementor if a fix round is left; otherwise report it.
+9. **Report** the outcome and which agents ran.
 
 ## Handoff
 
