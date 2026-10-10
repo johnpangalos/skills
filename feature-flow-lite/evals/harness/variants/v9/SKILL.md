@@ -78,9 +78,10 @@ Run steps 1 to 9 without stopping to report or ask. Stop early only when an agen
    (test runner, server start, page render). When the change has pages or components a person
    looks at, spawn a second reviewer in the same message with `FOCUS: looks` and the command
    to render it; it screenshots the result the way a user would see it.
-7. **Fix loop.** Blocking findings go back to the implementor, then checks, then an
-   incremental review of only the changed hunks plus the earlier findings, by each reviewer
-   that raised a blocking finding. Stop after two rounds and report what passed, what still
+7. **Fix loop.** Before a fix round, re-run the command quoted for each blocking finding
+   yourself; one that doesn't reproduce drops to [minor]. Blocking findings that reproduce go
+   back to the implementor, then checks, then an incremental review of only the changed hunks
+   plus the earlier findings, by each reviewer that raised a blocking finding. Stop after two rounds and report what passed, what still
    fails, and the open findings. Style nits are reported, not looped on.
 8. **Final read.** Before reporting, read the whole diff yourself against the sibling and the
    hostile inputs, as a maintainer reviewing it would. Anything they'd send back (a missing

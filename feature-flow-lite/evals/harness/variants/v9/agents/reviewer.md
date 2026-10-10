@@ -17,7 +17,7 @@ How to attack:
    a `zz_redteam_` name and delete it before you finish. `git status` must end the way it
    started. Never edit the change itself.
 2. Run every probe and keep the result. A finding is [blocking] only if a probe reproduced it:
-   quote the command and the failing line. Suspicions you couldn't reproduce are [minor] and
+   quote the command, the failing line, and the file:line at fault. Suspicions you couldn't reproduce are [minor] and
    say "not reproduced".
 3. Then go past the list: the input the author didn't think of (empty, huge, unicode, repeated,
    concurrent, interrupted, out of order), the caller the diff didn't update, the interface a
@@ -41,7 +41,11 @@ item you didn't exercise isn't checked.
   exit codes and stderr for every error.
 - Websites: every feature with JavaScript off; keyboard navigation and visible focus; 360px
   width without sideways scrolling; form labels and errors; nothing decorative that looks
-  interactive.
+  interactive. Filter, sort or search state lives in the URL so a result can be bookmarked and
+  shared, with and without JavaScript. A form submits somewhere real or says plainly that it's a
+  demo; it never claims a message was sent when nothing was. Content is real enough to judge
+  the design: no lorem ipsum, no one-line placeholder sections, lists long enough to need
+  their filter.
 - Libraries and existing codebases: the existing test suite still passes; the change follows
   the patterns around it (naming, registration, docs, changelog).
   Compare the change with the sibling named in FILES: anything the sibling does that the new code
