@@ -81,11 +81,12 @@ def skill_source(ref, folder=None):
     return dest / prefix
 
 
-def customize(source, variant=None, agents=None):
+def customize(source, variant=None, agents=None, mod=False):
     """A temp copy of a skill folder with a variant's files laid over it (variants/<name>/, which
-    can replace SKILL.md or add and replace agents), then every agent's model and effort pinned."""
+    can replace SKILL.md or add and replace agents), then every agent's model and effort pinned.
+    The plugin's mod (hooks/) comes along only for an arm that sets "mod"."""
     dest = pathlib.Path(tempfile.mkdtemp(prefix="ff-skill-custom-")) / source.name
-    shutil.copytree(source, dest, ignore=shutil.ignore_patterns("evals"))
+    shutil.copytree(source, dest, ignore=shutil.ignore_patterns("evals", *(() if mod else ("hooks",))))
     if variant:
         shutil.copytree(HERE / "variants" / variant, dest, dirs_exist_ok=True)
     for agent in (dest / "agents").glob("*.md") if agents else ():
@@ -126,6 +127,7 @@ def run_one(out, scenario, arm_name, arm, rep, prompt, dry_run):
     prepare(workspace, scenario, arm)
     env = {k: v for k, v in os.environ.items() if k not in SCRUB}
     env["CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH"] = str(scenario.get("depth", 3))
+    env["FEATURE_FLOW_USAGE_LOG"] = str(run_dir / "usage.jsonl")  # read by the plugin's mod, when loaded
     started = time.time()
     with open(run_dir / "trace.jsonl", "w") as trace, open(run_dir / "stderr.txt", "w") as err:
         try:
@@ -206,8 +208,8 @@ def main():
         arm = config["arms"][name]
         if arm["skill"]:
             arm["source"] = skill_source(arm.get("ref"), arm.get("folder"))
-            if arm.get("variant") or arm.get("agents"):
-                arm["source"] = customize(arm["source"], arm.get("variant"), arm.get("agents"))
+            if arm.get("variant") or arm.get("agents") or arm["skill"] == "plugin":
+                arm["source"] = customize(arm["source"], arm.get("variant"), arm.get("agents"), arm.get("mod", False))
     jobs = []
     for sid in args.scenarios.split(","):
         scenario = by_id[sid]

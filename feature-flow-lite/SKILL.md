@@ -28,6 +28,11 @@ prompt with `ROLE: <role>`, and end it with the result template.
 
 No agent can spawn another; the main conversation spawns all of them.
 
+The plugin also ships a mod in `hooks/` that starts once this skill is invoked. It puts the
+latest `ACCEPTANCE CRITERIA:` block back into any implementor or reviewer handoff that drops it,
+adds a note to the result when an implementor run leaves no changed test file in the repo, and
+records per-role tokens and time, which `/ff-usage` prints. It never blocks a spawn or a tool call.
+
 ## Flow
 
 1. **Acceptance criteria.** Before spawning anything, write a short list of testable
