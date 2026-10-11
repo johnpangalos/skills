@@ -1,19 +1,20 @@
 ---
 name: figma-flow
-description: Use when turning a Figma frame or component into React that has to match the design exactly, or when checking existing React against its Figma source. Reads the design, turns Figma's exact values into acceptance criteria, hands the build to feature-flow-lite's Haiku implementor, then verifies in two steps: a fresh agent looks at screenshots, and exact values are measured against Figma's.
+description: Use when turning a Figma frame or component into React that has to match the design exactly, or when checking existing React against its Figma source. Reads the design, turns Figma's exact values into acceptance criteria, builds (handing large work to feature-flow-lite), then verifies in two steps: exact values are measured against Figma's, and a fresh agent looks at screenshots.
 ---
 
 # Figma Flow
 
-A front end to feature-flow-lite for work that starts from a Figma design. This skill does the
-parts that are about Figma: reading the design, exporting its values, and looking at the
-result. feature-flow-lite does the rest: its implementor builds, its checks and fix loop run
-as usual. Figma decides: never approximate a value, and never "fix" a design in code. If Figma
+For work that starts from a Figma design. This skill does the parts that are about Figma:
+reading the design, exporting its values, measuring and looking at the result. For large work
+it is a front end to feature-flow-lite, whose implementor builds and whose checks and fix
+loop run as usual. Figma decides: never approximate a value, and never "fix" a design in code. If Figma
 looks wrong, say so and leave the code matching Figma.
 
-Why it splits this way: an export of Figma's values is a list of exact, testable facts, which
-is what a cheap implementor needs to do well. Reading a design and judging a picture are not,
-so those stay with the main conversation and the looker.
+An export of Figma's values is a list of exact, testable facts, and a test that reports the
+expected and rendered value of each one. In trials that test did most of the work: with it,
+both a cheap implementor and the main conversation alone got a component right. So the
+handoff is for size, not for correctness.
 
 The proof has two halves, and both are needed. In a trial with eight planted bugs, an agent
 looking at screenshots found most of them and described each one, but it also reported
@@ -69,11 +70,12 @@ line and name it in the report. Never remove a line the person wrote.
    - how each state is reached on the page, since the measurement drives real hover, press and
      focus;
    - the path of the export, as the source of truth where a criterion and the file disagree.
-5. **Build.** For one small component, build it yourself to the criteria: in a trial on a
-   single Button, plain Opus matched all 30 variants in about a minute for $0.50, and the
-   handoff reached the same result at about 2.6 times the cost and 7 times the duration. For
-   a page, several components, or anything with behaviour to review, hand off: invoke the
-   `feature-flow-lite` skill and follow its flow
+5. **Build.** For a component, build it yourself to the criteria. In trials on a Button
+   (30 variants) and on Tabs (four parts, five states, keyboard behaviour), plain Opus with
+   the measurement to loop on passed every check in about 90 seconds for about $0.55. The
+   handoff passed the same checks at 2.5 to 3.5 times the cost and 7 to 10 times the
+   duration. For a whole page or a set of components at once, which is unmeasured, hand
+   off: invoke the `feature-flow-lite` skill and follow its flow
    from the implementor step, with your criteria as its `ACCEPTANCE CRITERIA` and these
    `CHECKS`: the project file's Measure command as the targeted command while working, and
    its full checks for the end. If feature-flow-lite isn't installed, build it yourself to
