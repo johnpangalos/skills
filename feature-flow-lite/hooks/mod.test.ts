@@ -133,6 +133,15 @@ test('handoff: the saved block stops at the next handoff header', async ($, on) 
   expect(w.spawned[1]).not.toContain('CHECKS:')
 })
 
+test('handoff: a reviewer\'s PROJECT CHECKLIST ends the saved block', async ($, on) => {
+  const w = world(on)
+  await $.skill.prompt({ skill: 'feature-flow-lite', text: '' })
+  await $.agent.spawn({ prompt: `GOAL: a\n${BLOCK}\nPROJECT CHECKLIST: 360px wide`, subagentType: REVIEWER })
+  await $.agent.spawn({ prompt: 'GOAL: b', subagentType: IMPLEMENTOR })
+
+  expect(w.spawned[1]).toBe(`GOAL: b\n\n${BLOCK}`)
+})
+
 test('handoff: a prompt with the header is left alone, even when its block differs', async ($, on) => {
   const w = world(on)
   await $.skill.prompt({ skill: 'feature-flow-lite', text: '' })

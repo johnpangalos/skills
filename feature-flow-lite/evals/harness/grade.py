@@ -340,6 +340,7 @@ def main_does_not_edit(t, sc, rule):
     if not t.of_role("implementor"):
         return True, "no implementor spawned: main built it directly (n/a)"
     edits = [args.get("file_path", "") for _, name, args, parent in t.tools if name in EDIT_TOOLS and not parent]
+    edits = [path for path in edits if not path.endswith("/FEATURE_FLOW.md")]  # the skill's project file is the main's to write
     return not edits, f"main conversation edited {edits[:5]}" if edits else "all edits made by subagents"
 
 

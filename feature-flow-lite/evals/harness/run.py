@@ -134,6 +134,10 @@ def run_one(out, scenario, arm_name, arm, rep, prompt, dry_run):
             subprocess.run(cmd, cwd=workspace, env=env, stdout=trace, stderr=err, timeout=scenario.get("timeout_s", 2400))
         except subprocess.TimeoutExpired:
             err.write("\nharness: timed out\n")
+    # the skill's per-repo project file is kept with the run, out of the build a judge sees
+    project_file = workspace / "FEATURE_FLOW.md"
+    if project_file.exists():
+        shutil.move(project_file, run_dir / "FEATURE_FLOW.md")
     diff = subprocess.run(
         "git add -A -N . ':!.claude' && git diff HEAD -- . ':!.claude'",
         shell=True, cwd=workspace, capture_output=True, text=True,
