@@ -24,7 +24,7 @@ prompt with `ROLE: <role>`, and end it with the result template.
 | `investigator` | haiku / low | Read, Grep, Glob | Only on an existing codebase too large to read the relevant parts directly. |
 | `implementor` | haiku / medium | Read, Edit, Write, Bash, Grep, Glob | Every run: builds the change, running targeted tests as it goes and the full checks once at the end. |
 | `simplifier` | haiku / medium | Read, Edit, Grep, Glob | Only when the diff is large. Behavior-preserving cleanup. |
-| `reviewer` | haiku / medium | Read, Grep, Glob, Bash | Every run, after the checks pass. Red team: writes and runs probes to break the change. For auth, payments, migrations or concurrency, pass `model: opus` and `effort: medium` on the call. |
+| `reviewer` | haiku / medium | Read, Grep, Glob, Bash | Every run, after the checks pass. Red team: writes and runs probes to break the change. For auth, payments, migrations, concurrency or the project file's risky paths, pass `model: opus` and `effort: medium` on the call. |
 
 No agent can spawn another; the main conversation spawns all of them.
 
@@ -33,16 +33,35 @@ latest `ACCEPTANCE CRITERIA:` block back into any implementor or reviewer handof
 adds a note to the result when an implementor run leaves no changed test file in the repo, and
 records per-role tokens and time, which `/ff-usage` prints. It never blocks a spawn or a tool call.
 
+## Project file
+
+What holds for every change in one repo lives in that repo, in `.claude/feature-flow.md`: the
+kind of project, its check commands, its conventions for each kind of change, standing criteria,
+the reviewer's checklist, and risky paths. Read it before step 1 of every run.
+
+If it doesn't exist, write it first from `templates/project-criteria.md` in this skill's folder.
+In an existing repo, fill it from the CI workflow, package scripts or Makefile (Checks) and from
+how the last few similar changes were added (`git log --stat`, Conventions); for a new project,
+fill it from the request and the kind's defaults, and add the commands once the implementor has
+set them up. Keep the kind's default standing criteria and checklist only where they apply.
+Don't stop to ask about it; say in the report that you wrote it so the user can edit and commit
+it.
+
+When a run teaches something the file should have said (a check CI runs that it didn't list, a
+convention the final read caught, a reviewer finding that will recur), add one line to the
+right section and name it in the report. Never remove a line the user wrote.
+
 ## Flow
 
 1. **Acceptance criteria.** Before spawning anything, write a short list of testable
    statements of what done looks like. Include the requirements the request only implies and
    spell out how they combine ("filterable" plus "works without JavaScript" means the filter
    works with JavaScript off; "today" means the user's local day). For a new project, a short
-   README with run instructions is a criterion. Numbers in a spec are floors. In an existing
-   repo, list its conventions for this kind of change as criteria: look at how a similar
-   feature was added (its changelog entry, docs, man page, shell completions, README tables,
-   where its tests live) and require the same.
+   README with run instructions is a criterion. Numbers in a spec are floors. Add the project
+   file's standing criteria, and its conventions for this kind of change (changelog entry,
+   docs, man page, shell completions, README tables, where its tests live). If it has none for
+   this kind yet, look at how a similar feature was added, require the same, and add the line
+   to the project file.
 
    **Sibling.** In an existing repo, also find the closest existing sibling of what you're adding
    (another middleware, utility, flag, parameter type) and read it. Every behavior it has that
@@ -65,15 +84,15 @@ records per-role tokens and time, which `/ff-usage` prints. It never blocks a sp
 3. **Implementor** with the handoff below. Its CHECKS include a targeted test command (the
    test file or package for the code it changes), so it doesn't run the full suite while it
    works. The end-of-work CHECKS are the repo's own full set: the test suite plus every lint,
-   format and typecheck the project runs (its CI workflow, package scripts, Makefile), even
-   ones the request didn't name.
+   format and typecheck the project runs (the project file's Checks), even ones the request
+   didn't name.
 4. **Checks.** Run that full set yourself, once per round. If they
    fail, send the failing lines back to the implementor; this counts as a fix round.
 5. **Simplifier**, only for a large diff; re-run the checks after it.
 6. **Reviewer** with the same acceptance criteria and hostile inputs. It is a red team: it
    writes and runs probes that try to break each criterion and hostile input, and only
    reproduced failures count as blocking. Pass along the commands it needs to run the project
-   (test runner, server start, page render).
+   (the project file's Run it line) and its Reviewer checklist as `PROJECT CHECKLIST:`.
 7. **Fix loop.** Blocking findings go back to the implementor, then checks, then an
    incremental review of only the changed hunks plus the reviewer's earlier findings. Stop
    after two rounds and report what passed, what still fails, and the open findings. Style
@@ -93,6 +112,7 @@ CONSTRAINTS: <scope limits, files not to touch, no new dependencies, etc.>
 ACCEPTANCE CRITERIA:
 - <the list from step 1, word for word>
 CHECKS: <targeted test command while working; full test and lint commands for the end>
+PROJECT CHECKLIST: <reviewer only: the project file's Reviewer checklist, word for word>
 ```
 
 Every implementor and reviewer handoff carries the `ACCEPTANCE CRITERIA:` block unchanged. The
