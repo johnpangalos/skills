@@ -1,6 +1,6 @@
 /** What figma-flow remembers for the session. */
 export type Flow = {
-  /** A Figma tool has been called, so edits from here on are design work. */
+  /** The skill was invoked or a Figma tool was called, so edits from here on are design work. */
   isActive: boolean
   /** Source files edited since the measurement last passed. */
   unmeasured: string[]
@@ -8,6 +8,8 @@ export type Flow = {
   lastMeasure: 'none' | 'passed' | 'failed'
   /** The person released the hold with `/figma-flow release`. */
   isReleased: boolean
+  /** An implementor has been spawned, so source edits belong to it from here on. */
+  hasHandedOff: boolean
 }
 
 declare module 'claude-code' {

@@ -89,3 +89,30 @@ test('/figma-flow release lets a commit through', async ($, on) => {
 
   expect(ran.deny).toBe(undefined)
 })
+
+test('the main conversation is told when it edits source after handing off', async ($, on) => {
+  tools(on, {})
+  await $.tool.call({ tool: FIGMA, code: 'return 1' })
+  const before = await $.tool.call({ tool: 'Edit', file_path: 'src/button.tsx', old_string: 'a', new_string: 'b' })
+  expect(before.context).toBe(undefined)
+
+  await $.tool.call({ tool: 'Agent', subagent_type: 'feature-flow-lite:implementor', description: 'build', prompt: 'GOAL: x' })
+  const after = await $.tool.call({ tool: 'Edit', file_path: 'src/button.tsx', old_string: 'a', new_string: 'b' })
+  expect(after.deny).toBe(undefined)
+  expect(after.context?.join(' ')).toContain('Send fixes to the implementor')
+
+  // its own files are still the main conversation's to write
+  const spec = await $.tool.call({ tool: 'Write', file_path: 'tests/button.figma.spec.ts', content: '' })
+  expect(spec.context).toBe(undefined)
+  // and a subagent's edit gets no note
+  const sub = await $.tool.call({ tool: 'Edit', file_path: 'src/button.tsx', old_string: 'a', new_string: 'b', agentId: 'agent-1' } as never)
+  expect(sub.context).toBe(undefined)
+})
+
+test('no note outside Figma work', async ($, on) => {
+  tools(on, {})
+  await $.tool.call({ tool: 'Agent', subagent_type: 'feature-flow-lite:implementor', description: 'build', prompt: 'GOAL: x' })
+  const ran = await $.tool.call({ tool: 'Edit', file_path: 'src/button.tsx', old_string: 'a', new_string: 'b' })
+
+  expect(ran.context).toBe(undefined)
+})

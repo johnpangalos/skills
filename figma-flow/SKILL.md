@@ -76,8 +76,16 @@ line and name it in the report. Never remove a line the person wrote.
    `feature-flow-lite` skill and follow its flow
    from the implementor step, with your criteria as its `ACCEPTANCE CRITERIA` and these
    `CHECKS`: the project file's Measure command as the targeted command while working, and
-   its full checks for the end. Leave the edits to its
-   implementor. If feature-flow-lite isn't installed, build it yourself to the same criteria.
+   its full checks for the end. If feature-flow-lite isn't installed, build it yourself to
+   the same criteria.
+
+   Before the first spawn, say in one line which stages will run (implementor, measurement,
+   looker, and a reviewer if there is behaviour to review).
+
+   Once you have handed off, every change to source goes through the implementor, however
+   small: a one-class fix after the looker is a fix round, not something to patch yourself.
+   You write only the project file, the export and the Figma test. The mod notes it when you
+   edit source after a handoff.
 6. **Measure.** Run the measurement and the full checks yourself. A failure goes back to the
    implementor with the failing lines, as a fix round. Never loosen the comparison, delete a
    case, or re-export to make it pass.
@@ -101,13 +109,16 @@ line and name it in the report. Never remove a line the person wrote.
 The plugin's mod does two things a skill can't:
 
 - **Saves marked Figma results to disk** (step 3).
-- **Holds `git commit` and `git push`** once a Figma tool has been used and a source file has
-  changed, until the measurement command passes. It counts edits by subagents too. If you are
+- **Holds `git commit` and `git push`** once this skill or a Figma tool has been used and a
+  source file has changed, until the measurement command passes. It counts edits by subagents too. If you are
   held, run the measurement and fix what it reports. Only the person can lift the hold, with
   `/figma-flow release`; don't ask them to unless the measurement itself is broken.
 
 The mod recognises the measurement as a shell command containing `test:figma`, so name the
 project's script that. `/figma-flow` shows what is being held.
+
+It also adds a note when the main conversation edits source after handing the build to an
+implementor. It doesn't refuse the edit.
 
 ## Not for
 

@@ -8,6 +8,7 @@ const flow = atom({ plugin: 'figma-flow', key: 'flow' } as const, {
   unmeasured: [],
   lastMeasure: 'none',
   isReleased: false,
+  hasHandedOff: false,
 } satisfies Flow as Flow)
 
 // `// figma-flow:save apps/playground/figma/button.json` as the first line of a use_figma
@@ -18,11 +19,21 @@ const SOURCE = /\.(tsx|jsx|ts|js|css)$/
 const NOT_SOURCE = /(^|\/)(tests?|figma|node_modules)\/|\.(test|spec|config)\.|\.d\.ts$/
 const MEASURE = /\btest:figma\b/
 const COMMIT = /\bgit\s+(commit|push)\b/
+const IMPLEMENTOR = /implement/i
 
 const isFigmaTool = (tool: string) => /^mcp__.*figma/i.test(tool) || tool.endsWith('__use_figma')
 const isInside = (path: string) => !path.startsWith('/') && !path.split('/').includes('..')
 
 export const register: Register = on => {
+  // Invoking the skill is Figma work, even when the export is already saved and no Figma tool runs.
+  on('skill.prompt', async ($, e, next) => {
+    if (/(^|:)figma-flow$/.test(e.skill)) {
+      await update($, flow, now => ({ ...now, isActive: true, hasHandedOff: false }))
+    }
+
+    return next(e)
+  }).catch(($, e, next) => next(e))
+
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'figma-flow',
@@ -56,7 +67,20 @@ export const register: Register = on => {
 
   on('tool.call', async ($, e, next) => {
     const tool = String(e.tool)
-    const input = e as unknown as { code?: unknown; command?: unknown; file_path?: unknown }
+    const input = e as unknown as {
+      code?: unknown
+      command?: unknown
+      file_path?: unknown
+      subagent_type?: unknown
+      description?: unknown
+    }
+
+    // Handing the build to an implementor: from here the main conversation shouldn't edit source.
+    if (tool === 'Agent' && IMPLEMENTOR.test(`${String(input.subagent_type ?? '')} ${String(input.description ?? '')}`)) {
+      await update($, flow, now => (now.hasHandedOff ? now : { ...now, hasHandedOff: true }))
+
+      return next(e)
+    }
 
     if (isFigmaTool(tool)) {
       await update($, flow, now => (now.isActive ? now : { ...now, isActive: true }))
@@ -109,6 +133,18 @@ export const register: Register = on => {
       if (now.isActive && isSource && ran.deny === undefined && ran.isError !== true && !now.unmeasured.includes(path)) {
         const after = await update($, flow, state => ({ ...state, unmeasured: [...state.unmeasured, path] }))
         if (!now.isReleased) $.ui.status(`figma: ${after.unmeasured.length} unmeasured`)
+      }
+      // A note, not a refusal: the edit stands, and the model reads this after it.
+      if (now.isActive && now.hasHandedOff && isSource && e.agentId === undefined && ran.deny === undefined && ran.isError !== true) {
+        return {
+          ...ran,
+          context: [
+            ...(ran.context ?? []),
+            `figma-flow: you edited ${path} yourself after handing the build to an implementor. ` +
+              'Send fixes to the implementor with the failing lines, however small; the main conversation ' +
+              'writes only the project file, exports and the Figma test.',
+          ],
+        }
       }
 
       return ran

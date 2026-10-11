@@ -23,6 +23,7 @@ ROLE_PATTERNS = [
     ("security", r"secur"),
     ("test_writer", r"test[ -]?writer|write (the )?tests|tests? author"),
     ("planner", r"plann"),
+    ("looker", r"looker|compare two images"),
     ("investigator", r"investigat"),
     ("explorer", r"explor|mapper|locat"),
     ("implementor", r"implement"),
@@ -50,6 +51,7 @@ ROSTER = {
     "summarizer": {"haiku"},
     "security": {"sonnet"},
     "migration": {"sonnet"},
+    "looker": {"opus"},  # figma-flow's fresh pair of eyes: weaker models miss subtle differences
     "other": {"haiku", "sonnet"},
 }
 
@@ -68,6 +70,7 @@ ROLE_WORDS = {
     "summarizer": r"summari|compact",
     "security": r"security",
     "migration": r"migrat",
+    "looker": r"looker|looked|screenshot",
 }
 
 STAGE_WORDS = r"investigat|explor|implement|verif|simplif|review|test.?writer|debug|docs"
@@ -178,10 +181,11 @@ AGENT_ROLES = {
     "verifier": "verifier", "test-writer": "test_writer", "debugger": "debugger",
     "docs-writer": "docs", "summarizer": "summarizer", "security-reviewer": "security",
     "migration": "migration", "planner": "planner",
+    "looker": "looker",  # figma-flow's agent
 }
 
 
-SKILL_PLUGINS = ("feature-flow", "feature-flow-lite")
+SKILL_PLUGINS = ("feature-flow", "feature-flow-lite", "figma-flow")
 
 
 def named_agent(spawn):
@@ -227,8 +231,8 @@ def roles_use_roster_models(t, sc, rule):
     bad = []
     for s in t.main_spawns:
         allowed = set(ROSTER.get(s["role"], ROSTER["other"]))
-        if sc.get("_pinned_model"):
-            allowed = {sc["_pinned_model"]}  # the arm pins every agent to one model
+        if sc.get("_pinned_model") and s["role"] != "looker":
+            allowed = {sc["_pinned_model"]}  # the arm pins every agent to one model (the looker keeps its own)
         if sc.get("risky") and s["role"] == "reviewer":
             allowed.add("opus")
         earlier = [p for p in t.of_role(s["role"]) if p["idx"] < s["idx"]]
@@ -242,8 +246,8 @@ def roles_use_roster_models(t, sc, rule):
 def handoffs_use_template(t, sc, rule):
     bad = []
     for s in t.main_spawns:
-        if s["role"] == "planner":
-            continue  # the planner gets the user's request as it is
+        if s["role"] in ("planner", "looker"):
+            continue  # the planner gets the user's request as it is; the looker only two image paths
         prompt = (t.started.get(s["id"]) or {}).get("prompt") or s["prompt"]
         need = ["GOAL"] if named_agent(s) else ["ROLE", "GOAL", "RETURN"]
         if s["role"] in ("implementor", "reviewer", "test_writer"):
@@ -263,6 +267,10 @@ def results_use_template(t, sc, rule):
         if s["role"] == "planner":  # the planner returns its own template, at up to 60 lines
             if "ACCEPTANCE CRITERIA:" not in text or lines > max(limit, 60):
                 bad.append(f"planner returned {lines} lines, ACCEPTANCE CRITERIA {'present' if 'ACCEPTANCE CRITERIA:' in text else 'missing'}")
+            continue
+        if s["role"] == "looker":  # the looker answers in its own form
+            if "VERDICT:" not in text:
+                bad.append("looker returned no VERDICT line")
             continue
         if "STATUS:" not in text:
             bad.append(f"{s['role']} returned no STATUS line")
@@ -353,9 +361,10 @@ def report_lists_agents(t, sc, rule):
 
 
 def role_count(t, sc, rule):
-    n = len(t.of_role(rule["role"]))
+    roles = [rule["role"], *rule.get("or", ())]  # "or": roles that count as this one
+    n = sum(len(t.of_role(role)) for role in roles)
     ok = rule.get("min", 0) <= n <= rule.get("max", 99)
-    return ok, f"{n} {rule['role']} spawns"
+    return ok, f"{n} {' or '.join(roles)} spawns"
 
 
 def role_before(t, sc, rule):
@@ -415,7 +424,8 @@ PIPELINE_RULES = [
     {"name": "nested verifier awaited by its implementor", "rule": "nested_verifier_awaited"},
     {"name": "no spawns refused at the depth limit", "rule": "no_depth_refusals"},
     {"name": "main conversation leaves edits to subagents", "rule": "main_does_not_edit"},
-    {"name": "a reviewer checked the result", "rule": "role_count", "role": "reviewer", "min": 1},
+    # for a design, figma-flow's looker is the review
+    {"name": "a reviewer checked the result", "rule": "role_count", "role": "reviewer", "or": ["looker"], "min": 1},
     {"name": "final report lists the agents that ran", "rule": "report_lists_agents"},
 ]
 
