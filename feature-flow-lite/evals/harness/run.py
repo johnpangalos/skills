@@ -105,6 +105,8 @@ def command(scenario, arm, prompt):
     name = arm["source"].name if arm["skill"] else ""
     prefix = {"plugin": f"/{name}:{name} ", "project": f"/{name} "}.get(arm["skill"], "")
     plugin = ["--plugin-dir", str(arm["source"])] if arm["skill"] == "plugin" else []
+    for other in arm.get("also_sources", ()):  # plugins the arm's skill hands off to
+        plugin += ["--plugin-dir", str(other)]
     return [
         "claude", "-p", prefix + prompt, *plugin,
         "--model", arm["model"], "--effort", arm["effort"],
@@ -214,6 +216,10 @@ def main():
             arm["source"] = skill_source(arm.get("ref"), arm.get("folder"))
             if arm.get("variant") or arm.get("agents") or arm["skill"] == "plugin":
                 arm["source"] = customize(arm["source"], arm.get("variant"), arm.get("agents"), arm.get("mod", False))
+            arm["also_sources"] = [
+                customize(skill_source(None, folder), None, arm.get("agents"), arm.get("mod", False))
+                for folder in arm.get("also", ())
+            ]
     jobs = []
     for sid in args.scenarios.split(","):
         scenario = by_id[sid]

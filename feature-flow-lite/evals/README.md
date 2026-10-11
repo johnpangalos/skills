@@ -66,6 +66,7 @@ Each run writes `trace.jsonl`, `diff.patch`, `meta.json`, and a `grading.json` i
 | `fd-count` | Feature in sharkdp/fd (Rust): `--count`. Black-box tests against the built binary, full suite, clippy, fmt, changelog, man page, and the zsh completion (a convention the prompt doesn't mention). |
 | `chi-mount-routes` | Bug hunt in go-chi/chi, pinned just before the upstream fix for #830: Walk and Routes() drop a handler that shares a pattern with Route()/Mount(). The prompt is the symptom, not the cause. Hidden checks are the upstream regression tests (renamed) plus one more, the suite, vet, gofmt, a regression test added, and no edits to middleware/. |
 | `click-param-spec` | Cross-module feature in pallets/click, pinned just before upstream #3877: `Parameter.spec`, `get_help_spec` moved to `Parameter`, specs in error messages, and a `human_readable_name` deprecation that warns on subclass overrides. Hidden checks are the upstream tests plus extras, the suite (an existing test must be updated), mypy, ruff, changelog, upgrade guide and parameters docs. |
+| `figma-button` | Build a Button from a saved Figma export, for figma-flow. The export holds the exact values of 30 variants; the hidden check puts back the pristine export and test, then measures every variant in Chromium in real hover, press and focus states. No Figma access needed. Run it with `-j 1`: the fixture's dev server uses a fixed port. |
 
 The feature and bug-hunt scenarios clone the repo at a pinned commit through `fixtures/setup_repo.sh` (or `setup_tailwind.sh`), caching clones and builds under `~/.cache/ff-evals`. Each hidden folder holds a `reference.patch`; the hidden checks fail on the untouched repo and pass with it applied.
 
@@ -84,6 +85,7 @@ Process checks (`kind: process`) apply only to skill arms. Outcome checks (hidde
 | `lite-v3` | feature-flow-lite from the working tree, with the sibling and hostile-input steps |
 | `lite-v2-sonnet`, `lite-v2-opus` | the shipped skill with every agent on Sonnet or Opus |
 | `lite-v2-sibling` | the shipped skill with the `sibling-criteria` variant (the sibling and hostile-input steps plus a docs-truth reviewer check) |
+| `figma-front` | figma-flow from the working tree as the entry point, with feature-flow-lite loaded beside it for the handoff (`also`), both with their mods |
 | `baseline` | No skill |
 | `sonnet-solo` | No skill, with Sonnet as the main model |
 | `lite`, `lite-haiku` | feature-flow-lite at `2540fb3`, before it moved to Haiku: Sonnet agents, or every agent pinned to Haiku at high effort |
