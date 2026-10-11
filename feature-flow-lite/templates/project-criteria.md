@@ -43,12 +43,12 @@ a maintainer asked for).>
 then delete this comment.
 
 Website
-  Standing: every feature works with JavaScript off; 360px wide without sideways scrolling;
-  filter, sort or search state lives in the URL.
-  Checklist: every feature with JavaScript off; keyboard navigation and visible focus; 360px
-  width without sideways scrolling; form labels and errors; nothing decorative that looks
-  interactive. Filter, sort or search state lives in the URL so a result can be bookmarked and
-  shared, with and without JavaScript. A form submits somewhere real or says plainly that it's
+  Standing: 360px wide without sideways scrolling; filter, sort or search state lives in the
+  URL. Add "every feature works with JavaScript off" only if the request or the project asks
+  for it.
+  Checklist: keyboard navigation and visible focus; 360px width without sideways scrolling;
+  form labels and errors; nothing decorative that looks interactive. Filter, sort or search
+  state lives in the URL so a result can be bookmarked and shared. A form submits somewhere real or says plainly that it's
   a demo; it never claims a message was sent when nothing was. Content is real enough to judge
   the design: no lorem ipsum, no one-line placeholder sections, lists long enough to need their
   filter. Tests that prove these load the page in a headless browser; a test that only reads

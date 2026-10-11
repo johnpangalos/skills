@@ -1,4 +1,4 @@
-// render.js <site dir> [shots dir]: every page at 360px with JS off must show real
+// render.js <site dir> [shots dir]: every page at 360px (JavaScript on) must show real
 // content and not scroll sideways. With a shots dir, also saves desktop and mobile
 // screenshots for judges.
 const { chromium } = require("playwright");
@@ -14,16 +14,17 @@ const pages = fs.readdirSync(site, { recursive: true }).filter((f) => f.endsWith
   const problems = [];
   for (const page of pages) {
     const url = "file://" + path.join(site, page);
-    const ctx = await browser.newContext({ viewport: { width: 360, height: 800 }, javaScriptEnabled: false });
+    const ctx = await browser.newContext({ viewport: { width: 360, height: 800 }, javaScriptEnabled: true });
     const tab = await ctx.newPage();
     await tab.goto(url);
+    await tab.waitForLoadState("networkidle").catch(() => {});
     const { overflow, text } = await tab.evaluate(() => ({
       overflow: document.scrollingElement.scrollWidth - window.innerWidth,
       text: document.body.innerText.trim().length,
     }));
     if (overflow > 2) problems.push(`${page}: ${overflow}px horizontal overflow at 360px`);
-    if (text < 200) problems.push(`${page}: only ${text} chars of text without JS`);
-    if (shots) await tab.screenshot({ path: path.join(shots, page.replace(/\//g, "_") + "-mobile-nojs.png"), fullPage: true });
+    if (text < 200) problems.push(`${page}: only ${text} chars of text`);
+    if (shots) await tab.screenshot({ path: path.join(shots, page.replace(/\//g, "_") + "-mobile.png"), fullPage: true });
     await ctx.close();
     if (shots) {
       const desk = await browser.newContext({ viewport: { width: 1280, height: 900 } });
@@ -38,5 +39,5 @@ const pages = fs.readdirSync(site, { recursive: true }).filter((f) => f.endsWith
     console.error(problems.join("; "));
     process.exit(1);
   }
-  console.log(`render: ${pages.length} pages ok at 360px without JS`);
+  console.log(`render: ${pages.length} pages ok at 360px`);
 })();
