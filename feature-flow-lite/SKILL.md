@@ -35,9 +35,9 @@ records per-role tokens and time, which `/ff-usage` prints. It never blocks a sp
 
 ## Project file
 
-What holds for every change in one repo lives in that repo, in `.claude/feature-flow.md`: the
-kind of project, its check commands, its conventions for each kind of change, standing criteria,
-the reviewer's checklist, and risky paths. Read it before step 1 of every run.
+What holds for every change in one repo lives in that repo, in `FEATURE_FLOW.md` at the repo
+root: the kind of project, its check commands, its conventions for each kind of change, standing
+criteria, the reviewer's checklist, and risky paths. Read it before step 1 of every run.
 
 If it doesn't exist, write it first from `templates/project-criteria.md` in this skill's folder.
 In an existing repo, fill it from the CI workflow, package scripts or Makefile (Checks) and from
