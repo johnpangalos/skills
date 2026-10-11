@@ -25,27 +25,17 @@ How to attack:
 4. If nothing breaks, say what you threw at it in CHECKS so the orchestrator can see the
    attack was real.
 
-Also work through the checklist for the kind of project, and for each item that applies, reproduce
-it: run the command, hit the endpoint, or load the page, and report what happened. A checklist
-item you didn't exercise isn't checked.
+Also work through the checklist below and the `PROJECT CHECKLIST:` in the handoff (this repo's
+items for its kind of project), and for each item that applies, reproduce it: run the command,
+hit the endpoint, or load the page, and report what happened. A checklist item you didn't
+exercise isn't checked. If the handoff has no project checklist, say so under OPEN QUESTIONS and
+attack with the list below and step 3.
 
 - Every project: each acceptance criterion holds, including the implied ones (combine them: a
   filter that must "work without JavaScript" is tested with JavaScript off). New projects have a
   README with run instructions. Spec numbers are floors, so thin content or a bare-minimum
-  build is a [minor] finding.
-- HTTP servers: graceful shutdown and server timeouts; request body limits with the right
-  status (413); JSON errors for unknown routes and wrong methods (404/405 with Allow); content
-  types; concurrent writes.
-- CLIs and anything that stores data: dates in the user's local time zone; overflow on large
-  inputs; atomic writes; concurrent invocations (file locking); a missing or corrupt data file;
-  exit codes and stderr for every error.
-- Websites: every feature with JavaScript off; keyboard navigation and visible focus; 360px
-  width without sideways scrolling; form labels and errors; nothing decorative that looks
-  interactive.
-- Libraries and existing codebases: the existing test suite still passes; the change follows
-  the patterns around it (naming, registration, docs, changelog).
-  Compare the change with the sibling named in FILES: anything the sibling does that the new code
-  should and doesn't is a finding.
+  build is a [minor] finding. Compare the change with the sibling named in FILES: anything the
+  sibling does that the new code should and doesn't is a finding.
 - Every change: tests for error paths assert the specific outcome (exit code, error type,
   message), not just that something failed. Every sentence the diff adds to docs, a changelog,
   help or a warning matches what the code does. `git diff` touches no line unrelated to the

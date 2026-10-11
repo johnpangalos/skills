@@ -46,7 +46,7 @@ function roleOf(subagentType: string | undefined, prompt: string | undefined): R
 
 // The handoff headers that can follow the criteria. A criterion that merely
 // starts in capitals ("UI: ...") is not one.
-const HANDOFF_HEADER = /^(?:GOAL|FILES|CONSTRAINTS|HOSTILE INPUTS|CHECKS|FOCUS|STATUS|SUMMARY|FILES TOUCHED|FINDINGS|OPEN QUESTIONS):/
+const HANDOFF_HEADER = /^(?:GOAL|FILES|CONSTRAINTS|HOSTILE INPUTS|CHECKS|PROJECT CHECKLIST|FOCUS|STATUS|SUMMARY|FILES TOUCHED|FINDINGS|OPEN QUESTIONS):/
 
 // The ACCEPTANCE CRITERIA block: from its header line through the line before
 // the next handoff header (CHECKS:, HOSTILE INPUTS:, ...), or the end.
