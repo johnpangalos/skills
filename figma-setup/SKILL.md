@@ -10,6 +10,10 @@ skill at all. In trials, a model given these pieces (the exact values exported f
 mapping rules, and a test that reports each expected and rendered value) built a Button and a
 set of Tabs correctly in about 90 seconds. The pieces did the work. This skill installs them.
 
+That held for Opus and for Sonnet, which was the cheapest and fastest of the three. Haiku on
+its own failed every run and reported success anyway, so say in the report that builds
+should run on Sonnet or Opus.
+
 It does not build components, and it does not change the design. Where the code and Figma
 disagree, it reports the difference and leaves both alone.
 
