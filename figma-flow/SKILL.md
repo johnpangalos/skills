@@ -69,7 +69,11 @@ line and name it in the report. Never remove a line the person wrote.
    - how each state is reached on the page, since the measurement drives real hover, press and
      focus;
    - the path of the export, as the source of truth where a criterion and the file disagree.
-5. **Hand off to feature-flow-lite.** Invoke the `feature-flow-lite` skill and follow its flow
+5. **Build.** For one small component, build it yourself to the criteria: in a trial on a
+   single Button, plain Opus matched all 30 variants in about a minute for $0.50, and the
+   handoff reached the same result at about 2.6 times the cost and 7 times the duration. For
+   a page, several components, or anything with behaviour to review, hand off: invoke the
+   `feature-flow-lite` skill and follow its flow
    from the implementor step, with your criteria as its `ACCEPTANCE CRITERIA` and these
    `CHECKS`: the project file's Measure command as the targeted command while working, and
    its full checks for the end. Leave the edits to its
