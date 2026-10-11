@@ -89,6 +89,7 @@ Process checks (`kind: process`) apply only to skill arms. Outcome checks (hidde
 | `figma-front` | figma-flow from the working tree as the entry point, with feature-flow-lite loaded beside it for the handoff (`also`), both with their mods |
 | `baseline` | No skill |
 | `sonnet-solo` | No skill, with Sonnet as the main model |
+| `haiku-solo` | No skill, with Haiku as the main model |
 | `lite`, `lite-haiku` | feature-flow-lite at `2540fb3`, before it moved to Haiku: Sonnet agents, or every agent pinned to Haiku at high effort |
 | `skill`, `skill-v2`, `skill-haiku` | The full feature-flow skill at its last commit (`1a69784`), at `2540fb3` (with the direct path), and at `2540fb3` with every agent on Haiku |
 | `skill-v1`, `skill-v0` | feature-flow with named agents (`b6eface`), and as first committed (`0263562`), loaded as a bare project skill with no agents |
