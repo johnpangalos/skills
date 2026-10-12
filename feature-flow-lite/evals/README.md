@@ -86,7 +86,7 @@ Process checks (`kind: process`) apply only to skill arms. Outcome checks (hidde
 | `lite-v3` | feature-flow-lite from the working tree, with the sibling and hostile-input steps |
 | `lite-v2-sonnet`, `lite-v2-opus` | the shipped skill with every agent on Sonnet or Opus |
 | `lite-v2-sibling` | the shipped skill with the `sibling-criteria` variant (the sibling and hostile-input steps plus a docs-truth reviewer check) |
-| `figma-front` | figma-flow from the working tree as the entry point, with feature-flow-lite loaded beside it for the handoff (`also`), both with their mods |
+| `figma-front` | figma-flow from the working tree with its mod. It builds directly; the feature-flow-lite handoff it once had was removed after it matched plain Opus at 2.5 to 3.5 times the cost. The pipeline process checks don't describe it. |
 | `baseline` | No skill |
 | `sonnet-solo` | No skill, with Sonnet as the main model |
 | `haiku-solo` | No skill, with Haiku as the main model |

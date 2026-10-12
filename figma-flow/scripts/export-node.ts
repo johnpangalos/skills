@@ -1,6 +1,6 @@
 // Returns one or more nodes as the text of an export file (<exports>/<name>.json): where each one
 // sits, and the exact values it is drawn with. Read-only: it changes nothing in Figma. Run it
-// with the Figma MCP (`node figma/print.ts export-node 1:91` prints the code for `use_figma`)
+// with the Figma MCP (`node scripts/print.ts export-node 1:91` prints the code for `use_figma`)
 // and save the result exactly as returned.
 //
 // One id that is a component set gives one entry per variant, keyed by the variant's name.

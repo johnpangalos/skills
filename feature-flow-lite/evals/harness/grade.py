@@ -469,7 +469,7 @@ def grade(run_dir, scenario, arm):
     t = Trace(load_trace(run_dir / "trace.jsonl"))
     workspace = pathlib.Path(json.loads((run_dir / "meta.json").read_text())["workspace"])
     checks = []
-    loaded = any(re.fullmatch(r"((feature-flow(-lite)?):)?feature-flow(-lite)?", name) for name in (t.init or {}).get("skills") or [])
+    loaded = any(re.fullmatch(r"((feature-flow(-lite)?|figma-flow):)?(feature-flow(-lite)?|figma-flow)", name) for name in (t.init or {}).get("skills") or [])
     if bool(arm["skill"]) != loaded:
         checks.append(("setup", "arm loaded the skill as configured", False, f"skill loaded={loaded}, expected {arm['skill']}"))
     scenario = dict(scenario, _pinned_model=(arm.get("agents") or {}).get("model") or arm.get("roster_model"))

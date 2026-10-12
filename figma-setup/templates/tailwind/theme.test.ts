@@ -1,13 +1,13 @@
 // Template (Tailwind v4 + Vitest): put this next to the project's Tailwind theme file and fix
 // the three paths below. `ourTheme` is the CSS file holding the project's `@theme` block; if
 // the project has none, import an empty string instead.
-import tokens from "../figma/tokens.json?raw";
+import tokens from "<EXPORTS DIR>/tokens.json?raw";
 import tailwindTheme from "tailwindcss/theme.css?raw";
 import ourTheme from "./theme.css?raw";
 
 /**
- * Figma must not drift from the Tailwind theme. figma/tokens.json is a snapshot of the
- * Figma file's variables and styles (refresh it with figma/export-tokens.ts); every one
+ * Figma must not drift from the Tailwind theme. tokens.json is a snapshot of the
+ * Figma file's variables and styles (refresh it with the figma-flow skill's export-tokens); every one
  * has to resolve to a token in the theme the components are compiled against, with the
  * same value. A Figma variable that isn't a Tailwind default fails here until it is added
  * to the project's `@theme` block under the same name.

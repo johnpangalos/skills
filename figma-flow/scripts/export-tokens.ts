@@ -1,6 +1,6 @@
 // Returns the Figma file's variables, text styles and effect styles as the text of
-// figma/tokens.json. Read-only: it changes nothing in Figma. Run it with the Figma MCP
-// (`node figma/print.ts export-tokens` prints the code for `use_figma`); the Variables REST
+// the project's token snapshot. Read-only: it changes nothing in Figma. Run it with the Figma MCP
+// (`node scripts/print.ts export-tokens` prints the code for `use_figma`); the Variables REST
 // API is Enterprise-only, so this is how the snapshot is refreshed.
 export default async function exportTokens(): Promise<string> {
   const hex = ({ r, g, b }: RGB) =>

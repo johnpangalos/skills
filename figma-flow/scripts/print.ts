@@ -1,15 +1,17 @@
 // Prints one of the scripts in this folder as the plain JavaScript that the Figma MCP's
 // `use_figma` tool runs: types stripped, and a final `return` calling its default export.
+// Run it by its full path from the project; it reads nothing from the working directory but
+// the file given to `hash`.
 //
-//   node figma/print.ts export-tokens
-//   node figma/print.ts export-node 1:91
+//   node scripts/print.ts export-tokens
+//   node scripts/print.ts export-node 1:91
 //
 // The scripts run inside Figma, not in Node, so they can't be imported and called here.
 //
 // To check that a saved export is exactly what Figma returned, without reading it all back:
 //
-//   node figma/print.ts export-tokens --hash     the script returns only { length, hash }
-//   node figma/print.ts hash figma/tokens.json   the same two numbers for the saved file
+//   node scripts/print.ts export-tokens --hash     the script returns only { length, hash }
+//   node scripts/print.ts hash <saved file>      the same two numbers for the saved file
 import { readFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
 
@@ -17,7 +19,7 @@ import { stripTypeScriptTypes } from "node:module";
 const HASH = "let hash = 5381;\nfor (let i = 0; i < out.length; i++) hash = ((hash * 33) ^ out.charCodeAt(i)) >>> 0;";
 
 const [name, ...rest] = process.argv.slice(2);
-if (!name) throw new Error("usage: node figma/print.ts <script> [arguments] [--hash] | hash <file>");
+if (!name) throw new Error("usage: node scripts/print.ts <script> [arguments] [--hash] | hash <file>");
 
 if (name === "hash") {
   const out = readFileSync(rest[0]!, "utf8");

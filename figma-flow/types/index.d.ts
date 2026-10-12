@@ -8,8 +8,6 @@ export type Flow = {
   lastMeasure: 'none' | 'passed' | 'failed'
   /** The person released the hold with `/figma-flow release`. */
   isReleased: boolean
-  /** An implementor has been spawned, so source edits belong to it from here on. */
-  hasHandedOff: boolean
 }
 
 declare module 'claude-code' {

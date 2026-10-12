@@ -26,10 +26,10 @@ Rules:
 
 ### Building something from Figma
 
-1. **Export the node's values**, fresh, every time you build or change a design:
-   `node <SCRIPTS DIR>/print.ts export-node <node id> [<node id>…]` prints a script; run it
-   with the Figma MCP's `use_figma` and save the result, exactly as returned, to
-   `<EXPORTS DIR>/<name>.json`. It ends in a hash the tests check.
+1. **Export the node's values**, fresh, every time you build or change a design. The export
+   scripts live in the figma-flow skill, not in this repo: use that skill, which runs
+   `export-node` through the Figma MCP's `use_figma`. Save the result, exactly as returned,
+   to `<EXPORTS DIR>/<name>.json`. It ends in a hash the tests check.
 2. **Build it** from the export, following the mapping above.
 3. **Render it** on a page the test can open: <where such pages live and their URL pattern>.
    The page doesn't have to look like the Figma file; it has to show every variant, with each
