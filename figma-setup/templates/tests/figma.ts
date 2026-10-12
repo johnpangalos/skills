@@ -3,7 +3,7 @@ import { expect, type Locator } from "@playwright/test";
 
 export type Region = { x: number; y: number; width: number; height: number };
 
-/** A node as figma/export-node.ts describes it: where it is and the values it is drawn with. */
+/** A node as the figma-flow skill's export-node describes it: where it is and the values it is drawn with. */
 export type FigmaNode = Region & {
   fill: string | null;
   stroke: string | null;
@@ -24,7 +24,7 @@ export type FigmaNode = Region & {
 };
 
 /**
- * Reads a file written by figma/export-node.ts. Its last line is a hash of the rest, so a
+ * Reads a file written by the figma-flow skill's export-node. Its last line is a hash of the rest, so a
  * copy that lost or changed a character throws here instead of testing against wrong numbers.
  */
 export function loadFigmaNodes(url: URL): Record<string, FigmaNode> {

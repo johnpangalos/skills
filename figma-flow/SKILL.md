@@ -1,128 +1,106 @@
 ---
 name: figma-flow
-description: Use when turning a Figma frame or component into React that has to match the design exactly, or when checking existing React against its Figma source. Reads the design, turns Figma's exact values into acceptance criteria, builds (handing large work to feature-flow-lite), then verifies in two steps: exact values are measured against Figma's, and a fresh agent looks at screenshots.
+description: Use when turning a Figma frame or component into React that has to match the design exactly, when checking existing React against its Figma source, or when a Figma export needs refreshing. Exports Figma's exact values with the scripts this skill carries, builds with the project's own components and tokens, measures the result against those values, then has a fresh agent look at screenshots for what the values can't describe.
 ---
 
 # Figma Flow
 
-For work that starts from a Figma design. This skill does the parts that are about Figma:
-reading the design, exporting its values, measuring and looking at the result. For large work
-it is a front end to feature-flow-lite, whose implementor builds and whose checks and fix
-loop run as usual. Figma decides: never approximate a value, and never "fix" a design in code. If Figma
-looks wrong, say so and leave the code matching Figma.
+Export, build, measure, look. Figma decides: never approximate a value, and never "fix" a
+design in code. If Figma looks wrong, say so and leave the code matching Figma.
 
-An export of Figma's values is a list of exact, testable facts, and a test that reports the
-expected and rendered value of each one. In trials that test did most of the work: with it,
-both a cheap implementor and the main conversation alone got a component right. So the
-handoff is for size, not for correctness.
+The measurement is what makes this work. In trials, a model with nothing but Figma's exact
+values in a file and a test that reports each expected and rendered value built a Button and
+a set of Tabs correctly in about a minute, on Sonnet as well as Opus. Handing the build to a
+pipeline of subagents reached the same result at several times the cost, so this skill builds
+directly. Haiku on its own failed every run and reported success: use Sonnet or Opus.
 
-The proof has two halves, and both are needed. In a trial with eight planted bugs, an agent
-looking at screenshots found most of them and described each one, but it also reported
-differences on a correct component, so it can't say "done". Measured values caught all eight
-and passed the correct one, but only cover what was exported. Look to find problems; measure
-to finish.
+Measuring and looking do different jobs, and both are needed. In a trial with eight planted
+bugs, measured values caught all eight and passed a correct component, but they only cover
+what was exported. An agent looking at screenshots found most of the bugs and described each
+one, but it also reported differences on a correct component, so it can't say "done". Measure
+to finish; look to find what the measurement can't read.
 
-## Project file
+## What the project provides
 
-feature-flow-lite keeps what holds for one repo in `FEATURE_FLOW.md` at the repo root, and
-writes it on its first run. figma-flow keeps its part in the same file, under `## Figma`:
-where the design is, where the mapping rules are, how to export a node, how to measure, how
-to render a page, and what can't be measured here.
+Read the project's instructions first (the "Building from Figma" section of CLAUDE.md, or a
+`## Figma` section in FEATURE_FLOW.md). They say how Figma maps to code here, where exports
+are kept, and how to measure. Follow them over anything here.
 
-Read the file before step 1. If it has no `## Figma` section, write one from
-`templates/figma-section.md` in this skill's folder, filled in from the repo (its CLAUDE.md,
-package scripts, and any existing export or Figma test), and add the lines the template names
-to Checks, Standing criteria and Reviewer checklist. If `FEATURE_FLOW.md` doesn't exist yet,
-let feature-flow-lite write it first, as its skill says, then add the section. Don't stop to
-ask about it; say in the report that you wrote it.
+If the project has no mapping rules or no measurement (a `test:figma` command with
+`expectToMatchFigma`), stop and say so: the figma-setup skill installs them. Guessing a
+mapping is how drift starts.
 
-If the repo has no mapping rules, no export script or no measurement, say which is missing
-and stop: guessing a mapping is how drift starts. When a run teaches something the section
-should have said (a value the export can't read, a state that needs a special step), add a
-line and name it in the report. Never remove a line the person wrote.
+## The export scripts
+
+They are in this skill's `scripts/` folder, not in the project:
+
+- `export-node.ts`: the exact values of one or more nodes, with a hash as its last line.
+- `export-tokens.ts`: the file's variables, text styles and effect styles.
+- `print.ts`: prints either as plain JavaScript for the Figma MCP's `use_figma`. The scripts
+  run inside Figma, so they can't be run in Node directly.
+
+```sh
+node <this skill's folder>/scripts/print.ts export-node <node id> [<node id>…]
+node <this skill's folder>/scripts/print.ts export-tokens
+```
+
+Pass the printed code to `use_figma` with this as its first line, so the mod writes the result
+to the file and nobody retypes it:
+
+```
+// figma-flow:save <the project's exports folder>/<name>.json
+```
+
+Without the mod, save the output exactly as returned. To check a saved file against Figma
+without reading it back, print the script with `--hash` and compare its `{ length, hash }`
+with `node <this skill's folder>/scripts/print.ts hash <file>`.
 
 ## Flow
 
 1. **Read the design.** With the Figma MCP, get the frame's structure, a screenshot, and the
    variables and styles it uses. List every component instance and find the code component for
-   each. List every state the design draws (hover, pressed, focus, disabled). If the project
-   already holds a saved export of the node, read that instead.
+   each. List every state the design draws (hover, pressed, focus, disabled).
 2. **Stop on gaps, before building.** A value with no variable, a component with no code
    counterpart, a font the project doesn't serve: report these to the person now. Don't fill a
    gap with an arbitrary value.
-3. **Export what Figma says**, unless it is already saved. Run the project's export script on
-   the node through `use_figma`, with this as the script's first line:
-
-   ```
-   // figma-flow:save <path the project keeps exports in>/<name>.json
-   ```
-
-   The mod writes the result to that file, so don't retype it. Without the mod, save the
-   output exactly as returned.
-4. **Write the acceptance criteria from the export.** This is feature-flow-lite's step 1, and
-   it is where your judgment goes. The project file's standing criteria go in as usual. Resolve every exported value to the project's own name for
-   it before handing off: which token a colour is, which utility a size, radius or weight is.
-   Then write criteria the implementor can act on without opening Figma or guessing:
-   - one line per group of nodes that share values ("default variant, default size: fill
-     fuchsia-700, text white, radius md, label 14px/20px semibold, 16px side padding"), with
-     what changes in each state;
-   - the project's rules as criteria (theme utilities only, existing components, prop names);
-   - how each state is reached on the page, since the measurement drives real hover, press and
-     focus;
-   - the path of the export, as the source of truth where a criterion and the file disagree.
-5. **Build.** For a component, build it yourself to the criteria. In trials on a Button
-   (30 variants) and on Tabs (four parts, five states, keyboard behaviour), plain Opus with
-   the measurement to loop on passed every check in about 90 seconds for about $0.55. The
-   handoff passed the same checks at 2.5 to 3.5 times the cost and 7 to 10 times the
-   duration. For a whole page or a set of components at once, which is unmeasured, hand
-   off: invoke the `feature-flow-lite` skill and follow its flow
-   from the implementor step, with your criteria as its `ACCEPTANCE CRITERIA` and these
-   `CHECKS`: the project file's Measure command as the targeted command while working, and
-   its full checks for the end. If feature-flow-lite isn't installed, build it yourself to
-   the same criteria.
-
-   Before the first spawn, say in one line which stages will run (implementor, measurement,
-   looker, and a reviewer if there is behaviour to review).
-
-   Once you have handed off, every change to source goes through the implementor, however
-   small: a one-class fix after the looker is a fix round, not something to patch yourself.
-   You write only the project file, the export and the Figma test. The mod notes it when you
-   edit source after a handoff.
-6. **Measure.** Run the measurement and the full checks yourself. A failure goes back to the
-   implementor with the failing lines, as a fix round. Never loosen the comparison, delete a
-   case, or re-export to make it pass.
-7. **Look**, once the measurement passes. Take a screenshot of the Figma node (or use the
-   saved one) and one of the rendered page in the same states and at the same scale. Spawn
-   `figma-flow:looker` with the two image paths and a one-line description of the layout, and
-   nothing about what was built. If that agent type isn't listed, use a general-purpose agent
-   with the prompt in `agents/looker.md`, on the most capable model available. This is the
-   review step for a design; feature-flow-lite's reviewer is for behaviour the design implies
-   (keyboard, disabled, props) and runs when there is some.
-8. **Act on the looker.** A `likely` finding the measurement didn't catch means the export or
-   the test is missing a value: add it, then send the fix to the implementor. Turn each
-   `unsure` finding into a measurement, or say why it can't be measured. Don't argue with a
-   finding from memory: check it against the exported values.
-9. **Stop after feature-flow-lite's two fix rounds** and report: what was built, what the
-   measurement covers, what the looker still flags that the measurement can't read, every gap
-   from step 2, and which agents ran.
+3. **Export what Figma says**, fresh, every time: run `export-node` on the nodes as above. If
+   the task hands you a saved export and no Figma access, use that.
+4. **Build.** Resolve every exported value to the project's own name for it first (which token
+   a colour is, which utility a size, radius or weight is), then build with the project's
+   components and theme utilities only. Render the result on a page the measurement can open.
+   The page doesn't have to look like the Figma file: it has to show every variant, with each
+   state reachable the way a person reaches it.
+5. **Measure.** Add a spec that calls `expectToMatchFigma` for each entry in the export, then
+   run the project's measurement and its other checks. Fix the code until they pass. Never
+   loosen the comparison, delete a case, or edit an export to make it pass.
+6. **Look**, once the measurement passes. Take a screenshot of the Figma node and one of the
+   rendered page in the same states and at the same scale. Spawn `figma-flow:looker` with the
+   two image paths and a one-line description of the layout, and nothing about what was
+   built. If that agent type isn't listed, use a general-purpose agent with the prompt in
+   `agents/looker.md`, on the most capable model available.
+7. **Act on the looker.** A `likely` finding the measurement didn't catch means the export or
+   the test is missing a value: add it, then fix the code. Turn each `unsure` finding into a
+   measurement, or say why it can't be measured. Don't argue with a finding from memory: check
+   it against the exported values.
+8. **Stop after two rounds** of fixing and report: what was built, what the measurement
+   covers, what the looker still flags that the measurement can't read, and every gap from
+   step 2. Say plainly if a check still fails.
 
 ## The mod
 
 The plugin's mod does two things a skill can't:
 
-- **Saves marked Figma results to disk** (step 3).
+- **Saves marked Figma results to disk** (the `figma-flow:save` line above).
 - **Holds `git commit` and `git push`** once this skill or a Figma tool has been used and a
-  source file has changed, until the measurement command passes. It counts edits by subagents too. If you are
-  held, run the measurement and fix what it reports. Only the person can lift the hold, with
-  `/figma-flow release`; don't ask them to unless the measurement itself is broken.
+  source file has changed, until the measurement command passes. It counts edits by subagents
+  too. If you are held, run the measurement and fix what it reports. Only the person can lift
+  the hold, with `/figma-flow release`; don't ask them to unless the measurement itself is
+  broken.
 
 The mod recognises the measurement as a shell command containing `test:figma`, so name the
 project's script that. `/figma-flow` shows what is being held.
 
-It also adds a note when the main conversation edits source after handing the build to an
-implementor. It doesn't refuse the edit.
-
 ## Not for
 
 Designs with no Figma source, restyling by taste, or work where "close" is acceptable: build
-those directly, or with feature-flow-lite alone.
+those directly. For a change that is mostly behaviour, not appearance, use feature-flow-lite.
