@@ -10,6 +10,17 @@ Agent skills by [@johnpangalos](https://github.com/johnpangalos).
 
 ## Install
 
+As Claude Code plugins, from this repo's marketplace:
+
+```sh
+/plugin marketplace add johnpangalos/skills
+/plugin install feature-flow-lite@johnpangalos-skills
+/plugin install figma-flow@johnpangalos-skills
+/plugin install figma-setup@johnpangalos-skills
+```
+
+A plugin install loads each skill's subagents, hooks and mod with no workspace trust prompt. Or install the skills directly:
+
 ```sh
 npx skills add johnpangalos/skills@feature-flow-lite -g
 ```
