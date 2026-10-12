@@ -1,6 +1,6 @@
 # feature-flow-lite: what the evals found
 
-A summary of every eval run on feature-flow-lite and its Figma offshoots so far. How to run them is in [`evals/README.md`](evals/README.md).
+A summary of every eval run on feature-flow-lite and its Figma offshoots so far. How to run them is in [`evals/README.md`](evals/README.md). The same summary as a page: https://claude.ai/artifact/Rp6rjf1Kat6uqSC6LMBud1
 
 Unless a section says otherwise, every build was judged blind: one inspector per build, then two independent judges per task ranking all of that task's builds on one 1–10 scale. Every skill setup runs the main session on Opus at medium effort. Scores from different judging passes aren't comparable, so each table below compares setups only within itself.
 
