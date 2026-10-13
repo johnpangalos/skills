@@ -20,6 +20,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 
 # first match wins, so the specific roles come before the generic ones
 ROLE_PATTERNS = [
+    ("criteria_checker", r"criteria.?check"),
     ("security", r"secur"),
     ("test_writer", r"test[ -]?writer|write (the )?tests|tests? author"),
     ("planner", r"plann"),
@@ -51,6 +52,7 @@ ROSTER = {
     "summarizer": {"haiku"},
     "security": {"sonnet"},
     "migration": {"sonnet"},
+    "criteria_checker": {"opus", "sonnet", "haiku"},  # the ac-check arms vary its model
     "looker": {"opus"},  # figma-flow's fresh pair of eyes: weaker models miss subtle differences
     "other": {"haiku", "sonnet"},
 }
@@ -71,6 +73,7 @@ ROLE_WORDS = {
     "security": r"security",
     "migration": r"migrat",
     "looker": r"looker|looked|screenshot",
+    "criteria_checker": r"criteria.?check",
 }
 
 STAGE_WORDS = r"investigat|explor|implement|verif|simplif|review|test.?writer|debug|docs"
@@ -182,6 +185,7 @@ AGENT_ROLES = {
     "docs-writer": "docs", "summarizer": "summarizer", "security-reviewer": "security",
     "migration": "migration", "planner": "planner",
     "looker": "looker",  # figma-flow's agent
+    "criteria-checker": "criteria_checker",
 }
 
 
@@ -231,7 +235,7 @@ def roles_use_roster_models(t, sc, rule):
     bad = []
     for s in t.main_spawns:
         allowed = set(ROSTER.get(s["role"], ROSTER["other"]))
-        if sc.get("_pinned_model") and s["role"] != "looker":
+        if sc.get("_pinned_model") and s["role"] not in ("looker", "criteria_checker"):
             allowed = {sc["_pinned_model"]}  # the arm pins every agent to one model (the looker keeps its own)
         if sc.get("risky") and s["role"] == "reviewer":
             allowed.add("opus")
@@ -432,7 +436,11 @@ PIPELINE_RULES = [
 
 def run_command(check, workspace, scenario_id):
     env = dict(os.environ, HIDDEN=str(HERE / "hidden" / scenario_id), PYTHONPATH=str(workspace), PYTHONDONTWRITEBYTECODE="1")
-    proc = subprocess.run(check["cmd"], shell=True, cwd=workspace, env=env, capture_output=True, text=True, timeout=900)
+    try:
+        proc = subprocess.run(check["cmd"], shell=True, cwd=workspace, env=env, capture_output=True, text=True,
+                              timeout=check.get("timeout_s", 900))
+    except subprocess.TimeoutExpired:
+        return False, f"timed out after {check.get('timeout_s', 900)}s"
     tail = (proc.stdout + proc.stderr).strip().splitlines()[-3:]
     return proc.returncode == 0, " | ".join(tail) or f"exit {proc.returncode}"
 

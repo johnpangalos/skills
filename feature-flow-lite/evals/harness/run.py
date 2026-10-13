@@ -37,6 +37,9 @@ SCRUB = [
     "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_REMOTE_SESSION_ID", "CLAUDE_EFFORT",
     "CLAUDE_CODE_EFFORT_LEVEL", "CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL_FORCE",
     "CLAUDECODE",
+    # the calling session's background-task mode would let a build's -p session end while its
+    # agents still run, and the run would be graded half-built
+    "CLAUDE_AUTO_BACKGROUND_TASKS", "CLAUDE_CODE_BG_TASKS_REPORT_RUNNING",
 ]
 
 
@@ -129,6 +132,7 @@ def run_one(out, scenario, arm_name, arm, rep, prompt, dry_run):
     prepare(workspace, scenario, arm)
     env = {k: v for k, v in os.environ.items() if k not in SCRUB}
     env["CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH"] = str(scenario.get("depth", 3))
+    env["CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS"] = "0"  # wait for background agents however long they take
     env["FEATURE_FLOW_USAGE_LOG"] = str(run_dir / "usage.jsonl")  # read by the plugin's mod, when loaded
     started = time.time()
     with open(run_dir / "trace.jsonl", "w") as trace, open(run_dir / "stderr.txt", "w") as err:
@@ -150,6 +154,8 @@ def run_one(out, scenario, arm_name, arm, rep, prompt, dry_run):
         "wall_s": round(time.time() - started, 1), "workspace": str(workspace),
     }, indent=2))
     result = grade.grade(run_dir, scenario, arm)
+    for path in scenario.get("cleanup", ()):  # build output too big to keep per run (graded already)
+        shutil.rmtree(workspace / path, ignore_errors=True)
     summary = result["summary"]
     print(f"{scenario['id']:<22} {arm_name:<12} rep {rep}: {summary['passed']}/{summary['total']} checks, ${result['metrics']['cost_usd']}", flush=True)
     return scenario["id"], arm_name, result
@@ -221,11 +227,11 @@ def main():
                 for folder in arm.get("also", ())
             ]
     jobs = []
-    for sid in args.scenarios.split(","):
-        scenario = by_id[sid]
-        prompt = scenario.get("prompt") or by_id[scenario["prompt_from"]]["prompt"]
-        for arm_name in args.arms.split(","):
-            for rep in range(1, args.reps + 1):
+    for rep in range(1, args.reps + 1):  # rep-major, so parallel workers start on different arms
+        for sid in args.scenarios.split(","):
+            scenario = by_id[sid]
+            prompt = scenario.get("prompt") or by_id[scenario["prompt_from"]]["prompt"]
+            for arm_name in args.arms.split(","):
                 jobs.append((scenario, arm_name, config["arms"][arm_name], rep, prompt))
     budget = sum(s.get("budget_usd", 5) for s, *_ in jobs)
     print(f"{len(jobs)} runs, worst-case spend ${budget} (sum of --max-budget-usd caps) -> {args.out}", file=sys.stderr)
