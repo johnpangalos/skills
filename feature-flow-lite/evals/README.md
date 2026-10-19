@@ -28,6 +28,7 @@ A summary of every eval run on feature-flow-lite and its Figma offshoots so far 
   - More reviewers (v6, v7): cost more without a reliable gain.
   - Opus triage of findings (v8): twice the cost, and the gain vanished on a held-out site.
   - The article learnings plus a screenshot reviewer (v9): no better than v5, and it stopped writing tests for websites.
+- **What was removed:** the Opus reviewer on risky paths. On 30 builds of auth, payments and concurrency tasks, a Haiku reviewer matched it on every hidden case for 21% less. Haiku also reproduced the token and refund races itself.
 - **On websites, plain Opus still builds the best-looking product**, but it barely tests it. That pattern holds on every task so far.
 - **For Figma component work the pipeline doesn't pay.** With an exact-value test in the repo, plain Opus or plain Sonnet matched every value at a fraction of the cost. figma-flow now builds directly.
 - **Noise is large.** About 0.9 points of spread per build means 3 builds per setup can only show gains of roughly half a point or more. Several early leads disappeared on a re-run.
@@ -47,6 +48,7 @@ A summary of every eval run on feature-flow-lite and its Figma offshoots so far 
 | Mod | Handoff guard, tests check, usage log | 7.31 against 7.00 on 6 website builds each; the gap is one broken build. | Yes (PR #6) |
 | Project file | Per-repo `FEATURE_FLOW.md` | 7.98 against 7.37 for v5 + mod, ahead on all three tasks. | Yes (PR #7) |
 | Figma | Pipeline vs plain model on Button and Tabs | Plain Opus and Sonnet passed everything for a quarter of the cost or less. | figma-flow builds directly (PR #10) |
+| Opus reviewer | Does moving the reviewer to Opus on risky paths pay? | No. Both arms passed every hidden case in 30 of 30 builds; Opus cost 27% more. | Removed |
 
 ### Earlier rounds (1–5)
 
@@ -75,6 +77,7 @@ Round 4 is the only early round run on the released skill and this harness. Its 
 | `ui-lib` | React Tabs, Dialog and Combobox to the WAI-ARIA patterns, with hidden Testing Library tests |
 | `website-trails` | A hiking-club site, held out from all tuning |
 | `figma-button`, `figma-tabs` | Build from a saved Figma export, measured against its exact values |
+| `risky-auth`, `risky-refunds`, `risky-inventory` | Auth tokens, refunds with idempotency keys, and stock reservations under threads, on the shop package |
 
 The first six are "the benchmark" below.
 
@@ -218,6 +221,30 @@ These are pass/fail runs on `figma-button` (30 variants) and `figma-tabs` (11 ex
 - The pipeline makes Haiku usable, but plain Sonnet gets the same result for about an eighth of the cost.
 - So figma-flow builds directly, and figma-setup installs the measuring test and the mapping rules. A page-sized design, where a pipeline might matter, is still untested.
 
+### 10. Opus reviewer on risky paths
+
+The skill used to move the reviewer to Opus (at medium effort) for auth, payments, migrations, concurrency and the project file's risky paths. That rule came over from the full feature-flow skill and had never been tested. This round tested it.
+
+There were three risky tasks on the shop package. Each had hidden tests aimed at the bugs a careless build makes:
+
+- **Auth** (`risky-auth`): reset tokens. The hidden tests cover the 1800 s boundary, `now=0`, a default clock read at call time, reuse, and concurrent redemption.
+- **Payments** (`risky-refunds`): refunds. They cover sub-cent, NaN and non-Decimal amounts, a replay after a full refund, an equal amount spelled differently, and whether a failed refund burns its key.
+- **Concurrency** (`risky-inventory`): stock reservations. They race 24 threads for 10 units, 1000 times.
+
+The hidden tests were checked against a careful and a naive reference: the careful one passes every case, and the naive one fails. That includes the oversell race, caught 6 times out of 6. The two arms were the shipped skill with its mod, and the same skill without the Opus clause. Each ran 5 builds per task. The results were scored by hidden test case (`hidden_cases.py`), not blind-judged.
+
+| Task | Opus reviewer: cases | Haiku reviewer: cases | Opus cost | Haiku cost | Blocking findings (Opus / Haiku) |
+|---|---|---|---|---|---|
+| Auth | 15/15 in 5 of 5 | 15/15 in 5 of 5 | $0.62 | $0.48 | 0.2 / 0.8 |
+| Refunds | 17/17 in 5 of 5 | 17/17 in 5 of 5 | $0.89 | $0.71 | 1.8 / 3.0 |
+| Inventory | 14/14 in 5 of 5 | 14/14 in 5 of 5 | $0.76 | $0.60 | 0.8 / 2.4 |
+| All | 30 of 30 builds perfect | 30 of 30 builds perfect | $0.76 | $0.60 | 0.9 / 2.1 |
+
+- Every build in both arms passed every hidden case and `./check.sh`. The Opus orchestrator's acceptance criteria and hostile inputs already name these edges, so the implementor builds them right and the reviewer has little left to catch.
+- The Haiku reviewer wasn't weaker on real bugs. It reproduced the single-use race in two auth builds and a concurrent over-refund in another (41 of 300 trials). Those are races the hidden tests can't reliably force. Opus found the same class of issues, for example decimal-context precision in refunds.
+- Haiku raised more blocking findings, and more of them were contrived: int subclasses that override `__gt__`, a spoofed `__class__`, a mutated frozen dataclass. Fix rounds came out about even (1.6 against 1.5 implementor runs per build), so the extra noise didn't cost much.
+- The tasks hit the ceiling, so this can't rule out a gain on a harder risky change. But 30 perfect builds without the rule leaves the rule nothing to prove, and it cost 27% more per build. It was removed. The reviewer stays a Haiku red team everywhere.
+
 ### Open questions
 
 - Does v5 plus the screenshot reviewer alone (without v9's verify paragraph) keep the product gain and the tests?
@@ -275,6 +302,9 @@ Each run writes `trace.jsonl`, `diff.patch`, `meta.json`, and a `grading.json` i
 | `click-param-spec` | Cross-module feature in pallets/click, pinned just before upstream #3877: `Parameter.spec`, `get_help_spec` moved to `Parameter`, specs in error messages, and a `human_readable_name` deprecation that warns on subclass overrides. Hidden checks are the upstream tests plus extras, the suite (an existing test must be updated), mypy, ruff, changelog, upgrade guide and parameters docs. |
 | `figma-button` | Build a Button from a saved Figma export, for figma-flow. The export holds the exact values of 30 variants; the hidden check puts back the pristine export and test, then measures every variant in Chromium in real hover, press and focus states. No Figma access needed. Run it with `-j 1`: the fixture's dev server uses a fixed port. |
 | `figma-tabs` | Build Tabs from a saved Figma export, for figma-flow: four components with layout, five tab states, and the WAI-ARIA keyboard pattern. Two hidden checks: the pristine exact-value test (11 cases) and behaviour tests the build never sees (7 cases: roles, roving tab stop, arrows wrapping past a disabled tab, Home and End). Run it with `-j 1`. |
+| `risky-auth` | Auth: the `reset-token-expiry` prompt with harder hidden checks: the 1800 s boundary, fractional seconds, `now=0`, the default clock read at call time, reuse inside the window, independent tokens, and 8 threads redeeming one token (300 trials). |
+| `risky-refunds` | Payments: orders and partial refunds with idempotency keys. Hidden checks cover zero, negative, sub-cent, non-Decimal, NaN, sNaN and infinite amounts; whole-cent spellings (`1.5`, `1E+1`); a replay after a full refund; a replay with `5` for `5.00`; a failed refund leaving its key unused; keys scoped per order; and the total fixed when the order is placed. |
+| `risky-inventory` | Concurrency: stock reservations under a thread pool. Hidden checks cover the settle-twice paths, qty types (float, str, None, bool), a failed reserve changing nothing, and three races over 1000 trials each (24 threads for 10 units, 8 threads releasing one reservation, commit against release). |
 
 The feature and bug-hunt scenarios clone the repo at a pinned commit through `fixtures/setup_repo.sh` (or `setup_tailwind.sh`), caching clones and builds under `~/.cache/ff-evals`. Each hidden folder holds a `reference.patch`; the hidden checks fail on the untouched repo and pass with it applied.
 
@@ -300,6 +330,7 @@ Process checks (`kind: process`) apply only to skill arms. Outcome checks (hidde
 | `lite`, `lite-haiku` | feature-flow-lite at `2540fb3`, before it moved to Haiku: Sonnet agents, or every agent pinned to Haiku at high effort |
 | `skill`, `skill-v2`, `skill-haiku` | The full feature-flow skill at its last commit (`1a69784`), at `2540fb3` (with the direct path), and at `2540fb3` with every agent on Haiku |
 | `skill-v1`, `skill-v0` | feature-flow with named agents (`b6eface`), and as first committed (`0263562`), loaded as a bare project skill with no agents |
+| `lite-opus-reviewer`, `lite-no-opus-reviewer` | The skill with its mod before the Opus-reviewer clause was removed (`f11f50c`; the batch ran it as `lite-pc-mod`), and the working tree |
 
 The full feature-flow skill isn't in the tree any more, so its arms load it from history: an arm can pin any git `ref` of any skill `folder`, and the harness extracts that version with `git archive`. An arm can also lay a variant's files over the skill (`variant`: `harness/variants/<name>/`, which can replace SKILL.md or add and replace agents), pin every agent's model and effort or a single agent's (`agents`), and tell the grader which model every role should run on (`roster_model`). The skill's value claim is that `lite-v2` matches `baseline` on outcomes for no more money.
 
@@ -309,6 +340,14 @@ The full feature-flow skill isn't in the tree any more, so its arms load it from
 - The harness strips session-scoped variables (`CLAUDE_CODE_SESSION_ID`, `CLAUDE_EFFORT`, `CLAUDE_CODE_SUBAGENT_MODEL`, …) so the calling session's model and effort don't leak into the runs, and it sets the spawn depth explicitly (3 unless the scenario says otherwise).
 - Every run is capped with `--max-budget-usd`, and `run.py` prints the worst-case total before it starts. On Opus, one rep of everything with both arms usually costs a few dollars.
 - One rep is a smoke test, not a result. Agents choose their stages freshly on each run, so compare arms at `-n 3` or more.
+
+### Hidden tests by case
+
+```sh
+python3 hidden_cases.py results/<batch> [results/<batch> ...]
+```
+
+A hidden check passes or fails as a whole file. `hidden_cases.py` re-runs each run's hidden tests verbosely in its workspace and prints, for each scenario and arm: mean cases passed, builds that passed every case, cost, reviewer models, `[blocking]` findings returned, implementor rounds, and how often each case failed. It needs the workspaces in `/tmp`.
 
 ### Main thread vs subagents
 

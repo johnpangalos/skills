@@ -35,10 +35,6 @@ apply.>
 what doesn't apply, and add what this project has taught you (a bug a reviewer missed, a check
 a maintainer asked for).>
 
-## Risky paths
-
-<Paths where the reviewer runs on Opus: auth, payments, migrations, concurrency. Or "none".>
-
 <!-- Defaults by kind. Copy the block for this project's kind into the two sections above,
 then delete this comment.
 

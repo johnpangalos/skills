@@ -24,7 +24,7 @@ prompt with `ROLE: <role>`, and end it with the result template.
 | `investigator` | haiku / low | Read, Grep, Glob | Only on an existing codebase too large to read the relevant parts directly. |
 | `implementor` | haiku / medium | Read, Edit, Write, Bash, Grep, Glob | Every run: builds the change, running targeted tests as it goes and the full checks once at the end. |
 | `simplifier` | haiku / medium | Read, Edit, Grep, Glob | Only when the diff is large. Behavior-preserving cleanup. |
-| `reviewer` | haiku / medium | Read, Grep, Glob, Bash | Every run, after the checks pass. Red team: writes and runs probes to break the change. For auth, payments, migrations, concurrency or the project file's risky paths, pass `model: opus` and `effort: medium` on the call. |
+| `reviewer` | haiku / medium | Read, Grep, Glob, Bash | Every run, after the checks pass. Red team: writes and runs probes to break the change. |
 
 No agent can spawn another; the main conversation spawns all of them.
 
@@ -37,7 +37,7 @@ records per-role tokens and time, which `/ff-usage` prints. It never blocks a sp
 
 What holds for every change in one repo lives in that repo, in `FEATURE_FLOW.md` at the repo
 root: the kind of project, its check commands, its conventions for each kind of change, standing
-criteria, the reviewer's checklist, and risky paths. Read it before step 1 of every run.
+criteria and the reviewer's checklist. Read it before step 1 of every run.
 
 If it doesn't exist, write it first from `templates/project-criteria.md` in this skill's folder.
 In an existing repo, fill it from the CI workflow, package scripts or Makefile (Checks) and from
