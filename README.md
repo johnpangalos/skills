@@ -31,6 +31,20 @@ feature-flow-lite keeps what's true of one repo (check commands, conventions, st
 
 feature-flow-lite also ships a mod (a handoff guard, a tests check and `/ff-usage`) that needs Claude Code v2.1.287 or later and loads only where the plugin's hooks load.
 
+### feature-flow-lite on OpenAI Codex CLI
+
+Codex reads the same `SKILL.md`, but not the Claude Code agents or mod, so the skill carries a Codex installer. It needs Node 18 or later.
+
+```sh
+git clone --depth 1 https://github.com/johnpangalos/skills
+node skills/feature-flow-lite/codex/install.mjs                 # roles use the session's model
+node skills/feature-flow-lite/codex/install.mjs --model <name>  # or pin a cheaper model for them
+```
+
+It copies the skill to `~/.agents/skills/`, generates the four roles as Codex custom agents (`~/.codex/agents/ff_*.toml`) from `agents/*.md`, and registers [`codex/hooks.mjs`](feature-flow-lite/codex/hooks.mjs) in `~/.codex/hooks.json`. Trust the hooks once with `/hooks` in Codex, then ask for a change with `$feature-flow-lite`; `$ff-usage` prints per-role tokens and time. Re-run it after pulling to update; `--uninstall` removes it.
+
+The differences from Claude Code: Codex can't limit a custom agent's tools, so the read-only roles are read-only by instruction; the hooks put dropped criteria back as context when the subagent starts rather than into its handoff; and an implementor run that changed no test file is sent back once rather than flagged.
+
 ```sh
 npx skills add johnpangalos/skills@figma-flow -g
 ```

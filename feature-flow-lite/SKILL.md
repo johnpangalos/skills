@@ -19,6 +19,13 @@ off the call so the pins hold. If those agent types aren't listed (the skill was
 somewhere that doesn't load `agents/`), use `general-purpose` with the model below, start the
 prompt with `ROLE: <role>`, and end it with the result template.
 
+**On Codex** the roles are the custom agents `ff_investigator`, `ff_implementor`,
+`ff_simplifier` and `ff_reviewer`, which `codex/install.mjs` generates from `agents/`. Ask for
+each by name; its effort (and model, if the install pinned one) is in its file. Codex can't
+limit an agent's tools, so the table's Tools column holds only because each prompt says so. If
+those agents aren't installed, spawn a default agent with the body of `agents/<role>.md` from
+this skill's folder as the start of its prompt.
+
 | Agent | Model / effort | Tools | When |
 |---|---|---|---|
 | `investigator` | haiku / low | Read, Grep, Glob | Only on an existing codebase too large to read the relevant parts directly. |
@@ -32,6 +39,9 @@ The plugin also ships a mod in `hooks/` that starts once this skill is invoked. 
 latest `ACCEPTANCE CRITERIA:` block back into any implementor or reviewer handoff that drops it,
 adds a note to the result when an implementor run leaves no changed test file in the repo, and
 records per-role tokens and time, which `/ff-usage` prints. It never blocks a spawn or a tool call.
+On Codex the same three jobs run as hooks from `codex/hooks.mjs`: the criteria go back in as
+context when the subagent starts, an implementor run with no changed test file is sent back
+once instead of noted, and `$ff-usage` prints the table.
 
 ## Project file
 
