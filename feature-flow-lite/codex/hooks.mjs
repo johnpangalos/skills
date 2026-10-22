@@ -1,14 +1,18 @@
 #!/usr/bin/env node
 // feature-flow-lite's Codex hooks: the Codex port of hooks/register.ts. Codex
-// runs it once per hook event with the event as JSON on stdin. It keeps the
-// ACCEPTANCE CRITERIA block in implementor and reviewer handoffs, sends an
-// implementor that changed no test file back once, and logs per-role tokens
-// and time, which `node hooks.mjs usage` (the ff-usage skill) prints. It only
-// acts on spawns of the ff_* agents and never denies a tool call.
+// runs it once per hook event with the event as JSON on stdin. It puts the
+// latest ACCEPTANCE CRITERIA block back into an implementor or reviewer
+// spawn_agent call that drops it, sends an implementor that changed no test
+// file back once, and logs per-role tokens and time, which `node hooks.mjs
+// usage` (the ff-usage skill) prints. It only acts on the ff_* agents and never
+// denies a tool call.
 //
-// State lives in $FEATURE_FLOW_CODEX_HOME (default ~/.codex/feature-flow-lite),
-// one file per repo: the latest criteria, whether the last spawn dropped them,
-// and the start time of each running role.
+// Field names follow openai/codex (codex-rs): spawn_agent takes `message` (or
+// `items`) and `agent_type`; subagent hooks run in the child with the parent's
+// session_id, agent_id set to the child's thread id and agent_type to its role;
+// a transcript's token_count events carry a cumulative `total_token_usage`.//
+// State lives in $FEATURE_FLOW_CODEX_HOME (default ~/.codex/feature-flow-lite):
+// the latest criteria per session, and a usage log per repo.
 
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -20,13 +24,17 @@ import { fileURLToPath } from 'node:url'
 export const ROLES = ['investigator', 'implementor', 'simplifier', 'reviewer']
 export const AGENT_PREFIX = 'ff_'
 const ROLE_ORDER = ['orchestrator', ...ROLES]
-// Criteria older than this belong to an earlier feature.
-const CRITERIA_TTL_MS = 6 * 60 * 60 * 1000
 
-export function roleOf(agentType) {
-  if (typeof agentType !== 'string' || !agentType.startsWith(AGENT_PREFIX)) return undefined
-  const name = agentType.slice(AGENT_PREFIX.length)
-  return ROLES.includes(name) ? name : undefined
+// Our roles: a named ff_ agent, or a default agent whose message opens with a
+// ROLE line (the SKILL.md fallback).
+export function roleOf(agentType, message) {
+  if (typeof agentType === 'string' && agentType.startsWith(AGENT_PREFIX)) {
+    const name = agentType.slice(AGENT_PREFIX.length)
+    return ROLES.includes(name) ? name : undefined
+  }
+  const first = (message ?? '').split('\n').find(line => line.trim() !== '')
+  const match = first?.trim().match(/^ROLE:\s*([a-z]+)$/)
+  return match && ROLES.includes(match[1]) ? match[1] : undefined
 }
 
 // The handoff headers that can follow the criteria. A criterion that merely
@@ -49,13 +57,22 @@ export function criteriaBlock(text) {
   return lines.slice(start, end).join('\n').trimEnd()
 }
 
-// Every string inside a tool's arguments. Codex doesn't document spawn_agent's
-// argument names, so the handoff and the agent type are looked for in all of them.
-export function strings(value) {
-  if (typeof value === 'string') return [value]
-  if (Array.isArray(value)) return value.flatMap(strings)
-  if (value && typeof value === 'object') return Object.values(value).flatMap(strings)
-  return []
+// The handoff text of a spawn_agent call: `message`, or the text items.
+function handoffText(input) {
+  if (typeof input?.message === 'string') return input.message
+  if (Array.isArray(input?.items)) {
+    return input.items
+      .filter(item => item?.type === 'text' && typeof item.text === 'string')
+      .map(item => item.text)
+      .join('\n')
+  }
+  return ''
+}
+
+// The same call with the criteria appended to its handoff.
+export function withCriteria(input, block) {
+  if (typeof input.message === 'string') return { ...input, message: `${input.message.trimEnd()}\n\n${block}` }
+  return { ...input, items: [...(input.items ?? []), { type: 'text', text: block }] }
 }
 
 // One porcelain line is "XY path", or "XY old -> new" for a rename.
@@ -93,22 +110,18 @@ function changedPaths(cwd) {
   }
 }
 
-// The last token totals in a Codex transcript (its rollout JSONL), or
-// undefined when the file has none. The format isn't documented, so this
-// looks for any total_token_usage object and keeps the last one.
+// The thread's cumulative token totals from the last token_count event (or
+// token_usage_record) in its transcript, or undefined when there is none.
 export function tokenTotals(transcriptPath) {
   if (!transcriptPath || !existsSync(transcriptPath)) return undefined
   let last
-  const visit = value => {
-    if (!value || typeof value !== 'object') return
-    if (value.total_token_usage && typeof value.total_token_usage === 'object') last = value.total_token_usage
-    for (const child of Object.values(value)) visit(child)
-  }
   try {
     for (const line of readFileSync(transcriptPath, 'utf8').split('\n')) {
-      if (line.trim() === '') continue
+      if (!line.includes('total_token_usage') && !line.includes('thread_token_usage')) continue
       try {
-        visit(JSON.parse(line))
+        const payload = JSON.parse(line)?.payload
+        const usage = payload?.info?.total_token_usage ?? payload?.thread_token_usage
+        if (usage) last = usage
       } catch {}
     }
   } catch {
@@ -123,21 +136,21 @@ export function tokenTotals(transcriptPath) {
 }
 
 const home = () => process.env.FEATURE_FLOW_CODEX_HOME || join(homedir(), '.codex', 'feature-flow-lite')
-const repoKey = cwd => createHash('sha256').update(cwd ?? '').digest('hex').slice(0, 16)
-const statePath = cwd => join(home(), 'state', `${repoKey(cwd)}.json`)
-const usagePath = cwd => join(home(), 'usage', `${repoKey(cwd)}.jsonl`)
+const key = value => createHash('sha256').update(String(value ?? '')).digest('hex').slice(0, 16)
+const statePath = sessionId => join(home(), 'state', `${key(sessionId)}.json`)
+const usagePath = cwd => join(home(), 'usage', `${key(cwd)}.jsonl`)
 
-function readState(cwd) {
+function readState(sessionId) {
   try {
-    return JSON.parse(readFileSync(statePath(cwd), 'utf8'))
+    return JSON.parse(readFileSync(statePath(sessionId), 'utf8'))
   } catch {
-    return { running: {} }
+    return { started: {} }
   }
 }
 
-function writeState(cwd, state) {
+function writeState(sessionId, state) {
   mkdirSync(join(home(), 'state'), { recursive: true })
-  writeFileSync(statePath(cwd), JSON.stringify(state))
+  writeFileSync(statePath(sessionId), JSON.stringify(state))
 }
 
 function appendUsage(cwd, record) {
@@ -145,106 +158,6 @@ function appendUsage(cwd, record) {
   appendFileSync(usagePath(cwd), `${JSON.stringify(record)}\n`)
   const extra = process.env.FEATURE_FLOW_USAGE_LOG
   if (extra) appendFileSync(extra, `${JSON.stringify(record)}\n`)
-}
-
-const usageRecord = (role, event, durationMs, tokens) => ({
-  role,
-  session_id: event.session_id ?? null,
-  agent_id: event.agent_id ?? null,
-  model: event.model ?? null,
-  tokens: tokens ?? null,
-  durationMs,
-  at: new Date().toISOString(),
-})
-
-// Each handler takes the event and returns what to print on stdout, if anything.
-export const handlers = {
-  // Invoking the skill starts a new feature: forget the last one's criteria.
-  UserPromptSubmit(event) {
-    if (!/\bfeature-flow-lite\b/.test(event.prompt ?? '')) return undefined
-    const state = readState(event.cwd)
-    delete state.criteria
-    delete state.dropped
-    writeState(event.cwd, state)
-    return undefined
-  },
-
-  // A spawn that carries the criteria saves them; an implementor or reviewer
-  // spawn that doesn't is marked so SubagentStart can add them back.
-  PreToolUse(event) {
-    if (!/^(?:spawn_agent|Agent)$/.test(event.tool_name ?? '')) return undefined
-    const texts = strings(event.tool_input)
-    const state = readState(event.cwd)
-    const block = texts.map(criteriaBlock).find(found => found !== undefined)
-    if (block !== undefined) {
-      state.criteria = { text: block, at: Date.now() }
-      state.dropped = false
-    } else {
-      state.dropped = texts.some(text => /\bff_(?:implementor|reviewer)\b/.test(text))
-    }
-    writeState(event.cwd, state)
-    return undefined
-  },
-
-  SubagentStart(event) {
-    const role = roleOf(event.agent_type)
-    if (!role) return undefined
-    const state = readState(event.cwd)
-    state.running[event.agent_id ?? role] = Date.now()
-
-    let output
-    const fresh = state.criteria && Date.now() - state.criteria.at < CRITERIA_TTL_MS
-    if ((role === 'implementor' || role === 'reviewer') && state.dropped && fresh) {
-      output = JSON.stringify({
-        hookSpecificOutput: {
-          hookEventName: 'SubagentStart',
-          additionalContext:
-            'feature-flow-lite: the handoff dropped the acceptance criteria. These are the ' +
-            `orchestrator's latest, word for word:\n\n${state.criteria.text}`,
-        },
-      })
-    }
-    state.dropped = false
-    writeState(event.cwd, state)
-    return output
-  },
-
-  // Logs the role's time and tokens. An implementor that changed no test file
-  // is sent back once (stop_hook_active is set on the second stop).
-  SubagentStop(event) {
-    const role = roleOf(event.agent_type)
-    if (!role) return undefined
-    if (role === 'implementor' && !event.stop_hook_active) {
-      const paths = changedPaths(event.cwd)
-      if (paths !== undefined && !paths.some(isTestFile)) {
-        return JSON.stringify({
-          decision: 'block',
-          reason:
-            'feature-flow-lite: this run changed no test files. The acceptance criteria require ' +
-            'tests, including one per hostile input. Add them, or say under FINDINGS why this ' +
-            'change genuinely needs none, then return the result again.',
-        })
-      }
-    }
-
-    // The run is over: log it once, covering any round the check above added.
-    const state = readState(event.cwd)
-    const key = event.agent_id ?? role
-    const started = state.running[key]
-    appendUsage(event.cwd, usageRecord(role, event, started ? Date.now() - started : 0, tokenTotals(event.agent_transcript_path)))
-    delete state.running[key]
-    writeState(event.cwd, state)
-    return undefined
-  },
-
-  // The orchestrator's running totals, once this session has run a role.
-  Stop(event) {
-    const records = readUsage(event.cwd).filter(r => r.session_id === event.session_id)
-    if (!records.some(r => r.role !== 'orchestrator')) return undefined
-    const tokens = tokenTotals(event.transcript_path)
-    if (tokens) appendUsage(event.cwd, usageRecord('orchestrator', event, 0, tokens))
-    return undefined
-  },
 }
 
 function readUsage(cwd) {
@@ -258,27 +171,131 @@ function readUsage(cwd) {
   }
 }
 
+// Each handler takes the event and returns what to print on stdout, if anything.
+export const handlers = {
+  // Invoking the skill by name starts a new feature: forget the last one's criteria.
+  UserPromptSubmit(event) {
+    if (!/\$feature-flow-lite\b/.test(event.prompt ?? '')) return undefined
+    const state = readState(event.session_id)
+    delete state.criteria
+    writeState(event.session_id, state)
+    return undefined
+  },
+
+  // A spawn that carries the criteria saves them; an implementor or reviewer
+  // spawn that drops them gets the saved block appended to its handoff.
+  PreToolUse(event) {
+    if (event.tool_name !== 'spawn_agent' || !event.tool_input || typeof event.tool_input !== 'object') return undefined
+    const input = event.tool_input
+    const text = handoffText(input)
+    const role = roleOf(input.agent_type, text)
+    if (!role) return undefined
+
+    const state = readState(event.session_id)
+    const block = criteriaBlock(text)
+    if (block !== undefined) {
+      state.criteria = block
+      writeState(event.session_id, state)
+      return undefined
+    }
+    if ((role !== 'implementor' && role !== 'reviewer') || !state.criteria) return undefined
+    return JSON.stringify({
+      systemMessage: `feature-flow-lite: restored the ACCEPTANCE CRITERIA block in the ${role} handoff.`,
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'allow',
+        updatedInput: withCriteria(input, state.criteria),
+      },
+    })
+  },
+
+  SubagentStart(event) {
+    if (!roleOf(event.agent_type)) return undefined
+    const state = readState(event.session_id)
+    state.started[event.agent_id] = Date.now()
+    writeState(event.session_id, state)
+    return undefined
+  },
+
+  // Runs at the end of each of a subagent's turns. An implementor that changed
+  // no test file is sent back once (stop_hook_active is set on the retry);
+  // otherwise the turn is logged with the thread's tokens so far.
+  SubagentStop(event) {
+    const role = roleOf(event.agent_type)
+    if (!role) return undefined
+
+    if (role === 'implementor' && !event.stop_hook_active) {
+      const paths = changedPaths(event.cwd)
+      if (paths !== undefined && !paths.some(isTestFile)) {
+        return JSON.stringify({
+          decision: 'block',
+          reason:
+            'feature-flow-lite: this run changed no test files. The acceptance criteria require ' +
+            'tests, including one per hostile input. Add them, or say under FINDINGS why this ' +
+            'change genuinely needs none, then return the result again.',
+        })
+      }
+    }
+
+    const started = readState(event.session_id).started[event.agent_id]
+    appendUsage(event.cwd, {
+      role,
+      session_id: event.session_id ?? null,
+      agent_id: event.agent_id ?? null,
+      model: event.model ?? null,
+      tokens: tokenTotals(event.agent_transcript_path) ?? null,
+      durationMs: started ? Date.now() - started : null,
+      at: new Date().toISOString(),
+    })
+    return undefined
+  },
+
+  // The orchestrator's tokens so far, once this session has run a role.
+  Stop(event) {
+    const records = readUsage(event.cwd).filter(r => r.session_id === event.session_id)
+    if (!records.some(r => r.role !== 'orchestrator')) return undefined
+    const tokens = tokenTotals(event.transcript_path)
+    if (!tokens) return undefined
+    appendUsage(event.cwd, {
+      role: 'orchestrator',
+      session_id: event.session_id ?? null,
+      agent_id: null,
+      model: event.model ?? null,
+      tokens,
+      durationMs: null,
+      at: new Date().toISOString(),
+    })
+    return undefined
+  },
+}
+
 const row = cells => [cells[0].padEnd(14), ...cells.slice(1).map(cell => cell.padStart(12))].join(' ').trimEnd()
 
 // The per-role table for the latest session in this repo that ran a role.
-// Orchestrator totals are cumulative, so only its last record counts.
+// Tokens and time are cumulative per thread, so each agent (and the
+// orchestrator) counts once, at its last record.
 export function usageTable(records) {
   const latest = [...records].reverse().find(r => r.role !== 'orchestrator')
   if (!latest) return 'ff-usage: nothing recorded yet in this repo. Records start once a feature-flow-lite role runs.'
-  const session = records.filter(r => r.session_id === latest.session_id)
-  const orchestrator = session.filter(r => r.role === 'orchestrator').slice(-1)
-  const kept = [...orchestrator, ...session.filter(r => r.role !== 'orchestrator')]
+  const lastPerAgent = new Map()
+  for (const r of records) {
+    if (r.session_id === latest.session_id) lastPerAgent.set(r.role === 'orchestrator' ? 'orchestrator' : r.agent_id, r)
+  }
+  const kept = [...lastPerAgent.values()]
 
-  const num = (rows, field) =>
-    rows.some(r => r.tokens) ? String(rows.reduce((n, r) => n + (r.tokens?.[field] ?? 0), 0)) : '-'
-  const cells = (name, rows) => [
-    name,
-    String(rows.length),
-    num(rows, 'input_tokens'),
-    num(rows, 'cached_input_tokens'),
-    num(rows, 'output_tokens'),
-    rows.some(r => r.durationMs) ? (rows.reduce((n, r) => n + r.durationMs, 0) / 1000).toFixed(1) : '-',
-  ]
+  const sum = (rows, pick) => {
+    const known = rows.map(pick).filter(value => typeof value === 'number')
+    return known.length === 0 ? undefined : known.reduce((n, value) => n + value, 0)
+  }
+  const cells = (name, rows) => {
+    const seconds = sum(rows, r => r.durationMs)
+    return [
+      name,
+      String(rows.length),
+      ...['input_tokens', 'cached_input_tokens', 'output_tokens'].map(field => String(sum(rows, r => r.tokens?.[field]) ?? '-')),
+      seconds === undefined ? '-' : (seconds / 1000).toFixed(1),
+    ]
+  }
   const roles = ROLE_ORDER.filter(role => kept.some(r => r.role === role))
   return [
     `ff-usage (feature-flow-lite, Codex session ${latest.session_id ?? 'unknown'})`,

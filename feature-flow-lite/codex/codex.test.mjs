@@ -33,10 +33,11 @@ test('criteriaBlock stops at the next handoff header', () => {
   assert.equal(criteriaBlock('GOAL: x'), undefined)
 })
 
-test('roleOf only knows the ff_ agents', () => {
+test('roleOf knows the ff_ agents and the ROLE-line fallback', () => {
   assert.equal(roleOf('ff_reviewer'), 'reviewer')
   assert.equal(roleOf('ff_other'), undefined)
-  assert.equal(roleOf('worker'), undefined)
+  assert.equal(roleOf('worker', 'GOAL: x'), undefined)
+  assert.equal(roleOf('default', '\nROLE: implementor\nGOAL: x'), 'implementor')
 })
 
 test('isTestFile', () => {
@@ -44,32 +45,42 @@ test('isTestFile', () => {
   for (const path of ['src/a.ts', 'testing.md']) assert.ok(!isTestFile(path), path)
 })
 
-test('a dropped criteria block comes back when the reviewer starts', () => {
+test('a spawn that drops the criteria gets them back in its message', () => {
   const env = { FEATURE_FLOW_CODEX_HOME: mkdtempSync(join(tmpdir(), 'ff-home-')) }
-  const cwd = repo()
-  const base = { session_id: 's1', cwd }
-  hook(env, { ...base, hook_event_name: 'PreToolUse', tool_name: 'spawn_agent', tool_input: { agent: 'ff_implementor', message: `GOAL: x\n${BLOCK}\nCHECKS: y` } })
-  assert.equal(hook(env, { ...base, hook_event_name: 'SubagentStart', agent_type: 'ff_implementor', agent_id: 'a1' }), '')
+  const base = { session_id: 's1', cwd: repo(), hook_event_name: 'PreToolUse', tool_name: 'spawn_agent' }
+  const spawn = tool_input => hook(env, { ...base, tool_input })
 
-  hook(env, { ...base, hook_event_name: 'PreToolUse', tool_name: 'spawn_agent', tool_input: { agent: 'ff_reviewer', message: 'GOAL: review it' } })
-  const out = JSON.parse(hook(env, { ...base, hook_event_name: 'SubagentStart', agent_type: 'ff_reviewer', agent_id: 'a2' }))
-  assert.match(out.hookSpecificOutput.additionalContext, /Rejects an empty name/)
+  assert.equal(spawn({ agent_type: 'ff_implementor', message: `GOAL: x\n${BLOCK}\nCHECKS: y` }), '')
 
-  // Only once, and not for other agents.
-  assert.equal(hook(env, { ...base, hook_event_name: 'SubagentStart', agent_type: 'ff_reviewer', agent_id: 'a3' }), '')
-  hook(env, { ...base, hook_event_name: 'PreToolUse', tool_name: 'spawn_agent', tool_input: { agent: 'worker', message: 'x' } })
-  assert.equal(hook(env, { ...base, hook_event_name: 'SubagentStart', agent_type: 'worker', agent_id: 'a4' }), '')
+  const out = JSON.parse(spawn({ agent_type: 'ff_reviewer', message: 'GOAL: review it', reasoning_effort: 'medium' }))
+  assert.equal(out.hookSpecificOutput.permissionDecision, 'allow')
+  assert.deepEqual(out.hookSpecificOutput.updatedInput, {
+    agent_type: 'ff_reviewer',
+    message: `GOAL: review it\n\n${BLOCK}`,
+    reasoning_effort: 'medium',
+  })
+
+  // items instead of message; the ROLE-line fallback; other agents untouched.
+  const items = JSON.parse(spawn({ agent_type: 'ff_implementor', items: [{ type: 'text', text: 'GOAL: fix' }] }))
+  assert.deepEqual(items.hookSpecificOutput.updatedInput.items.at(-1), { type: 'text', text: BLOCK })
+  assert.ok(spawn({ message: 'ROLE: reviewer\nGOAL: z' }).includes('Rejects an empty name'))
+  assert.equal(spawn({ agent_type: 'ff_investigator', message: 'GOAL: look' }), '')
+  assert.equal(spawn({ agent_type: 'worker', message: 'GOAL: other' }), '')
+  assert.equal(hook(env, { ...base, tool_name: 'exec_command', tool_input: { command: 'ls' } }), '')
 
   // Invoking the skill again forgets them.
-  hook(env, { ...base, hook_event_name: 'UserPromptSubmit', prompt: '$feature-flow-lite add a flag' })
-  hook(env, { ...base, hook_event_name: 'PreToolUse', tool_name: 'spawn_agent', tool_input: { agent: 'ff_reviewer', message: 'GOAL: y' } })
-  assert.equal(hook(env, { ...base, hook_event_name: 'SubagentStart', agent_type: 'ff_reviewer', agent_id: 'a5' }), '')
+  hook(env, { session_id: 's1', hook_event_name: 'UserPromptSubmit', prompt: '$feature-flow-lite add a flag' })
+  assert.equal(spawn({ agent_type: 'ff_reviewer', message: 'GOAL: y' }), '')
 })
 
 test('an implementor with no changed test file is sent back once, then logged', () => {
   const env = { FEATURE_FLOW_CODEX_HOME: mkdtempSync(join(tmpdir(), 'ff-home-')) }
   const cwd = repo()
-  const base = { session_id: 's1', cwd, agent_type: 'ff_implementor', agent_id: 'a1' }
+  const transcript = join(cwd, '.rollout.jsonl')
+  const usage = (input, output) =>
+    JSON.stringify({ timestamp: 't', type: 'event_msg', payload: { type: 'token_count', info: { total_token_usage: { input_tokens: input, cached_input_tokens: 0, output_tokens: output } } } })
+  writeFileSync(transcript, `${usage(10, 1)}\n${usage(40, 4)}\n`)
+  const base = { session_id: 's1', cwd, agent_type: 'ff_implementor', agent_id: 'a1', agent_transcript_path: transcript }
   writeFileSync(join(cwd, 'app.py'), 'x = 1\n')
   hook(env, { ...base, hook_event_name: 'SubagentStart' })
 
@@ -77,22 +88,26 @@ test('an implementor with no changed test file is sent back once, then logged', 
   assert.equal(first.decision, 'block')
   assert.equal(hook(env, { ...base, hook_event_name: 'SubagentStop', stop_hook_active: true }), '')
 
+  // A second implementor, with a test file this time.
   writeFileSync(join(cwd, 'test_app.py'), 'def test(): pass\n')
+  hook(env, { ...base, agent_id: 'a2', hook_event_name: 'SubagentStart' })
   assert.equal(hook(env, { ...base, agent_id: 'a2', hook_event_name: 'SubagentStop', stop_hook_active: false }), '')
 
   const table = spawnSync('node', [HOOKS, 'usage', cwd], { encoding: 'utf8', env: { ...process.env, ...env } }).stdout
-  assert.match(table, /implementor\s+2\s+-/)
+  assert.match(table, /implementor\s+2\s+80\s+0\s+8\s+\d+\.\d/)
 })
 
-test('usageTable counts only the orchestrator\'s last record', () => {
+test('usageTable counts each thread once, at its last record', () => {
   const t = (input, output) => ({ input_tokens: input, cached_input_tokens: 0, output_tokens: output })
   const table = usageTable([
-    { role: 'orchestrator', session_id: 's', tokens: t(10, 1), durationMs: 0 },
-    { role: 'implementor', session_id: 's', tokens: t(5, 5), durationMs: 2000 },
-    { role: 'orchestrator', session_id: 's', tokens: t(30, 3), durationMs: 0 },
+    { role: 'orchestrator', session_id: 's', tokens: t(10, 1), durationMs: null },
+    { role: 'implementor', session_id: 's', agent_id: 'a', tokens: t(5, 5), durationMs: 1000 },
+    { role: 'implementor', session_id: 's', agent_id: 'a', tokens: t(9, 6), durationMs: 2000 },
+    { role: 'orchestrator', session_id: 's', tokens: t(30, 3), durationMs: null },
   ])
-  assert.match(table, /orchestrator\s+1\s+30\s+0\s+3/)
-  assert.match(table, /total\s+2\s+35\s+0\s+8\s+2\.0/)
+  assert.match(table, /orchestrator\s+1\s+30\s+0\s+3\s+-/)
+  assert.match(table, /implementor\s+1\s+9\s+0\s+6\s+2\.0/)
+  assert.match(table, /total\s+2\s+39\s+0\s+9\s+2\.0/)
 })
 
 test('agentToml keeps the role prompt and pins effort', () => {

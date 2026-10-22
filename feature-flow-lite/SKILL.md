@@ -20,11 +20,12 @@ somewhere that doesn't load `agents/`), use `general-purpose` with the model bel
 prompt with `ROLE: <role>`, and end it with the result template.
 
 **On Codex** the roles are the custom agents `ff_investigator`, `ff_implementor`,
-`ff_simplifier` and `ff_reviewer`, which `codex/install.mjs` generates from `agents/`. Ask for
-each by name; its effort (and model, if the install pinned one) is in its file. Codex can't
-limit an agent's tools, so the table's Tools column holds only because each prompt says so. If
-those agents aren't installed, spawn a default agent with the body of `agents/<role>.md` from
-this skill's folder as the start of its prompt.
+`ff_simplifier` and `ff_reviewer`, which `codex/install.mjs` generates from `agents/`. Spawn
+each with that `agent_type` and leave `model` and `reasoning_effort` off the call; the effort
+(and model, if the install pinned one) is in its file. Codex can't limit an agent's tools, so
+the table's Tools column holds only because each prompt says so. If those agents aren't
+installed, spawn a default agent whose message starts with `ROLE: <role>` and then the body of
+`agents/<role>.md` from this skill's folder.
 
 | Agent | Model / effort | Tools | When |
 |---|---|---|---|
@@ -39,9 +40,9 @@ The plugin also ships a mod in `hooks/` that starts once this skill is invoked. 
 latest `ACCEPTANCE CRITERIA:` block back into any implementor or reviewer handoff that drops it,
 adds a note to the result when an implementor run leaves no changed test file in the repo, and
 records per-role tokens and time, which `/ff-usage` prints. It never blocks a spawn or a tool call.
-On Codex the same three jobs run as hooks from `codex/hooks.mjs`: the criteria go back in as
-context when the subagent starts, an implementor run with no changed test file is sent back
-once instead of noted, and `$ff-usage` prints the table.
+On Codex the same three jobs run as hooks from `codex/hooks.mjs`, except that an implementor
+run with no changed test file is sent back once instead of noted, and `$ff-usage` prints the
+table.
 
 ## Project file
 

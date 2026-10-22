@@ -41,9 +41,9 @@ node skills/feature-flow-lite/codex/install.mjs                 # roles use the 
 node skills/feature-flow-lite/codex/install.mjs --model <name>  # or pin a cheaper model for them
 ```
 
-It copies the skill to `~/.agents/skills/`, generates the four roles as Codex custom agents (`~/.codex/agents/ff_*.toml`) from `agents/*.md`, and registers [`codex/hooks.mjs`](feature-flow-lite/codex/hooks.mjs) in `~/.codex/hooks.json`. Trust the hooks once with `/hooks` in Codex, then ask for a change with `$feature-flow-lite`; `$ff-usage` prints per-role tokens and time. Re-run it after pulling to update; `--uninstall` removes it.
+It copies the skill to `~/.agents/skills/`, generates the four roles as Codex custom agents (`~/.codex/agents/ff_*.toml`) from `agents/*.md`, and registers [`codex/hooks.mjs`](feature-flow-lite/codex/hooks.mjs) in `~/.codex/hooks.json`. Trust the hooks once with `/hooks` in Codex, then ask for a change with `$feature-flow-lite`; `$ff-usage` prints per-role tokens and time. Re-run it after pulling to update; `--uninstall` removes it. Don't install it with `codex plugin marketplace add`: Codex reads this repo's marketplace, but loads a plugin's skills only from a `skills/` folder and has no plugin agents, so the plugin would arrive empty.
 
-The differences from Claude Code: Codex can't limit a custom agent's tools, so the read-only roles are read-only by instruction; the hooks put dropped criteria back as context when the subagent starts rather than into its handoff; and an implementor run that changed no test file is sent back once rather than flagged.
+The differences from Claude Code: Codex can't limit a custom agent's tools, so the read-only roles are read-only by instruction; and an implementor run that changed no test file is sent back once rather than flagged.
 
 ```sh
 npx skills add johnpangalos/skills@figma-flow -g
