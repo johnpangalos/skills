@@ -12,9 +12,10 @@ case "$1" in
     if mise run //playtests:test >"$log" 2>&1; then grep -E "Tests " "$log"; else grep -E "FAIL|Tests |Error" "$log" | head -20; exit 1; fi ;;
   lint) mise run lint 2>&1 | tail -3; exit "${PIPESTATUS[0]}" ;;
   format)
-    # only the Lua files the run changed, so formatting drift already in the pinned commit doesn't count
-    files=$({ git diff HEAD --name-only --diff-filter=AM; git ls-files --others --exclude-standard; } | grep -E '\.lua$' | sort -u)
-    [ -z "$files" ] && { echo "no Lua changes"; exit 0; }
+    # only the files under src/ the run changed (the repo formats src/ only), so drift already in the
+    # pinned commit doesn't count
+    files=$({ git diff HEAD --name-only --diff-filter=AM; git ls-files --others --exclude-standard; } | grep -E '^src/.*\.lua$' | sort -u)
+    [ -z "$files" ] && { echo "no Lua changes under src/"; exit 0; }
     out=$(stylua --check $files 2>&1) || { echo "$out" | grep -E "^Diff in" | head -10; echo "stylua --check failed"; exit 1; }
     echo "stylua clean on $(echo $files | wc -w) files" ;;
   jscheck)
