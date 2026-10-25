@@ -20,6 +20,7 @@ Four rounds, every build judged blind (full report: https://claude.ai/artifact/D
 | 2 | the same three plus Tailwind; six arms | A reviewer checklist and written acceptance criteria lifted v2 and lite; lite with Haiku agents scored highest (8.0) for the least money ($0.52). |
 | 3 | features in Tailwind, chi, click, fd | Lite with Haiku agents beat plain Opus in every repo (7.9 against 7.4); a Sonnet orchestrator with an Opus planner cost the most. |
 | 4 | round 3's features with stronger checks, plus a chi bug hunt and a click cross-module change | The shipped lite scored 7.9 against 7.7 for plain Opus at the same cost and took 5.7 minutes against 2.3; a low-effort implementor and a parallel reviewer didn't pay. |
+| 5 | two messy-code tasks: a bug buried in a generated 330-file monolith, and a third provider in a library of copy-pasted providers | The shipped lite never chose the investigator or the simplifier (0 of 159 runs across all rounds). Forcing both cost $0.01–0.06 more per task and scored highest on both tasks (8.25 and 7.92, against 8.00 and 7.67 for lite and 7.67 and 6.75 for plain Opus). Plain Opus copied the provider code in all three runs. The simplifier itself did substantive work in only one of six runs. |
 
 ## Trigger cases (`triggers/`)
 
@@ -64,6 +65,8 @@ Each run writes `trace.jsonl`, `diff.patch`, `meta.json`, and a `grading.json` i
 | `click-duration` | Feature in pallets/click (Python): a `Duration` parameter type. Hidden pytest file, full suite, strict mypy, ruff, changelog, docs. |
 | `fd-count` | Feature in sharkdp/fd (Rust): `--count`. Black-box tests against the built binary, full suite, clippy, fmt, changelog, man page, and the zsh completion (a convention the prompt doesn't mention). |
 | `chi-mount-routes` | Bug hunt in go-chi/chi, pinned just before the upstream fix for #830: Walk and Routes() drop a handler that shares a pattern with Route()/Mount(). The prompt is the symptom, not the cause. Hidden checks are the upstream regression tests (renamed) plus one more, the suite, vet, gofmt, a regression test added, and no edits to middleware/. |
+| `legacy-coupon-vat` | Bug hunt in a generated 330-file, 62k-line billing monolith (`fixtures/gen_legacy.py`): EU coupon orders get VAT twice. The cause is a compat hook loaded by name from config, behind decoys and an outdated architecture doc. Hidden checks cover every pricing path and the hook's legitimate rounding, so patching the symptom or deleting the hook fails. |
+| `paykit-initech` | Add a third provider to `fixtures/paykit`, whose two providers are near-identical copy-pastes. Hidden checks are the new provider's behavior, the original provider tests (in case a refactor changed them), and an unprompted duplicated-code check. |
 | `click-param-spec` | Cross-module feature in pallets/click, pinned just before upstream #3877: `Parameter.spec`, `get_help_spec` moved to `Parameter`, specs in error messages, and a `human_readable_name` deprecation that warns on subclass overrides. Hidden checks are the upstream tests plus extras, the suite (an existing test must be updated), mypy, ruff, changelog, upgrade guide and parameters docs. |
 
 The feature and bug-hunt scenarios clone the repo at a pinned commit through `fixtures/setup_repo.sh` (or `setup_tailwind.sh`), caching clones and builds under `~/.cache/ff-evals`. Each hidden folder holds a `reference.patch`; the hidden checks fail on the untouched repo and pass with it applied.
@@ -80,6 +83,7 @@ Process checks (`kind: process`) apply only to skill arms. Outcome checks (hidde
 |---|---|
 | `lite-v2` | feature-flow-lite from the working tree, as shipped: Haiku agents at medium effort, a write-once implementor with targeted tests, conventions in the acceptance criteria |
 | `lite-v2-impl-low` | lite-v2 with only the implementor at low effort (`agents.only`) |
+| `lite-v2-forced` | lite-v2 with the `forced-roles` variant: the investigator runs on every existing codebase and the simplifier after every passing check |
 | `baseline` | No skill |
 | `sonnet-solo` | No skill, with Sonnet as the main model |
 | `lite`, `lite-haiku` | feature-flow-lite at `2540fb3`, before it moved to Haiku: Sonnet agents, or every agent pinned to Haiku at high effort |

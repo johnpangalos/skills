@@ -4,7 +4,7 @@
 
 Each run's workspace lands in <dest>/<scenario>/<letter>/ without .claude, build output, or
 anything else that names the arm. Letters are shuffled per scenario by a hash of the run path,
-so they don't follow arm order. For runs on an existing repo (a workspace with prior history),
+so they don't follow arm order. For runs on existing code (a real repo, or a fixture committed before the run),
 git history is kept and the change is also written to <letter>.diff. Websites get desktop and
 no-JS mobile screenshots in <letter>-shots/. The letter -> arm mapping goes to
 <first batch>/blind-mapping.json, outside the judges' folders.
@@ -22,8 +22,14 @@ BUILD_OUTPUT = ("target", "bin", "node_modules", "__pycache__", ".ruff_cache", "
 
 
 def has_history(workspace):
-    out = subprocess.run(["git", "rev-list", "--count", "HEAD"], cwd=workspace, capture_output=True, text=True)
-    return out.returncode == 0 and int(out.stdout.strip() or 0) > 1
+    """True when the run started from existing code: a real repo's history, or a generated
+    fixture committed before the run. Greenfield runs start from an empty commit."""
+    root = subprocess.run(["git", "rev-list", "--max-parents=0", "HEAD"], cwd=workspace, capture_output=True, text=True)
+    if root.returncode != 0 or not root.stdout.strip():
+        return False
+    files = subprocess.run(["git", "ls-tree", "-r", "--name-only", root.stdout.split()[0]],
+                           cwd=workspace, capture_output=True, text=True)
+    return bool(files.stdout.strip())
 
 
 def main(dest, *batches):
