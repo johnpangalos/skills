@@ -6,7 +6,9 @@ names=()
 for f in "$@"; do
   n="zz-hidden-$(basename "$f")"; cp "$f" "playtests/tests/$n"; names+=("tests/$n")
 done
-(cd playtests && bun run vp test run "${names[@]}") 2>&1 | grep -vE "^\s*$" | tail -40
+# older checkouts run vitest directly; newer ones go through Vite+ (vp)
+if [ -x node_modules/.bin/vp ] || [ -x playtests/node_modules/.bin/vp ]; then runner=(bun run vp test run); else runner=(bunx vitest run); fi
+(cd playtests && "${runner[@]}" "${names[@]}") 2>&1 | grep -vE "^\s*$" | tail -40
 status=${PIPESTATUS[0]}
 for n in "${names[@]}"; do rm -f "playtests/$n"; done
 exit "$status"
