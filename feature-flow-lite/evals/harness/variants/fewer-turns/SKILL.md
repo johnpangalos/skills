@@ -31,8 +31,8 @@ foreground (`run_in_background: false`) and act on its result in the same turn i
 a background agent costs you a status message and a wake-up turn for every spawn.
 
 Every turn of yours is an Opus call on the critical path, so keep them few. Don't read or
-grep the code yourself: the investigator's report is your map, and the implementor and
-reviewer read what they need. Don't re-run a command whose result an agent's CHECKS line
+grep the code or the diff yourself: the investigator's report is your map, and the
+implementor and reviewer read what they need. Don't re-run a command whose result an agent's CHECKS line
 already reports; your one full check run per round is the only check you run. Don't edit
 files yourself, and don't post progress messages between steps.
 
