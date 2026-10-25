@@ -117,6 +117,8 @@ python3 threads.py results/<batch> [results/<batch> ...]
 
 `threads.py` splits each run's cost into the main thread and its subagents, and splits each of those into cache reads, cache writes, fresh input and output. It also reports the main thread's final context size, what one follow-up turn would cost to re-read it with a warm cache (within the main thread's one-hour TTL) and a cold one, and speed: wall-clock time, time spent waiting on the model, and summed subagent time. Runs that share a machine slow each other's local tool time (builds and test suites) more than their model time. Input and cache tokens come from each message's usage. Output tokens come from the run's per-model totals, because streamed events record output at the start of a message. The script's totals match the reported cost exactly.
 
+`python3 suite_runs.py results/<batch>` counts full playtest-suite runs per build (`//playtests:test`, `vp test run` or `vitest run` with no file or name filter), split into the main thread and subagents.
+
 ### Blind quality judging
 
 Hidden checks only tell you that a build works. To compare quality, anonymize a batch and judge it with the dynamic workflow in `judge.workflow.js`:
