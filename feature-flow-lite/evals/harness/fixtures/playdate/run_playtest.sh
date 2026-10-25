@@ -8,7 +8,9 @@ for f in "$@"; do
 done
 # older checkouts run vitest directly; newer ones go through Vite+ (vp)
 if [ -x node_modules/.bin/vp ] || [ -x playtests/node_modules/.bin/vp ]; then runner=(bun run vp test run); else runner=(bunx vitest run); fi
-(cd playtests && "${runner[@]}" "${names[@]}") 2>&1 | grep -vE "^\s*$" | tail -40
+# SKIP_TESTS: a regex of upstream test names that pin details the task prompt does not ask for
+filter=(); [ -n "${SKIP_TESTS:-}" ] && filter=(-t "^(?!.*(${SKIP_TESTS})).*$")
+(cd playtests && "${runner[@]}" "${names[@]}" "${filter[@]}") 2>&1 | grep -vE "^\s*$" | tail -40
 status=${PIPESTATUS[0]}
 for n in "${names[@]}"; do rm -f "playtests/$n"; done
 exit "$status"
