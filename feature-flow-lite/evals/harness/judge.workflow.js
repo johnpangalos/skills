@@ -76,6 +76,8 @@ const PRODUCT = {
   feature: 'fit with the codebase: follows its existing patterns, naming, doc comments, test style and changelog/docs conventions; a maintainer would merge it as is',
 }
 // a challenge can pass its own `probe` text; feature changes in an existing repo always do
+// a challenge's `rubric` text (what the repo's owner values) goes to inspectors and judges alike
+const rubric = ch => (ch.rubric ? `\n\nWHAT THE OWNER VALUES (weigh it in code_quality and in your score):\n${ch.rubric}` : '')
 
 function kindOf(ch) {
   return ch.kind === 'library' || ch.kind === 'feature' ? 'a feature change in an existing open-source repo' : 'a small greenfield coding task'
@@ -93,7 +95,7 @@ Look only at this build. Don't open sibling folders. Before building or running 
 What to do: read all of the ${b.diff ? 'change' : 'code'}, then ${ch.probe || PROBES[ch.kind]}
 Record every defect with severity (blocker: a spec requirement fails; major: a real bug or a serious quality problem a reviewer would block on; minor: everything else) and evidence a skeptic could reproduce (the command and what it printed, or file:line).
 
-Score 1-10 each: correctness (meets the spec, including edge cases), robustness, code_quality (structure, idiom, clarity; more code is not better), tests (do they test meaningful behavior), docs (${b.diff ? 'the docs, changelog and comments the repo expects for a change like this' : 'README and run instructions'}), product (${PRODUCT[ch.kind]}). overall is your holistic 1-10. Calibrate: 5 = works with notable gaps, 7 = good, 8 = ${b.diff ? 'a maintainer would merge it with at most small edits' : 'solid production-quality small project'}, 10 = exemplary. stats: files, non-blank source lines (excluding lockfiles and generated files), test cases.`
+Score 1-10 each: correctness (meets the spec, including edge cases), robustness, code_quality (structure, idiom, clarity; more code is not better), tests (do they test meaningful behavior), docs (${b.diff ? 'the docs, changelog and comments the repo expects for a change like this' : 'README and run instructions'}), product (${PRODUCT[ch.kind]}). overall is your holistic 1-10. Calibrate: 5 = works with notable gaps, 7 = good, 8 = ${b.diff ? 'a maintainer would merge it with at most small edits' : 'solid production-quality small project'}, 10 = exemplary. stats: files, non-blank source lines (excluding lockfiles and generated files), test cases.${rubric(ch)}`
 }
 
 function judgePrompt(ch, reports) {
@@ -111,7 +113,7 @@ ${JSON.stringify(reports, null, 1)}
 
 1. Re-check every blocker and major defect the inspectors claimed by reproducing it yourself. List each as confirmed or refuted with a one-line reason. Also look for anything important an inspector missed.
 2. Then score every build 1-10 on one shared scale (5 = works with notable gaps, 8 = ${ch.builds.some(b => b.diff) ? 'a maintainer would merge it with at most small edits' : 'solid production-quality small project'}), weighing correctness and robustness most, then code quality and tests, then product polish and docs. Don't reward size or features beyond the spec unless they make the result better for its user.
-3. ranking: best first. verdict: 2-4 sentences on what separates the builds.`
+3. ranking: best first. verdict: 2-4 sentences on what separates the builds.${rubric(ch)}`
 }
 
 const results = await pipeline(
