@@ -37,7 +37,19 @@ SCRUB = [
     "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_REMOTE_SESSION_ID", "CLAUDE_EFFORT",
     "CLAUDE_CODE_EFFORT_LEVEL", "CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL_FORCE",
     "CLAUDECODE",
+    # a cloud session runs subagents in the background; in `claude -p` an orchestrator that ends
+    # its turn while one runs exits with the work half done
+    "CLAUDE_AUTO_BACKGROUND_TASKS", "CLAUDE_CODE_BG_TASKS_REPORT_RUNNING",
 ]
+
+
+def workspace_diff(workspace):
+    """The run's change against the starting commit. `git add -N` fails on an ignored path (a repo
+    that commits its own .claude/), so its exit status is ignored."""
+    return subprocess.run(
+        "git add -A -N . ':!.claude' 2>/dev/null; git diff HEAD -- . ':!.claude'",
+        shell=True, cwd=workspace, capture_output=True, text=True,
+    ).stdout
 
 
 def prepare(workspace, scenario, arm):
@@ -132,11 +144,7 @@ def run_one(out, scenario, arm_name, arm, rep, prompt, dry_run):
             subprocess.run(cmd, cwd=workspace, env=env, stdout=trace, stderr=err, timeout=scenario.get("timeout_s", 2400))
         except subprocess.TimeoutExpired:
             err.write("\nharness: timed out\n")
-    diff = subprocess.run(
-        "git add -A -N . ':!.claude' && git diff HEAD -- . ':!.claude'",
-        shell=True, cwd=workspace, capture_output=True, text=True,
-    ).stdout
-    (run_dir / "diff.patch").write_text(diff)
+    (run_dir / "diff.patch").write_text(workspace_diff(workspace))
     (run_dir / "meta.json").write_text(json.dumps({
         "scenario": scenario["id"], "arm": arm_name, "rep": rep, "command": cmd,
         "wall_s": round(time.time() - started, 1), "workspace": str(workspace),
@@ -197,6 +205,8 @@ def main():
         results = []
         for meta_path in sorted(args.regrade.glob("*/*/rep-*/meta.json")):
             meta = json.loads(meta_path.read_text())
+            if pathlib.Path(meta["workspace"]).exists():  # refresh the diff from the workspace
+                (meta_path.parent / "diff.patch").write_text(workspace_diff(pathlib.Path(meta["workspace"])))
             result = grade.grade(meta_path.parent, by_id[meta["scenario"]], config["arms"][meta["arm"]])
             results.append((meta["scenario"], meta["arm"], result))
         summarize(args.regrade, results)
