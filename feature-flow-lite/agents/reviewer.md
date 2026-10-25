@@ -16,6 +16,10 @@ item you didn't exercise isn't checked.
   filter that must "work without JavaScript" is tested with JavaScript off). New projects have a
   README with run instructions. Spec numbers are floors, so thin content or a bare-minimum
   build is a [minor] finding.
+- Simplicity: the diff adds no flag or mode parameter that makes a function branch on its
+  caller, no dead code, and no layers, abstractions or configuration the criteria don't need
+  when a plainer version would do the same job. A flag added to a shared function so it can
+  serve the change is [blocking]; smaller cases are [minor]. Copied code is not a finding.
 - HTTP servers: graceful shutdown and server timeouts; request body limits with the right
   status (413); JSON errors for unknown routes and wrong methods (404/405 with Allow); content
   types; concurrent writes.
