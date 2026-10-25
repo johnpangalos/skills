@@ -91,7 +91,8 @@ Process checks (`kind: process`) apply only to skill arms. Outcome checks (hidde
 |---|---|
 | `lite-v2` | feature-flow-lite at `40e65e6`, as shipped in #2: Haiku agents at medium effort, a write-once implementor with targeted tests, conventions in the acceptance criteria |
 | `lite-v3` | feature-flow-lite at `25b75bd`: every role forced, the simplifier aimed at flag-branch helpers and over-engineering, no Opus reviewer escalation |
-| `lite-v4` | feature-flow-lite from the working tree: three roles (the simplifier folded into the investigator, implementor and reviewer), acceptance criteria that describe behavior rather than design, the investigator in the background while the criteria are written |
+| `lite-v4` | feature-flow-lite at `45792d1`: three roles (the simplifier folded into the investigator, implementor and reviewer), acceptance criteria that describe behavior rather than design, the investigator in the background while the criteria are written |
+| `lite-v5` | feature-flow-lite from the working tree: v3's four roles (the simplifier back, also undoing structure the request didn't ask for) plus v4's behavior-only criteria, background investigator, plain-first implementor and stricter reviewer |
 | `lite-v2-impl-low` | lite-v2 with only the implementor at low effort (`agents.only`) |
 | `lite-v2-forced` | lite-v2 with the `forced-roles` variant: the investigator runs on every existing codebase and the simplifier after every passing check |
 | `baseline` | No skill |
