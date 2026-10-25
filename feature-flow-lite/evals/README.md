@@ -12,7 +12,7 @@ The skill makes three kinds of claim, and each needs a different test:
 
 ## Results so far
 
-Four rounds, every build judged blind (full report: https://claude.ai/artifact/DndzbF6C6S6GTzvykA9RQs). Round 4 is the only one run on the released skill and this harness. Its raw results (traces, diffs, gradings, cost split, judging reports and trigger evals) are attached to the `feature-flow-lite-v1` release as `feature-flow-lite-benchmark-round4.tar.gz`. Rounds 1–3 tested earlier skill versions and are kept only as summaries:
+Six rounds, every build judged blind (full report: https://claude.ai/artifact/DndzbF6C6S6GTzvykA9RQs). Round 4 is the only one run on the released skill and this harness. Its raw results (traces, diffs, gradings, cost split, judging reports and trigger evals) are attached to the `feature-flow-lite-v1` release as `feature-flow-lite-benchmark-round4.tar.gz`. Rounds 1–3 tested earlier skill versions and are kept only as summaries:
 
 | Round | Tasks | Finding |
 |---|---|---|
@@ -21,6 +21,7 @@ Four rounds, every build judged blind (full report: https://claude.ai/artifact/D
 | 3 | features in Tailwind, chi, click, fd | Lite with Haiku agents beat plain Opus in every repo (7.9 against 7.4); a Sonnet orchestrator with an Opus planner cost the most. |
 | 4 | round 3's features with stronger checks, plus a chi bug hunt and a click cross-module change | The shipped lite scored 7.9 against 7.7 for plain Opus at the same cost and took 5.7 minutes against 2.3; a low-effort implementor and a parallel reviewer didn't pay. |
 | 5 | two messy-code tasks: a bug buried in a generated 330-file monolith, and a third provider in a library of copy-pasted providers | The shipped lite never chose the investigator or the simplifier (0 of 159 runs across all rounds). Forcing both cost $0.01–0.06 more per task and scored highest on both tasks (8.25 and 7.92, against 8.00 and 7.67 for lite and 7.67 and 6.75 for plain Opus). Plain Opus copied the provider code in all three runs. The simplifier itself did substantive work in only one of six runs. |
+| 6 | round 5's two tasks; `baseline`, `lite-v2` and `lite-v3` (every role forced, simplifier aimed at flag-branch helpers and over-engineering), judged against an owner rubric (copying is fine; flag-branch helpers and unrequested structure are not) | v3 led on the coupon-VAT bug (8.62 against 8.37 for v2 and 8.27 for plain Opus; all nine builds made the same fix, and v3's also corrected the misleading doc). On paykit plain Opus won (7.58 against 5.92 and 5.75): every lite build moved the providers onto a hook-heavy base class because the orchestrator wrote "extract a shared base" into the acceptance criteria, and the simplifier treated that as a requirement. v3 ran every role every time and cost less than v2 on paykit ($0.88 against $1.00, no Opus reviewer) but took about 5x plain Opus's time. Led to v4. |
 
 ## Trigger cases (`triggers/`)
 
@@ -68,8 +69,15 @@ Each run writes `trace.jsonl`, `diff.patch`, `meta.json`, and a `grading.json` i
 | `legacy-coupon-vat` | Bug hunt in a generated 330-file, 62k-line billing monolith (`fixtures/gen_legacy.py`): EU coupon orders get VAT twice. The cause is a compat hook loaded by name from config, behind decoys and an outdated architecture doc. Hidden checks cover every pricing path and the hook's legitimate rounding, so patching the symptom or deleting the hook fails. |
 | `paykit-initech` | Add a third provider to `fixtures/paykit`, whose two providers are near-identical copy-pastes. Hidden checks are the new provider's behavior, the original provider tests (in case a refactor changed them), and an unprompted duplicated-code check. |
 | `click-param-spec` | Cross-module feature in pallets/click, pinned just before upstream #3877: `Parameter.spec`, `get_help_spec` moved to `Parameter`, specs in error messages, and a `human_readable_name` deprecation that warns on subclass overrides. Hidden checks are the upstream tests plus extras, the suite (an existing test must be updated), mypy, ruff, changelog, upgrade guide and parameters docs. |
+| `pd-corner-nudge` | Gameplay bug in johnpangalos/playdate-game-01 (a Lua Playdate platformer), pinned before #271: a jump into a 1-tile pipe stops dead unless x is pixel-perfect. `player.lua` sits at Lua's 200-local ceiling. Hidden checks are the upstream playtests. |
+| `pd-wall-jump-rewind` | Bug hunt in the same repo, pinned before #171: after a rewind resume on a wall, the wall jump is dead. Three causes interact, and the rewind rules apply. Hidden checks are the upstream jumping and camera playtests. |
+| `pd-pulse-emerge` | Feature, pinned before #298: pulse orbs wait until the player is out of the spawn portal. Crosses the game loop, a system, the headless observation and the TS playtest types. |
+| `pd-world-two-walls` | Feature, pinned before #300: a cobblestone wall theme for World 2. Tempts a copied theme or a theme flag threaded through the tileset generator. Hidden checks are the upstream transpile spec and the level files. |
+| `pd-belt-side-lift` | Feature in `player.lua`, pinned before #299: a climbing column belt lifts a grounded player standing beside it. Hidden checks are the upstream playtests. |
 
 The feature and bug-hunt scenarios clone the repo at a pinned commit through `fixtures/setup_repo.sh` (or `setup_tailwind.sh`), caching clones and builds under `~/.cache/ff-evals`. Each hidden folder holds a `reference.patch`; the hidden checks fail on the untouched repo and pass with it applied.
+
+The `pd-*` scenarios need Lua 5.5.1, `mise`, `bun`, LuaJIT, luacheck and stylua (mise installs its own pinned tools on first use). Their hand-drawn character sheets live in a private bucket, so `fixtures/playdate/placeholder_art.py` writes placeholders of the same shape; collision never reads the art, so every unit spec and playtest runs. The private music and fonts aren't needed headless. `fixtures/playdate/checks.sh` holds their shared checks.
 
 The first seven scenarios run on `fixtures/shop`, a small Python package, and were written for the full feature-flow pipeline, so some of their process checks (verifier, security reviewer, explorer) name roles lite doesn't have. The round-1 and round-2 greenfield tasks (a website, a Go API and a Rust CLI) are retired; their results are in the report.
 
@@ -81,7 +89,9 @@ Process checks (`kind: process`) apply only to skill arms. Outcome checks (hidde
 
 | Arm | What runs |
 |---|---|
-| `lite-v2` | feature-flow-lite from the working tree, as shipped: Haiku agents at medium effort, a write-once implementor with targeted tests, conventions in the acceptance criteria |
+| `lite-v2` | feature-flow-lite at `40e65e6`, as shipped in #2: Haiku agents at medium effort, a write-once implementor with targeted tests, conventions in the acceptance criteria |
+| `lite-v3` | feature-flow-lite at `25b75bd`: every role forced, the simplifier aimed at flag-branch helpers and over-engineering, no Opus reviewer escalation |
+| `lite-v4` | feature-flow-lite from the working tree: three roles (the simplifier folded into the investigator, implementor and reviewer), acceptance criteria that describe behavior rather than design, the investigator in the background while the criteria are written |
 | `lite-v2-impl-low` | lite-v2 with only the implementor at low effort (`agents.only`) |
 | `lite-v2-forced` | lite-v2 with the `forced-roles` variant: the investigator runs on every existing codebase and the simplifier after every passing check |
 | `baseline` | No skill |

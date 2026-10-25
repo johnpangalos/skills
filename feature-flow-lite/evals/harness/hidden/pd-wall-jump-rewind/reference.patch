@@ -1,0 +1,365 @@
+diff --git a/playtests/TEST-CASES.md b/playtests/TEST-CASES.md
+index e24d00c..990e006 100644
+--- a/playtests/TEST-CASES.md
++++ b/playtests/TEST-CASES.md
+@@ -52,20 +52,16 @@ Level-design reminders that bit us while writing the first suite:
+   the window. (positive + negative test)
+ - [x] **Jump buffer** — press jump up to `JUMP_BUFFER_TIME=6` frames before
+   landing; the jump fires on the landing frame (`jumpBufferTimer` visible).
+-- [x] **Wall slide** — airborne against a wall while falling, the wall drags
+-  on the fall instead of replacing it: `vy` accelerates under scaled gravity
+-  (`WALL_SLIDE_GRAVITY_SCALE=0.35`) up to `WALL_SLIDE_MAX_SPEED=4` (vs ~8+
+-  free-fall). `isOnWall`/`wallDirection` expose contact.
+-- [x] **Wall slide catch** — meeting the wall already falling fast is not
+-  pinned to the cap on the contact frame; the speed bleeds off at
+-  `WALL_SLIDE_DRAG=2` per frame, so even a terminal-velocity drop is down to
+-  the cap ~3 frames later.
+-- [x] **Wall adhesion** — releasing the direction on a wall already touched
+-  keeps the contact (`isOnWall`, `hints.canWallJump`) without moving the
+-  player; walls do not grab from a gap (`WALL_CONTACT_DISTANCE=1`).
++- [x] **Wall slide** — airborne against a wall while falling, `vy` is clamped
++  to `WALL_SLIDE_SPEED=3` (vs ~8 free-fall). `isOnWall`/`wallDirection`
++  expose contact.
++- [x] **Wall adhesion** — the no-input airborne push pulls toward the nearest
++  wall within `WALL_SNAP_DISTANCE=3`, which is also what wins a lost contact
++  back (`isOnWall`, `hints.canWallJump`) after a frame with no collision —
++  e.g. a rewind resume.
+ - [x] **Terminal velocity** — free fall is pinned at `MAX_FALL_SPEED=12`
+-  (both gravity directions); wall slide keeps its lower cap of
+-  `WALL_SLIDE_MAX_SPEED=4`. (`jumping.test.ts`)
++  (both gravity directions); wall slide keeps its lower cap of 3.
++  (`jumping.test.ts`)
+ - [x] **Camera look-ahead** — running at full speed anchors the player left
+   of screen center (`player.x + camera.offsetX < 235`), showing more space
+   ahead. (`camera.test.ts`)
+@@ -79,7 +75,16 @@ Level-design reminders that bit us while writing the first suite:
+   (`WALL_JUMP_FORCE_X=4`); for `WALL_JUMP_LOCKOUT_TIME=8` frames movement
+   input is ignored (`wallJumpLockoutTimer` counts it down).
+ - [x] **Wall coyote** — a wall jump still works within `WALL_COYOTE_TIME=4`
+-  frames after drifting off the wall (`hints.canWallJump`).
++  frames after drifting off the wall (`hints.canWallJump`); the jump spends
++  the window, so a second press inside it buys no free mid-air hop.
++- [x] **Wall jump across a rewind** — scrubbing back onto a wall and resuming
++  keeps the cling and the wall jump, both through the 7-frame resume ramp and
++  for the whole descent after it (45+ frames with nothing held — the hand is
++  on the crank, not the d-pad). The contact is re-read from geometry (a
++  frozen player reports no collision), the grace timers hold instead of
++  expiring unused, and an A press fires whether it lands mid-ramp (buffered
++  until control returns) or 30 frames later — including the chain on to the
++  opposite wall. Resuming with nothing held invents no jump.
+ - [x] **Speed boost** — hold one direction for `SPEED_RAMP_TIME=60` frames:
+   `currentMaxSpeed` ramps 8 → `MAX_BOOSTED_SPEED=14` (+1/frame). Turning
+   around or stopping resets it to 8 immediately.
+diff --git a/server/tools.ts b/server/tools.ts
+index ad479f0..c946ca3 100644
+--- a/server/tools.ts
++++ b/server/tools.ts
+@@ -712,7 +712,7 @@ const ride_platform: Tool = async (ctx, args) => {
+ 		// engine — the kick has to be HELD for several frames the way
+ 		// climb_single_wall does). This branch also fires when no
+ 		// platforms are visible — pressing toward the wall maintains
+-		// the wall-slide cap (WALL_SLIDE_MAX_SPEED = 4 px/frame) instead
++		// the wall-slide cap (WALL_SLIDE_SPEED = 3 px/frame) instead
+ 		// of free-fall, giving the platform more time to sweep into
+ 		// view.
+ 		if (
+diff --git a/src/logic/player.lua b/src/logic/player.lua
+index 17a38db..a2960d1 100644
+--- a/src/logic/player.lua
++++ b/src/logic/player.lua
+@@ -120,16 +120,7 @@ local SPEED_RAMP_RATE <const> = 1
+ local COYOTE_TIME <const> = 3
+ local JUMP_BUFFER_TIME <const> = 6
+ local WALL_COYOTE_TIME <const> = 4
+--- Wall slide: the wall drags on the fall instead of replacing it. Below
+--- WALL_SLIDE_MAX_SPEED gravity keeps pulling (scaled down), so a slide entered
+--- from rest accelerates like a short fall rather than running at one flat
+--- speed. Arriving faster than the cap still bleeds off rather than being
+--- pinned on the contact frame, but WALL_SLIDE_DRAG is deliberately steep: the
+--- catch reads as a grab that takes a couple of frames, not a long skid — even
+--- a terminal-velocity drop is down to the cap within ~3 frames.
+-local WALL_SLIDE_GRAVITY_SCALE <const> = 0.35
+-local WALL_SLIDE_MAX_SPEED <const> = 4
+-local WALL_SLIDE_DRAG <const> = 2
++local WALL_SLIDE_SPEED <const> = 3
+ -- Terminal velocity for free fall. Kept low enough that the camera's lerp
+ -- (steady-state lag = 3x velocity) leaves ground visible below the player,
+ -- and above FALL_WIDE_EYES_SPEED so the wide-eyes look still triggers.
+@@ -137,14 +128,7 @@ local MAX_FALL_SPEED <const> = 12
+ local WALL_JUMP_FORCE_X <const> = 4
+ local WALL_JUMP_LOCKOUT_TIME <const> = 8
+ local WALL_JUMP_DIRECTION_LOCKOUT_TIME <const> = 10
+--- How close a wall counts as contact, for the slide, the cosmetic snap and the
+--- no-input adhesion alike. Deliberately tight: at the old 3px a wall grabbed
+--- the player across a visible gap, which is what made walls feel magnetic.
+-local WALL_CONTACT_DISTANCE <const> = 1
+--- Push into a wall the player is ALREADY touching while holding no direction —
+--- just enough to keep the collision (and with it the wall jump) alive. It
+--- cannot pull the player in from a gap, unlike the 0.5 it replaces.
+-local WALL_ADHESION <const> = 0.25
++local WALL_SNAP_DISTANCE <const> = 3
+ local PAUSE_FRAMES <const> = 2
+ local THIRD_SPEED_FRAMES <const> = 3
+ local HALF_SPEED_FRAMES <const> = 2
+@@ -257,6 +241,16 @@ local pausedVelocityX = 0
+ local isSteppingSpeed = false
+ local resumePhase = 0
+ local resumeTimer = 0
++
++-- True on the frames the resume speed-stepper owns the velocity (see
++-- RESUME_PHASE_FRAMES): the player is frozen, or moving at a fraction of the
++-- pre-pause speed, and whatever the physics computes from input is
++-- overwritten before the move. Those are not frames the player can act on, so
++-- the grace timers hold and a jump pressed during them waits in the buffer.
++local function isResumeStepping()
++	return isSteppingSpeed and RESUME_PHASE_FRAMES[resumePhase] ~= nil
++end
++
+ local isBeingSucked = false
+ local suckTimer = 0
+ local suckTargetX = 0
+@@ -706,10 +700,11 @@ local function collisionResponse(_, other)
+ 	return playdate.graphics.sprite.kCollisionTypeOverlap
+ end
+ 
+--- Result of this tick's wall-proximity query, so repeat calls within one
+--- Player.update (at identical position/grounded state — nothing moves the
+--- sprite in between) reuse the first querySpritesInRect. Cleared at the top of
+--- Player.update.
++-- Result of this tick's wall-proximity query. The no-input movement branch
++-- and the wall-slide gravity check can both need it within one Player.update,
++-- at identical position/grounded state (nothing moves the sprite in between),
++-- so the second call reuses the first's querySpritesInRect. Cleared at the
++-- top of Player.update.
+ local nearbyWallThisTick = nil
+ 
+ local function checkForNearbyWall()
+@@ -723,7 +718,7 @@ local function checkForNearbyWall()
+ 	end
+ 
+ 	local x, y = playerSprite:getPosition() ---@diagnostic disable-line: undefined-field
+-	local checkDistance = WALL_CONTACT_DISTANCE
++	local checkDistance = 3
+ 
+ 	-- Single merged query spanning both side strips plus the player body,
+ 	-- then classify each hit back into the left/right strip. Replaces two
+@@ -1176,6 +1171,10 @@ function Player.reset(spawnX, spawnY)
+ end
+ 
+ local function handleWallJumpTimers()
++	if isResumeStepping() then
++		return
++	end
++
+ 	if wallJumpLockoutTimer > 0 then
+ 		wallJumpLockoutTimer = wallJumpLockoutTimer - 1
+ 	end
+@@ -1219,11 +1218,11 @@ local function handleMovementInput()
+ 				if math.abs(velocityX) < 0.1 then
+ 					velocityX = 0
+ 				end
+-			elseif not isGrounded and isOnWall then
+-				-- Only hold a wall the player is already touching, and only
+-				-- barely: enough for the collision to keep reporting next
+-				-- frame, not enough to drag anyone in from a gap.
+-				velocityX = -wallDirection * WALL_ADHESION
++			elseif not isGrounded then
++				local nearbyWall = checkForNearbyWall()
++				if nearbyWall ~= 0 then
++					velocityX = nearbyWall * 0.5
++				end
+ 			end
+ 			isMoving = math.abs(velocityX) > 0.1
+ 		end
+@@ -1240,11 +1239,6 @@ local function handleMovementInput()
+ 	end
+ end
+ 
+--- Cosmetic gap closer: puts the sprite flush against a wall face it is a
+--- hair short of, so the wall-slide pose doesn't render floating. Kept to
+--- WALL_CONTACT_DISTANCE, which is why this can no longer yank the player
+--- sideways — at 1px the move is invisible and only the velocity it kills
+--- (which the collision would kill next frame anyway) is felt.
+ local function snapToNearbyWall()
+ 	if playerSprite == nil then
+ 		return
+@@ -1268,7 +1262,7 @@ local function snapToNearbyWall()
+ 
+ 	local queryX
+ 	if side < 0 then
+-		queryX = px - width / 2 - WALL_CONTACT_DISTANCE
++		queryX = px - width / 2 - WALL_SNAP_DISTANCE
+ 	else
+ 		queryX = px + width / 2
+ 	end
+@@ -1276,7 +1270,7 @@ local function snapToNearbyWall()
+ 	local sprites = gfx.sprite.querySpritesInRect(
+ 		queryX,
+ 		py - height / 2,
+-		WALL_CONTACT_DISTANCE,
++		WALL_SNAP_DISTANCE,
+ 		height
+ 	)
+ 	if sprites == nil then
+@@ -1319,12 +1313,19 @@ local function handleJumpInput()
+ 		jumpBufferTimer = JUMP_BUFFER_TIME
+ 	end
+ 
++	-- Nothing fires while the resume stepper owns the velocity: the jump would
++	-- be erased before the move and its wall contact spent on nothing, which
++	-- is what used to swallow the first wall jump after a scrub. The press
++	-- stays in the buffer and fires on the first frame the player controls.
++	local canJump = not isResumeStepping()
++
+ 	-- Wall jumps only apply while airborne: wallCoyoteTimer keeps ticking
+ 	-- for a few frames after landing, and without the isGrounded gate a
+ 	-- jump in that window became a wall jump with a horizontal push
+ 	-- instead of a normal ground jump.
+ 	if
+-		jumpBufferTimer > 0
++		canJump
++		and jumpBufferTimer > 0
+ 		and not isGrounded
+ 		and (isOnWall or wallCoyoteTimer > 0)
+ 	then
+@@ -1332,10 +1333,19 @@ local function handleJumpInput()
+ 		direction = wallDirection > 0 and RIGHT or LEFT
+ 		isOnWall = false
+ 		wallDirection = 0
++		-- The grace window buys ONE wall jump. Leaving it running after a
++		-- coyote-window jump left canWallJump true with no wallDirection —
++		-- a second A press then bought a free mid-air hop that also killed
++		-- the wall jump's push (velocityX = 0 * WALL_JUMP_FORCE_X).
++		wallCoyoteTimer = 0
+ 		wallJumpLockoutTimer = WALL_JUMP_LOCKOUT_TIME
+ 		wallJumpDirectionLockoutTimer = WALL_JUMP_DIRECTION_LOCKOUT_TIME
+ 		startJump()
+-	elseif jumpBufferTimer > 0 and (isGrounded or coyoteTimer > 0) then
++	elseif
++		canJump
++		and jumpBufferTimer > 0
++		and (isGrounded or coyoteTimer > 0)
++	then
+ 		isGrounded = false
+ 		coyoteTimer = 0
+ 		startJump()
+@@ -1527,14 +1537,9 @@ local function renderDeathBurst(timer)
+ 			local drift = DEATH_RANGE * ease * death.jitter[i]
+ 			local fall = DEATH_FALL * u * u * death.gravityDir
+ 			gfx.fillRect(
++				math.floor(death.homeX[i] + drift * math.cos(death.angle[i])),
+ 				math.floor(
+-					death.homeX[i]
+-						+ drift * math.cos(death.angle[i])
+-				),
+-				math.floor(
+-					death.homeY[i]
+-						+ drift * math.sin(death.angle[i])
+-						+ fall
++					death.homeY[i] + drift * math.sin(death.angle[i]) + fall
+ 				),
+ 				DEATH_CHUNK,
+ 				DEATH_CHUNK
+@@ -1720,29 +1725,16 @@ local function applyGravityAndMovement()
+ 	-- All vertical physics below is written against "fall" = the direction
+ 	-- gravity pulls: multiplying velocityY through gravityDir turns the
+ 	-- inverted-gravity case back into the normal one.
+-	-- Wall slide: a drag on the fall, not a replacement for it. The wall caps
+-	-- how fast the player can end up going, but gravity still accelerates them
+-	-- toward that cap, and a fall that arrives above it is bled down over
+-	-- several frames rather than pinned to the cap the instant the wall is
+-	-- touched. Wall contact only — the wall-coyote window is a wall-jump
+-	-- grace, and letting it brake the fall kept slowing players who had
+-	-- already left the wall.
+ 	local nearbyWall = checkForNearbyWall()
+-	local isWallSliding = (isOnWall or nearbyWall ~= 0)
++	if
++		(isOnWall or wallCoyoteTimer > 0 or nearbyWall ~= 0)
+ 		and not isGrounded
+ 		and velocityY * gravityDir > 0
+-	if isWallSliding then
+-		local fallSpeed = velocityY * gravityDir
+-		if fallSpeed > WALL_SLIDE_MAX_SPEED then
+-			fallSpeed =
+-				math.max(fallSpeed - WALL_SLIDE_DRAG, WALL_SLIDE_MAX_SPEED)
+-		else
+-			fallSpeed = math.min(
+-				fallSpeed + Constants.GRAVITY * WALL_SLIDE_GRAVITY_SCALE,
+-				WALL_SLIDE_MAX_SPEED
+-			)
++	then
++		velocityY += gravityDir * Constants.GRAVITY * 0.3
++		if velocityY * gravityDir > WALL_SLIDE_SPEED then
++			velocityY = gravityDir * WALL_SLIDE_SPEED
+ 		end
+-		velocityY = gravityDir * fallSpeed
+ 	else
+ 		velocityY += gravityDir * Constants.GRAVITY
+ 		if velocityY * gravityDir > MAX_FALL_SPEED then
+@@ -1891,22 +1883,29 @@ local function processCollisions(collisions, wasGrounded, wasOnWall)
+ end
+ 
+ local function updateTimers(wasGrounded, wasOnWall)
++	-- Every window below counts frames the player could have acted on, so none
++	-- of them burn down during the resume ramp — input doesn't reach the
++	-- physics there, and a window spent on those frames would be gone by the
++	-- time control came back. Losing the 4-frame wall coyote to the 7-frame
++	-- ramp is exactly how a scrub used to cost the player their wall jump.
++	local stepping = isResumeStepping()
++
+ 	if wasGrounded and not isGrounded then
+ 		coyoteTimer = COYOTE_TIME
+-	elseif not isGrounded and coyoteTimer > 0 then
++	elseif not isGrounded and coyoteTimer > 0 and not stepping then
+ 		coyoteTimer = coyoteTimer - 1
+ 	end
+ 
+ 	if wasOnWall and not isOnWall then
+ 		wallCoyoteTimer = WALL_COYOTE_TIME
+-	elseif not isOnWall and wallCoyoteTimer > 0 then
++	elseif not isOnWall and wallCoyoteTimer > 0 and not stepping then
+ 		wallCoyoteTimer = wallCoyoteTimer - 1
+ 		if wallCoyoteTimer == 0 then
+ 			wallDirection = 0
+ 		end
+ 	end
+ 
+-	if jumpBufferTimer > 0 then
++	if jumpBufferTimer > 0 and not stepping then
+ 		jumpBufferTimer = jumpBufferTimer - 1
+ 	end
+ end
+@@ -1974,6 +1973,22 @@ function Player.updatePhysics()
+ 
+ 	processCollisions(collisions, wasGrounded, wasOnWall)
+ 
++	-- A player the stepper is holding still doesn't push into anything, so no
++	-- wall collision is reported and the cling the scrub restored would be
++	-- dropped on the first resumed frame — leaving the player flush against
++	-- the wall with no wall jump. Read the contact off the geometry instead
++	-- for as long as the ramp runs (the same 1px test the wall slide uses).
++	if isResumeStepping() and not isGrounded and not isOnWall then
++		nearbyWallThisTick = nil
++		local nearbyWall = checkForNearbyWall()
++		if nearbyWall ~= 0 then
++			isOnWall = true
++			-- checkForNearbyWall reports which side the wall is on;
++			-- wallDirection is the collision normal, which points away from it.
++			wallDirection = -nearbyWall
++		end
++	end
++
+ 	if wasGrounded and not isGrounded then
+ 		justLanded = false
+ 	end
+@@ -2001,6 +2016,10 @@ function Player.unpause()
+ 	resumeTimer = 0
+ 	velocityX = 0
+ 	velocityY = 0
++	-- The buffer survives the ramp now, so drop whatever the scrubbed-to frame
++	-- was holding: that A press belongs to the timeline the player just wound
++	-- back, and firing it on resume would be a jump nobody asked for.
++	jumpBufferTimer = 0
+ 	-- Time travel is disorienting: the pupils spin for a moment.
+ 	dizzyTimer = DIZZY_FRAMES
+ end

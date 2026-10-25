@@ -1,0 +1,127 @@
+diff --git a/.claude/skills/playtesting/SKILL.md b/.claude/skills/playtesting/SKILL.md
+index 4bcf477..5c67381 100644
+--- a/.claude/skills/playtesting/SKILL.md
++++ b/.claude/skills/playtesting/SKILL.md
+@@ -85,8 +85,10 @@ logic (physics, lasers, crumble platforms, switches, time rewind) in plain Lua:
+   flares a fixed-size blast for half a second: a filled dithered circle,
+   radius 24 (triple the orb's body). The body flashes for the 12 frames
+   before each blast. The blast stays centered on the moving orb, and both
+-  the orb body and the whole disc kill. Observation key: `pulses[]`, with
+-  `chasing` and `windingUp`.
++  the orb body and the whole disc kill. Orbs are frozen through the ~32-frame
++  spawn emerge: no chase, and the blast timer does not run, so the first
++  blast lands 2 seconds after the player can move. Observation key:
++  `pulses[]`, with `chasing` and `windingUp`.
+ - Conveyor belts (`(` `)` along a row and `'` `,` down a column in ascii-v1
+   grids, tuned by the top-level `belts[]` array) never stop or reverse. A belt
+   is TERRAIN: a full block flush with the wall it is mounted on, so a beam
+diff --git a/playtests/src/playtest.ts b/playtests/src/playtest.ts
+index 2a261fd..aa7fe58 100644
+--- a/playtests/src/playtest.ts
++++ b/playtests/src/playtest.ts
+@@ -51,6 +51,8 @@
+ //     directly instead, it errors.
+ //   - The spawn assembly animation freezes the player for about 32 frames
+ //     after reset. Button input does nothing until the animation finishes.
++//     Pulse orbs hold still and their blast countdown waits until then too.
++//     observation.player.isEmerging is true for the whole animation.
+ //   - Leaving the level bounds, including jumping over the TOP of the
+ //     grid, is a death. Leave enough headroom rows for jumps (about 3
+ //     tiles of rise).
+diff --git a/playtests/src/types.ts b/playtests/src/types.ts
+index 8ca79d6..e217495 100644
+--- a/playtests/src/types.ts
++++ b/playtests/src/types.ts
+@@ -188,6 +188,9 @@ export type Observation = {
+     // true while the player hangs from the underside of a ceiling belt.
+     // Only ordinary gravity lets them.
+     isHanging: boolean;
++    // true while the player steps out of the spawn portal after a reset.
++    // Input does nothing, and pulse orbs hold still.
++    isEmerging: boolean;
+     alive: boolean;
+     wallContactLeft: boolean;
+     wallContactRight: boolean;
+diff --git a/src/logic/game-systems.lua b/src/logic/game-systems.lua
+index 8c7a58f..fbbcaed 100644
+--- a/src/logic/game-systems.lua
++++ b/src/logic/game-systems.lua
+@@ -15,6 +15,7 @@
+ ---@field playerX number?
+ ---@field playerY number?
+ ---@field isBeingSucked boolean?
++---@field isEmerging boolean?  -- the player is still stepping out of the spawn portal
+ ---@field overlapping pd_sprite[]?
+ 
+ ---@class GameSystem
+diff --git a/src/logic/game.lua b/src/logic/game.lua
+index 9310762..febac70 100644
+--- a/src/logic/game.lua
++++ b/src/logic/game.lua
+@@ -336,6 +336,7 @@ local function buildTickContext()
+ 	ctx.playerSprite = player.getSprite()
+ 	ctx.playerX, ctx.playerY = player.getPosition()
+ 	ctx.isBeingSucked = player.isBeingSucked()
++	ctx.isEmerging = player.isEmerging()
+ 	ctx.overlapping = nil
+ 	return ctx
+ end
+@@ -346,6 +347,7 @@ end
+ local function buildResumeContext()
+ 	ctx.playerSprite = nil
+ 	ctx.isBeingSucked = nil
++	ctx.isEmerging = nil
+ 	ctx.playerX, ctx.playerY = player.getPosition()
+ 	ctx.overlapping = player.getOverlappingSprites()
+ 	return ctx
+diff --git a/src/logic/observation.lua b/src/logic/observation.lua
+index 352888f..84ea54d 100644
+--- a/src/logic/observation.lua
++++ b/src/logic/observation.lua
+@@ -348,6 +348,8 @@ local function buildObservation(ctx)
+ 			-- True while the player hangs from a ceiling belt (see
+ 			-- Player.getHangCarry).
+ 			isHanging = Player.getHangCarry() ~= 0,
++			-- True while the player steps out of the spawn portal.
++			isEmerging = Player.isEmerging(),
+ 			coyoteTimer = pState and pState.coyoteTimer or 0,
+ 			jumpBufferTimer = pState and pState.jumpBufferTimer or 0,
+ 			wallJumpLockoutTimer = pState and pState.wallJumpLockoutTimer or 0,
+diff --git a/src/logic/pulse-enemy.lua b/src/logic/pulse-enemy.lua
+index 9d8d43e..de0d94b 100644
+--- a/src/logic/pulse-enemy.lua
++++ b/src/logic/pulse-enemy.lua
+@@ -15,6 +15,7 @@ import("logic/pixel-art")
+ --- orb chases until the player gets farther than tuning.orbLoseRadius.
+ --- Then it sleeps again and drifts back to its spawn point. The lose
+ --- radius is the larger of the two, so an orb does not stutter at the edge.
++--- No orb wakes or blasts while the player steps out of the spawn portal.
+ ---
+ --- Touching the orb kills the player through the shared enemy-group
+ --- overlap test, the same flow as the guard. Touching the blast uses a
+@@ -647,9 +648,9 @@ function PulseEnemy.writeState(cols, _slot, frame)
+ 
+ 	if frame <= 0 then
+ 		-- Load-frame prealloc: create the chase columns, and record nothing.
+-		-- The orbs keep chasing through the spawn animation before recording
+-		-- starts, so a base frame stamped here is stale by frame 1. kfCount
+-		-- stays 0, so nothing ever reads the row this writes.
++		-- Recording starts on a later frame, so a base frame stamped here
++		-- does not match frame 1. kfCount stays 0, so nothing ever reads the
++		-- row this writes.
+ 		if n > 0 then
+ 			TimeRewind.writeColumns(cols, 1, REWIND_SPEC, pulses)
+ 		end
+@@ -784,6 +785,12 @@ GameSystems.register({
+ 	name = "pulses",
+ 	init = PulseEnemy.init,
+ 	update = function(ctx)
++		-- The orbs hold until the player is out of the spawn portal. While
++		-- the player emerges, an orb does not chase and does not blast. So
++		-- the first blast comes a full interval after the player can move.
++		if ctx.isEmerging then
++			return
++		end
+ 		PulseEnemy.update(ctx.playerX, ctx.playerY)
+ 	end,
+ 	armed = PulseEnemy.hasEnemies,

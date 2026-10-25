@@ -10,6 +10,7 @@ if [ ! -d "$cache/.git" ]; then
   git clone -q --depth 50 "$url" "$cache"
 fi
 git -C "$cache" cat-file -e "$commit^{commit}" 2>/dev/null || git -C "$cache" fetch -q --depth 200 origin
+git -C "$cache" cat-file -e "$commit^{commit}" 2>/dev/null || git -C "$cache" fetch -q --depth 1000 origin
 git clone -q --no-checkout "$cache" .
 git remote remove origin
 git checkout -q -B main "$commit"
@@ -21,4 +22,11 @@ case "$name" in
     [ -d "$cache.target" ] && cp -r "$cache.target" target
     cargo build -q --tests 2>/dev/null
     [ -d "$cache.target" ] || cp -r target "$cache.target" ;;
+  playdate-game-01)
+    # the hand-drawn character sheets live in a private bucket; placeholders of the same shape
+    # let the unit specs, headless checks and playtests run (collision never reads the art)
+    python3 "$(dirname "$0")/playdate/placeholder_art.py" .
+    mise trust -q . >/dev/null 2>&1
+    bun install --frozen-lockfile >/dev/null 2>&1
+    MISE_YES=1 mise install >/dev/null 2>&1 || true ;;
 esac
