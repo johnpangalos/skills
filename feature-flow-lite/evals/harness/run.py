@@ -137,6 +137,9 @@ def run_one(out, scenario, arm_name, arm, rep, prompt, dry_run):
     workspace = scratch / "workspace"
     prepare(workspace, scenario, arm)
     env = {k: v for k, v in os.environ.items() if k not in SCRUB}
+    # `claude -p` stops background agents 10 minutes after the last main turn; an implementor in a
+    # big repo can run longer than that, and an interactive session would wait
+    env["CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS"] = "0"
     env["CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH"] = str(scenario.get("depth", 3))
     started = time.time()
     with open(run_dir / "trace.jsonl", "w") as trace, open(run_dir / "stderr.txt", "w") as err:
