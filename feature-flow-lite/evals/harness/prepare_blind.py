@@ -50,7 +50,7 @@ def main(dest, *batches):
             drop = BUILD_OUTPUT + (".claude",) + (() if keep_git else (".git",))
             shutil.copytree(workspace, target, ignore=shutil.ignore_patterns(*drop), symlinks=True)
             if keep_git:
-                diff = subprocess.run("git add -A -N . && git diff HEAD", shell=True, cwd=target, capture_output=True, text=True).stdout
+                diff = subprocess.run("git add -A -N . ':!.claude' 2>/dev/null; git diff HEAD -- . ':!.claude'", shell=True, cwd=target, capture_output=True, text=True).stdout
                 (dest / scenario / f"{letter}.diff").write_text(diff)
             if scenario.startswith("website"):
                 shots = dest / scenario / f"{letter}-shots"
