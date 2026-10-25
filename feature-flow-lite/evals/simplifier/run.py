@@ -35,9 +35,7 @@ GIT = ["git", "-c", "user.name=eval", "-c", "user.email=eval@example.invalid"]
 HANDOFF = """GOAL: Behavior-preserving cleanup of the finished diff below before it goes to review.
 FILES: {files}
 CONSTRAINTS: Only the lines this diff touched. No new dependencies. Tests must keep passing.
-CHECKS: python3 -m unittest discover -s tests -t . (you can't run it; I re-run it after you)
-DIFF:
-{diff}"""
+CHECKS: python3 -m unittest discover -s tests -t .{checks_note}{diff}"""
 
 
 def agent_def(text):
@@ -85,7 +83,13 @@ def run_one(out, case, arm, rep, prompt_text):
     snapshot = ws.parent / "feature"
     shutil.copytree(ws, snapshot, ignore=shutil.ignore_patterns(".git"))
     definition, effort = agent_def(prompt_text)
-    handoff = HANDOFF.format(files=", ".join(files), diff=diff)
+    # an agent without Bash can't see the diff or run the checks, so the orchestrator pastes it
+    shell = "Bash" in definition["tools"]
+    handoff = HANDOFF.format(
+        files=", ".join(files),
+        checks_note="" if shell else " (you can't run it; I re-run it after you)",
+        diff="" if shell else f"\nDIFF:\n{diff}",
+    )
     (run_dir / "handoff.txt").write_text(handoff)
     cmd = [
         "claude", "-p", handoff, "--agents", json.dumps({"simplifier": definition}),

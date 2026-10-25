@@ -23,14 +23,16 @@ prompt with `ROLE: <role>`, and end it with the result template.
 |---|---|---|---|
 | `investigator` | haiku / low | Read, Grep, Glob | Only on an existing codebase too large to read the relevant parts directly. |
 | `implementor` | haiku / medium | Read, Edit, Write, Bash, Grep, Glob | Every run: builds the change, running targeted tests as it goes and the full checks once at the end. |
-| `simplifier` | haiku / medium | Read, Edit, Grep, Glob | Only when the diff is large. Behavior-preserving cleanup. |
+| `simplifier` | haiku / medium | Read, Edit, Bash, Grep, Glob | Only when the diff is large. Behavior-preserving cleanup; reads the diff itself with git. |
 | `reviewer` | haiku / medium | Read, Grep, Glob, Bash | Every run, after the checks pass. Red team: writes and runs probes to break the change. |
 
 No agent can spawn another; the main conversation spawns all of them.
 
 The plugin also ships a mod in `hooks/` that starts once this skill is invoked. It puts the
 latest `ACCEPTANCE CRITERIA:` block back into any implementor or reviewer handoff that drops it,
-adds a note to the result when an implementor run leaves no changed test file in the repo, and
+adds a note to the result when an implementor run leaves no changed test file in the repo, when an
+implementor or simplifier run leaves new signatures with flag parameters (`is_welcome=False`,
+`mode`) in the diff, or when the simplifier changed files outside the diff it was given, and
 records per-role tokens and time, which `/ff-usage` prints. It never blocks a spawn or a tool call.
 
 ## Project file

@@ -4,9 +4,11 @@ import type { On } from 'claude-code'
 const BLOCK = ['ACCEPTANCE CRITERIA:', '- Adds the flag.', '- Rejects an empty name.'].join('\n')
 const IMPLEMENTOR = 'feature-flow-lite:implementor'
 const REVIEWER = 'feature-flow-lite:reviewer'
+const SIMPLIFIER = 'feature-flow-lite:simplifier'
 const AGENT_CALL = { tool: 'Agent', description: 'Build', prompt: 'GOAL: x' } as const
 
-type GitStub = { exitCode: number; stdout: string } | 'reject'
+type GitOut = { exitCode: number; stdout: string }
+type GitStub = GitOut | 'reject' | ((argv: readonly string[]) => GitOut)
 
 // What sits beneath the plugin, recorded where a test reads it. Operations
 // answer { value }; the Agent tool answers the result the test sets on `agent`.
@@ -15,7 +17,7 @@ function world(on: On, git: GitStub = { exitCode: 0, stdout: '' }, clash = false
   const logs: string[] = []
   const registered: string[] = []
   const gitCalls: string[][] = []
-  const agent: { result: unknown; context?: string[] } = { result: completed('agent-9') }
+  const agent: { result: unknown; context?: string[]; onRun?: () => void } = { result: completed('agent-9') }
   let sessionSeen = false
   let gitState = git
 
@@ -37,14 +39,17 @@ function world(on: On, git: GitStub = { exitCode: 0, stdout: '' }, clash = false
   on('process.run', async ($, e) => {
     gitCalls.push([...e.argv])
     if (gitState === 'reject') throw new Error('spawn git ENOENT')
-    const { exitCode, stdout } = gitState
+    const { exitCode, stdout } = typeof gitState === 'function' ? gitState(e.argv) : gitState
     return { value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   on('ui.log', ($, e) => {
     logs.push(e.text)
     return { value: undefined }
   })
-  on('tool.call', { tool: 'Agent' }, async () => ({ result: agent.result, ...(agent.context ? { context: agent.context } : {}) }) as never)
+  on('tool.call', { tool: 'Agent' }, async () => {
+    agent.onRun?.()
+    return { result: agent.result, ...(agent.context ? { context: agent.context } : {}) } as never
+  })
 
   return {
     spawned,
@@ -319,6 +324,138 @@ test('tests check: an implementor known by its spawned agentId is checked when t
   const out = await ran($, 'general-purpose')
 
   expect(out.context?.[0]).toMatch(/no test files/)
+})
+
+// A repo for the flag and scope checks: `status` and `diff` answer what the test sets.
+function repo(state: { status: string; diff: string; root?: string }) {
+  return (argv: readonly string[]): GitOut => {
+    if (argv[1] === 'status') return { exitCode: 0, stdout: state.status }
+    if (argv[1] === 'diff') return { exitCode: 0, stdout: state.diff }
+    if (argv[1] === 'rev-parse') return { exitCode: 0, stdout: `${state.root ?? '/work'}\n` }
+    return { exitCode: 1, stdout: '' }
+  }
+}
+
+const diffOf = (path: string, ...added: string[]) =>
+  [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, '@@ -1,0 +1,2 @@', ...added.map(line => `+${line}`)].join('\n')
+
+const flagNoteOf = (context: readonly string[] | undefined) => context?.find(line => line.includes('flag parameters'))
+
+test('flags: an implementor diff that adds a flag-driven helper gets a note naming it', async ($, on) => {
+  const diff = diffOf('shop/accounts.py',
+    'def send_notification(email, token=None, is_welcome=False, is_password_reset=False):',
+    '    send_notification(email, is_welcome=True)')
+  world(on, repo({ status: ' M shop/accounts.py\n M tests/test_accounts.py\n', diff }))
+  await $.skill.prompt({ skill: 'feature-flow-lite', text: '' })
+  const note = flagNoteOf((await ran($, IMPLEMENTOR)).context)
+
+  expect(note).toContain('shop/accounts.py: def send_notification(email, token=None, is_welcome=False, is_password_reset=False):')
+  expect(note).not.toContain('send_notification(email, is_welcome=True)')
+  expect(note).toMatch(/inline the helper into its callers or split it/)
+})
+
+test('flags: signatures across languages are caught, calls and plain helpers are not', async ($, on) => {
+  const cases: [string, boolean][] = [
+    ['export function renderPage(order: Order, isInvoice?: boolean) {', true],
+    ['const render = (order, mode = "invoice") => {', true],
+    ['func Render(o Order, verbose bool) string {', true],
+    ['  async send(to: string, includeFooter: boolean): Promise<void> {', true],
+    ['def page(order, kind):', true],
+    ['def format_date(d: date) -> str:', false],
+    ['export function formatMoney(cents: number): string {', false],
+    ['  if (isReady) {', false],
+    ['  return send(email, is_welcome=True)', false],
+    ['  for (const isDone of items) {', false],
+  ]
+  const state = { status: ' M src/a.ts\n M tests/a.test.ts\n', diff: '' }
+  world(on, repo(state))
+  await $.skill.prompt({ skill: 'feature-flow-lite', text: '' })
+  for (const [line, flagged] of cases) {
+    state.diff = diffOf('src/a.ts', line)
+    expect([line, flagNoteOf((await ran($, IMPLEMENTOR)).context) !== undefined]).toEqual([line, flagged])
+  }
+})
+
+test('flags: a new untracked file is read whole from the repo root', async ($, on) => {
+  world(on, repo({ status: '?? shop/pages.py\n?? tests/test_pages.py\n', diff: '', root: '/repo' }))
+  const read: string[] = []
+  on('fs.read', ($, e) => {
+    read.push(e.path)
+    return { value: e.path.endsWith('pages.py') ? 'def render(order, is_invoice=False):\n    pass\n' : '' }
+  })
+  await $.skill.prompt({ skill: 'feature-flow-lite', text: '' })
+  const note = flagNoteOf((await ran($, IMPLEMENTOR)).context)
+
+  expect(read).toContain('/repo/shop/pages.py')
+  expect(note).toContain('shop/pages.py: def render(order, is_invoice=False):')
+})
+
+test('flags: more than five are listed as five and a count', async ($, on) => {
+  const lines = Array.from({ length: 7 }, (_, i) => `def f${i}(x, is_on=False):`)
+  world(on, repo({ status: ' M a.py\n M tests/t.py\n', diff: diffOf('a.py', ...lines) }))
+  await $.skill.prompt({ skill: 'feature-flow-lite', text: '' })
+  const note = flagNoteOf((await ran($, IMPLEMENTOR)).context) ?? ''
+
+  expect(note).toContain('def f4(x, is_on=False):')
+  expect(note).not.toContain('def f5(')
+  expect(note).toContain('...and 2 more')
+})
+
+test('flags: a simplifier run is checked, a reviewer run is not', async ($, on) => {
+  world(on, repo({ status: ' M a.py\n', diff: diffOf('a.py', 'def f(x, is_on=False):') }))
+  await $.skill.prompt({ skill: 'feature-flow-lite', text: '' })
+
+  expect(flagNoteOf((await ran($, SIMPLIFIER)).context)).toMatch(/after this simplifier run/)
+  expect((await ran($, REVIEWER)).context).toBeUndefined()
+})
+
+test('flags: a git diff that fails adds no note', async ($, on) => {
+  world(on, argv => (argv[1] === 'diff' ? { exitCode: 128, stdout: '' } : { exitCode: 0, stdout: ' M a.py\n M tests/t.py\n' }))
+  await $.skill.prompt({ skill: 'feature-flow-lite', text: '' })
+  expect((await ran($, IMPLEMENTOR)).context).toBeUndefined()
+})
+
+test('scope: a simplifier that changes files outside its diff gets a note naming them', async ($, on) => {
+  const state = { status: ' M shop/api.py\n?? tests/test_api.py\n', diff: '' }
+  const w = world(on, repo(state))
+  w.agent.onRun = () => {
+    state.status = ' M shop/api.py\n M shop/orders.py\n?? shop/helpers.py\n?? tests/test_api.py\n'
+  }
+  await $.skill.prompt({ skill: 'feature-flow-lite', text: '' })
+  const out = await ran($, SIMPLIFIER)
+
+  expect(out.context).toHaveLength(1)
+  expect(out.context?.[0]).toMatch(/outside the diff it was given: shop\/orders\.py, shop\/helpers\.py\./)
+})
+
+test('scope: edits inside the diff add no note', async ($, on) => {
+  const state = { status: ' M shop/api.py\n?? tests/test_api.py\n', diff: '' }
+  const w = world(on, repo(state))
+  w.agent.onRun = () => {
+    state.status = 'MM shop/api.py\n?? tests/test_api.py\n'
+  }
+  await $.skill.prompt({ skill: 'feature-flow-lite', text: '' })
+  expect((await ran($, SIMPLIFIER)).context).toBeUndefined()
+})
+
+test('scope: only the simplifier is checked, and git failing before it starts skips the check', async ($, on) => {
+  const state = { status: ' M a.py\n M tests/t.py\n', diff: '' }
+  const w = world(on, repo(state))
+  w.agent.onRun = () => {
+    state.status += ' M b.py\n'
+  }
+  await $.skill.prompt({ skill: 'feature-flow-lite', text: '' })
+  expect((await ran($, IMPLEMENTOR)).context).toBeUndefined()
+
+  w.setGit('reject')
+  w.agent.onRun = undefined
+  expect((await ran($, SIMPLIFIER)).context).toBeUndefined()
+})
+
+test('scope: nothing runs before the gate opens', async ($, on) => {
+  const w = world(on, repo({ status: ' M a.py\n', diff: diffOf('a.py', 'def f(x, is_on=False):') }))
+  expect((await ran($, SIMPLIFIER)).context).toBeUndefined()
+  expect(w.gitCalls).toHaveLength(0)
 })
 
 test('usage: nothing is recorded before the gate; /ff-usage says so', async ($, on) => {

@@ -39,3 +39,7 @@ python3 run.py -a variant --variant path/to/simplifier.md
 - The first building-blocks wording over-corrected: it left the duplicated required-fields
   check alone, calling it "not a shared building block yet". One sentence saying building
   blocks are often a few lines fixed that, and the agent now ships with that sentence.
+
+With Bash (reads the diff with git and runs the checks itself, no pasted diff): 18/18 across
+the six cases, `_require_fields` 3/3. In 1 of 18 runs it rewrote a file with a shell heredoc
+instead of Edit; the result was correct and stayed inside the diff.

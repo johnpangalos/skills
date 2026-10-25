@@ -3,9 +3,11 @@ import type { EngineInterface, Register } from 'claude-code'
 // feature-flow-lite's mod. Silent until the skill is invoked (a skill.prompt
 // for feature-flow-lite); after that it keeps the ACCEPTANCE CRITERIA block in
 // implementor and reviewer handoffs, flags implementor runs that changed no
-// test file, and records per-role tokens and time for /ff-usage. Every hook
-// passes the event through unless its condition holds, and none of them can
-// deny a spawn or a tool call.
+// test file, flags new signatures with path-picking flag parameters after an
+// implementor or simplifier run, flags simplifier edits outside the diff it was
+// given, and records per-role tokens and time for /ff-usage. Every hook passes
+// the event through unless its condition holds, and none of them can deny a
+// spawn or a tool call.
 
 type Role = 'investigator' | 'implementor' | 'simplifier' | 'reviewer'
 
@@ -84,16 +86,91 @@ function isTestFile(path: string): boolean {
 
 // Changed paths in the session's repo, or undefined when git cannot say.
 async function changedPaths($: EngineInterface): Promise<string[] | undefined> {
+  return (await statusEntries($))?.map(entry => entry.path)
+}
+
+async function statusEntries($: EngineInterface): Promise<{ path: string; untracked: boolean }[] | undefined> {
   try {
     const { exitCode, stdout } = await $.process.run(['git', 'status', '--porcelain', '--untracked-files=all'])
     if (exitCode !== 0) return undefined
     return stdout
       .split('\n')
       .filter(line => line.length > 3)
-      .map(porcelainPath)
+      .map(line => ({ path: porcelainPath(line), untracked: line.startsWith('??') }))
   } catch {
     return undefined
   }
+}
+
+// A parameter that picks which path a caller takes: is_welcome=False,
+// isRefund?: boolean, verbose bool, mode: 'a' | 'b'. Matched inside the
+// parentheses of a line that opens a function.
+const FUNCTION_LINE = /^\s*(?:export\s+)?(?:async\s+)?(?:def |func |function\b|(?:const|let|var)\s+\w+\s*=\s*(?:async\s*)?\()|^\s*(?:(?:public|private|protected|static|async)\s+)*(?!(?:if|for|while|switch|catch|with|return)\b)\w+\s*\([^)]*\)\s*(?::[^{=]+)?\{\s*$/
+const FLAG_PARAM = [
+  /\b(?:is|has|should|use|show|include|for|as)_\w+\b/,
+  /\b(?:is|has|should)[A-Z]\w*\b/,
+  /\b\w+\s*=\s*(?:True|False|true|false)\b/,
+  /\b\w+\??\s*:\s*(?:bool|boolean)\b/,
+  /(?:^|[(,\s])\w+\s+bool\b/,
+  /\b(?:mode|kind|variant)\b\s*(?:[:=?,]|$)/,
+]
+
+function flagSignature(line: string): string | undefined {
+  if (!FUNCTION_LINE.test(line)) return undefined
+  const open = line.indexOf('(')
+  if (open < 0) return undefined
+  const close = line.lastIndexOf(')')
+  const params = line.slice(open + 1, close > open ? close : undefined)
+  return FLAG_PARAM.some(re => re.test(params)) ? line.trim() : undefined
+}
+
+// Added lines in the working tree against HEAD, with the file each is in:
+// git diff for tracked files, the whole file for untracked ones.
+async function addedLines($: EngineInterface): Promise<{ path: string; line: string }[] | undefined> {
+  try {
+    const diff = await $.process.run(['git', 'diff', 'HEAD', '--no-color', '--no-ext-diff', '-U0'])
+    if (diff.exitCode !== 0) return undefined
+    const out: { path: string; line: string }[] = []
+    let path = ''
+    for (const line of diff.stdout.split('\n')) {
+      if (line.startsWith('+++ ')) path = line.slice(4).replace(/^b\//, '')
+      else if (line.startsWith('+')) out.push({ path, line: line.slice(1) })
+    }
+    const entries = (await statusEntries($)) ?? []
+    const untracked = entries.filter(entry => entry.untracked).slice(0, 50)
+    if (untracked.length > 0) {
+      const top = await $.process.run(['git', 'rev-parse', '--show-toplevel'])
+      const root = top.stdout.trim()
+      for (const entry of untracked) {
+        try {
+          const text = await $.fs.read(root ? `${root}/${entry.path}` : entry.path)
+          for (const line of text.split('\n')) out.push({ path: entry.path, line })
+        } catch {
+          // unreadable or too large to be a source file: skip it
+        }
+      }
+    }
+    return out
+  } catch {
+    return undefined
+  }
+}
+
+async function flagNote($: EngineInterface, role: Role): Promise<string | undefined> {
+  const lines = await addedLines($)
+  if (lines === undefined) return undefined
+  const found = lines.flatMap(({ path, line }) => {
+    const signature = flagSignature(line)
+    return signature ? [`${path}: ${signature}`] : []
+  })
+  if (found.length === 0) return undefined
+  const shown = found.slice(0, 5).map(item => `  ${item}`)
+  if (found.length > 5) shown.push(`  ...and ${found.length - 5} more`)
+  return (
+    `${$.plugin.name}: after this ${role} run, the diff has new signatures with flag parameters:\n${shown.join('\n')}\n` +
+    'If a flag only picks which path one caller takes, inline the helper into its callers or split it. ' +
+    'Leave it if the flag is a real option any caller may set.'
+  )
 }
 
 const ROLE_ROW = (cells: readonly string[]) =>
@@ -164,6 +241,9 @@ export const register: Register = on => {
   }).catch(($, e, next) => next(e))
 
   on('tool.call', { tool: 'Agent' }, async ($, e, next) => {
+    // The simplifier's scope is the diff it was handed: what had changed when it started.
+    const before = gated && roleOf(e.subagent_type, e.prompt) === 'simplifier' ? await fileStates($) : undefined
+
     const ran = await next(e)
     if (!gated || ran.deny !== undefined || ran.isError === true) return ran
 
@@ -171,15 +251,32 @@ export const register: Register = on => {
     if (result?.status !== 'completed') return ran
 
     const role = (result.agentId && roleByAgent.get(result.agentId)) || roleOf(e.subagent_type, e.prompt)
-    if (role !== 'implementor') return ran
+    if (role !== 'implementor' && role !== 'simplifier') return ran
 
-    const paths = await changedPaths($)
-    if (paths === undefined || paths.some(isTestFile)) return ran
+    const notes: string[] = []
+    if (role === 'implementor') {
+      const paths = await changedPaths($)
+      if (paths !== undefined && !paths.some(isTestFile)) {
+        notes.push(
+          `${$.plugin.name}: this implementor run changed no test files. The acceptance criteria require tests; ` +
+            'send it back unless the change genuinely needs none.',
+        )
+      }
+    }
+    if (role === 'simplifier' && before !== undefined) {
+      const after = await fileStates($)
+      const outside = after === undefined ? [] : [...after].filter(path => !before.has(path))
+      if (outside.length > 0) {
+        notes.push(
+          `${$.plugin.name}: the simplifier changed files outside the diff it was given: ${outside.join(', ')}. ` +
+            'Its scope is the diff; revert those unless you asked for them.',
+        )
+      }
+    }
+    const flags = await flagNote($, role)
+    if (flags) notes.push(flags)
 
-    const note =
-      `${$.plugin.name}: this implementor run changed no test files. The acceptance criteria require tests; ` +
-      'send it back unless the change genuinely needs none.'
-    return { ...ran, context: [...(ran.context ?? []), note] }
+    return notes.length === 0 ? ran : { ...ran, context: [...(ran.context ?? []), ...notes] }
   }).catch(($, e, next) => next(e))
 
   on('turn.complete', async ($, e, next) => {
@@ -220,6 +317,12 @@ export const register: Register = on => {
   }).catch(($, e, next) => next(e))
 
   on('command.run', { command: 'ff-usage' }, async () => ({ text: usageTable(records) }))
+}
+
+// Changed paths at this moment, or undefined when git cannot say.
+async function fileStates($: EngineInterface): Promise<Set<string> | undefined> {
+  const paths = await changedPaths($)
+  return paths === undefined ? undefined : new Set(paths)
 }
 
 // Appends one record to the file named by FEATURE_FLOW_USAGE_LOG, if set.
