@@ -8,8 +8,10 @@ description: Use when implementing a feature, building a small project, or track
 Four named agents and one loop. The main conversation (Opus) writes the acceptance criteria,
 hands the work to Haiku, runs the checks itself, and stops after two fix rounds. In
 blind-judged benchmarks on features and bug fixes in real repos, this scored above plain Opus
-at about the same cost, and took about two and a half times as long. The acceptance criteria
-and the reviewer's checklist matter more than the subagents' model.
+at about the same cost, and took about two and a half times as long. Every role runs on every
+task in an existing codebase: left to judgment, the investigator and simplifier were skipped in
+every benchmarked run, and running them costs a few cents. The acceptance criteria and the
+reviewer's checklist matter more than the subagents' model.
 
 ## Roles
 
@@ -21,9 +23,9 @@ prompt with `ROLE: <role>`, and end it with the result template.
 
 | Agent | Model / effort | Tools | When |
 |---|---|---|---|
-| `investigator` | haiku / low | Read, Grep, Glob | Only on an existing codebase too large to read the relevant parts directly. |
+| `investigator` | haiku / low | Read, Grep, Glob | Every task in an existing codebase, first. Maps the code, the conventions, similar code to copy the shape of, and docs that contradict the code. |
 | `implementor` | haiku / medium | Read, Edit, Write, Bash, Grep, Glob | Every run: builds the change, running targeted tests as it goes and the full checks once at the end. |
-| `simplifier` | haiku / medium | Read, Edit, Grep, Glob | Only when the diff is large. Behavior-preserving cleanup. |
+| `simplifier` | haiku / medium | Read, Edit, Write, Bash, Grep, Glob | Every task, after the checks pass. Makes the change simpler without changing behavior: splits or inlines helpers it gave a flag or mode parameter, rewrites over-engineered parts the plainer way, removes dead code. |
 | `reviewer` | haiku / medium | Read, Grep, Glob, Bash | Every run, after the checks pass. Red team: writes and runs probes to break the change. |
 
 No agent can spawn another; the main conversation spawns all of them.
@@ -80,7 +82,10 @@ right section and name it in the report. Never remove a line the user wrote.
    reserved word, a case where the right answer can't be computed, where omitting beats
    emitting something wrong). They go to the implementor as cases to test and to
    the reviewer as cases to reproduce.
-2. **Investigator**, only if the codebase is too large to read the relevant parts yourself.
+2. **Investigator**, on every task in an existing codebase (skip it only for a new project in
+   an empty repo). Give it the request and your acceptance criteria. Pass its findings into the
+   implementor's handoff under FILES and CONSTRAINTS, and add any convention it finds to the
+   acceptance criteria.
 3. **Implementor** with the handoff below. Its CHECKS include a targeted test command (the
    test file or package for the code it changes), so it doesn't run the full suite while it
    works. The end-of-work CHECKS are the repo's own full set: the test suite plus every lint,
@@ -88,7 +93,9 @@ right section and name it in the report. Never remove a line the user wrote.
    didn't name.
 4. **Checks.** Run that full set yourself, once per round. If they
    fail, send the failing lines back to the implementor; this counts as a fix round.
-5. **Simplifier**, only for a large diff; re-run the checks after it.
+5. **Simplifier**, on every task once the checks pass. Give it the diff and the acceptance
+   criteria. Re-run the full checks after it; if it broke something, revert its edits rather
+   than spending a fix round on them.
 6. **Reviewer** with the same acceptance criteria and hostile inputs. It is a red team: it
    writes and runs probes that try to break each criterion and hostile input, and only
    reproduced failures count as blocking. Pass along the commands it needs to run the project

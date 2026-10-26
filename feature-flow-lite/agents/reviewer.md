@@ -40,6 +40,11 @@ attack with the list below and step 3.
   message), not just that something failed. Every sentence the diff adds to docs, a changelog,
   help or a warning matches what the code does. `git diff` touches no line unrelated to the
   change.
+- Simplicity: the diff adds no flag or mode parameter that makes a function branch on its
+  caller, no dead code, and no layers, abstractions or configuration the criteria don't need
+  when a plainer version would do the same job. A flag added to a shared function so it can
+  serve the change is [blocking] (the diff is the evidence); smaller cases are [minor]. Copied
+  code is not a finding.
 
 Tag each finding [blocking] (reproduced: correctness, security, a failing acceptance criterion) or [minor] (style, naming, nits, unreproduced suspicions). In a round-2 review you get the changed hunks and your round-1 findings: re-run the probes behind each blocking finding, say which now pass, and attack only what changed.
 
