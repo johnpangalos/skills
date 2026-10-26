@@ -2,7 +2,7 @@
 
 Can feature-flow-lite v4 get faster if only the orchestrator runs the full test suite? Round 7 measured v4 builds running the playtest suite (`mise run //playtests:test`, about 50 s idle and 2–3 min under load) 6.6 times per build, with 3.7 of those runs in subagents.
 
-The variant is `harness/variants/one-suite/`, run as the `lite-v5-onesuite` arm. It lays three files over the v4 skill:
+The variant was `harness/variants/one-suite/`, run as the `lite-v5-onesuite` arm. Neither was kept in the tree, because the results argue against the change. Both are in commit 79fb958 on `claude/ff-v5-one-suite`, which can restore them to rerun the rounds. The variant laid three files over the v4 skill:
 
 - `SKILL.md`: the implementor's CHECKS are the exact targeted commands (one test file or package, plus fast checks such as unit specs and lint). The full suite is named in no agent's handoff. The orchestrator's single full run per round is the only one, and it gates review. The reviewer gets that run's result.
 - `agents/implementor.md`: run only the targeted tests and fast checks, never the whole suite, not even at the end.
@@ -12,7 +12,7 @@ The variant is `harness/variants/one-suite/`, run as the `lite-v5-onesuite` arm.
 
 ## Setup
 
-Arms `lite-v4` (the working tree of `claude/feature-flow-lite-v3`) and `lite-v5-onesuite`. Tasks `pd-corner-nudge` and `pd-belt-side-lift`, 3 builds each, so 12 builds in total. All 12 ran in batch `results/r8-onesuite` at `-j 2` on one 4-core container, with Opus at medium effort as the main model. Each scenario ran its v4 builds before its variant builds, so the arms did not run side by side. After the batch I re-graded serially on an idle machine. Two judges per task scored the builds blind, using the owner rubric from round 7. The judged score below is the mean of those two judges.
+Arms `lite-v4` (the v4 skill, identical to the `lite-v4` arm's pinned ref 45792d1) and `lite-v5-onesuite`. Tasks `pd-corner-nudge` and `pd-belt-side-lift`, 3 builds each, so 12 builds in total. All 12 ran in batch `results/r8-onesuite` at `-j 2` on one 4-core container, with Opus at medium effort as the main model. Each scenario ran its v4 builds before its variant builds, so the arms did not run side by side. After the batch I re-graded serially on an idle machine. Two judges per task scored the builds blind, using the owner rubric from round 7. The judged score below is the mean of those two judges.
 
 ## Results
 
@@ -110,45 +110,7 @@ Each round was judged on its own scale: the 6 builds of a task were judged toget
 
 **All of v4's subagent suite runs were the implementor's**: 22 of 22 across both rounds. v4's reviewer already never ran the full suite. So the variant changed one behavior in practice: the implementor no longer runs the whole suite before it hands back. That one change produced both the speed gain and, on this evidence, the quality drop. A likely mechanism is that the implementor's own full run makes it re-check its change against the existing tests while it still has the context. Without that run it hands back sooner, and the misses the judges found survive review.
 
-**Verdict:** the variant is faster, but over 6 builds per cell it also scores worse, by about 1 point on the owner rubric. Don't port it into v5 as it is. The speed gain and the quality loss come from the same change, so restoring the implementor's run would give back the time as well. A cheaper variant could keep the implementor's full run but cap it at one, at the end, which v4 already asks for. v4 implementors averaged 2.3 full runs per build in round 8a and 1.3 in round 8b, so the most to gain is roughly one run, about 1–2 minutes per build. The "Porting to v5" wording below is kept for reference and doesn't apply on these results.
-
-## Porting to v5
-
-v5 adds the simplifier between the checks and the reviewer. With one suite run per round, the order becomes implementor → simplifier → the orchestrator's single full run → reviewer. That one run then tests the simplifier's edits along with the implementor's, and replaces v3's two runs (one after the implementor, one after the simplifier). Exact wording, file by file (the implementor and reviewer changes are the same as in `variants/one-suite/`):
-
-**SKILL.md, roles table**
-
-- implementor: "Every run: builds the plain version of the change, running only targeted tests and fast checks, then strips its own leftovers. Never the full suite."
-- simplifier: append "Runs only the tests covering what it touched. Never the full suite."
-- reviewer: "Every task, after a passing check run. Works through its checklist, including simplicity, with its own probes and the tests covering the change. Never the full suite."
-
-**SKILL.md, flow** (replacing v3's steps 3–6)
-
-```
-3. **Implementor** with the handoff below. Its CHECKS are the exact targeted commands: the
-   test file or package for the code it changes (`vitest run tests/<file>.test.ts`, not the
-   task that runs the whole suite), plus fast checks such as unit specs and lint. The full
-   suite is yours, so name it nowhere in an agent's handoff.
-4. **Simplifier**, on every task once the implementor passes its CHECKS. Give it the diff, the
-   acceptance criteria and the same CHECKS.
-5. **Checks.** Run the project's full test suite and linters yourself, once per round, after
-   the simplifier. This is the only full run in the round and the gate for review. If it
-   fails, revert the simplifier's edits and run it once more: a pass means the simplifier broke
-   it, so go on to review without its edits; a second failure goes back to the implementor
-   with the failing lines and test files, and counts as a fix round.
-6. **Reviewer** with the same acceptance criteria, your full-suite result, and the same
-   targeted CHECKS. It works through its checklist and reproduces edge cases.
-```
-
-In the fix loop, a round is implementor → checks → incremental review. As in v3, the simplifier runs only in the first round.
-
-**Handoff template**: `CHECKS: <exact targeted test commands and fast checks; never the full suite>`
-
-**agents/implementor.md**: replace "While you work, run only the tests that cover what you changed (the test file or package you touched), not the whole suite." with "Run only the tests that cover what you changed (the test file or package you touched) and the fast checks in CHECKS, never the whole suite, not even at the end: the orchestrator runs it once per round and sends you any failures." Drop "the orchestrator re-runs the full checks before review" from the last sentence.
-
-**agents/simplifier.md**: replace "After editing, run the tests that cover what you touched (the test file or package, not the whole suite) and undo any edit that breaks them." with "After editing, run the tests that cover what you touched (the targeted commands in CHECKS, or the test file for the code you changed) and undo any edit that breaks them. Never run the whole suite: the orchestrator runs it once after you."
-
-**agents/reviewer.md**: replace "The orchestrator has already run the full suite and linters; don't re-run them. Run the tests that cover the change and your own probes." with "The orchestrator has already run the full suite and linters and gives you the result; never run the full suite yourself, not even to confirm. Run your own probes and the tests that cover the change (the targeted commands in CHECKS, or the test files for the code the diff touches)." In the checklist, "the existing test suite still passes" becomes "the orchestrator's suite run passed".
+**Verdict:** the variant is faster, but over 6 builds per cell it also scores worse, by about 1 point on the owner rubric. Don't port it into v5 as it is. The speed gain and the quality loss come from the same change, so restoring the implementor's run would give back the time as well. A cheaper variant could keep the implementor's full run but cap it at one, at the end, which v4 already asks for. v4 implementors averaged 2.3 full runs per build in round 8a and 1.3 in round 8b, so the most to gain is roughly one run, about 1–2 minutes per build.
 
 ## Raw data
 
