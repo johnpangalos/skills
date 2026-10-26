@@ -1,16 +1,16 @@
 ---
 name: feature-flow-lite
-description: Use when implementing a feature, building a small project, or tracking down and fixing a bug across files, with a three-role subagent pipeline (investigator, implementor, reviewer) and a capped fix loop. The main Opus conversation orchestrates; Haiku subagents do the work.
+description: Use when implementing a feature, building a small project, or tracking down and fixing a bug across files, with a four-role subagent pipeline (investigator, implementor, simplifier, reviewer) and a capped fix loop. The main Opus conversation orchestrates; Haiku subagents do the work.
 ---
 
 # Feature Flow Lite
 
-Three named agents and one loop. The main conversation (Opus) writes the acceptance criteria,
+Four named agents and one loop. The main conversation (Opus) writes the acceptance criteria,
 hands the work to Haiku, runs the checks itself, and stops after two fix rounds. Every role
-runs on every task in an existing codebase: left to judgment, the investigator was skipped in
-every benchmarked run, and running it costs a few cents. Simplicity is built in, not cleaned up
-after: the investigator names the code to copy the shape of, the implementor writes the plain
-version first, and the reviewer blocks structure the request didn't ask for.
+runs on every task in an existing codebase: left to judgment, the investigator and simplifier
+were skipped in every benchmarked run, and running them costs a few cents. The investigator
+names the code to copy the shape of, the implementor writes the plain version, the simplifier
+removes flag-branch helpers and structure nobody asked for, and the reviewer blocks what's left.
 
 ## Roles
 
@@ -24,7 +24,8 @@ prompt with `ROLE: <role>`, and end it with the result template.
 |---|---|---|---|
 | `investigator` | haiku / low | Read, Grep, Glob | Every task in an existing codebase, first, in the background while you write the acceptance criteria. Maps the code, the conventions, similar code to copy the shape of, shared helpers not to stretch, and docs that contradict the code. |
 | `implementor` | haiku / medium | Read, Edit, Write, Bash, Grep, Glob | Every run: builds the plain version of the change, running targeted tests as it goes and the full checks once at the end, then strips its own leftovers. |
-| `reviewer` | haiku / medium | Read, Grep, Glob, Bash | Every task, after a passing check run. Works through its checklist, including simplicity. |
+| `simplifier` | haiku / medium | Read, Edit, Write, Bash, Grep, Glob | Every task, after the checks pass. Makes the change simpler without changing behavior: splits or inlines helpers it gave a flag or mode parameter, rewrites over-engineered parts the plainer way, removes dead code. |
+| `reviewer` | haiku / medium | Read, Grep, Glob, Bash | Every task, after the simplifier and a passing check run. Works through its checklist, including simplicity. |
 
 No agent can spawn another; the main conversation spawns all of them.
 
@@ -51,13 +52,16 @@ No agent can spawn another; the main conversation spawns all of them.
    works.
 4. **Checks.** Run the project's full test suite and linters yourself, once per round. If they
    fail, send the failing lines back to the implementor; this counts as a fix round.
-5. **Reviewer** with the same acceptance criteria. It works through its checklist and
+5. **Simplifier**, on every task once the checks pass. Give it the diff and the acceptance
+   criteria. Re-run the full checks after it; if it broke something, revert its edits rather
+   than spending a fix round on them.
+6. **Reviewer** with the same acceptance criteria. It works through its checklist and
    reproduces edge cases.
-6. **Fix loop.** Blocking findings go back to the implementor, then checks, then an
+7. **Fix loop.** Blocking findings go back to the implementor, then checks, then an
    incremental review of only the changed hunks plus the reviewer's earlier findings. Stop
    after two rounds and report what passed, what still fails, and the open findings. Style
    nits are reported, not looped on.
-7. **Report** the outcome and which agents ran.
+8. **Report** the outcome and which agents ran.
 
 ## Handoff
 
@@ -71,7 +75,7 @@ CHECKS: <targeted test command while working; full test and lint commands for th
 ```
 
 Every handoff starts with GOAL. The investigator's has GOAL, FILES and CONSTRAINTS (it runs
-before the criteria exist); every implementor and reviewer handoff carries the
+before the criteria exist); every implementor, simplifier and reviewer handoff carries the
 `ACCEPTANCE CRITERIA:` block unchanged. The agents already return this result format, so
 don't restate it:
 
