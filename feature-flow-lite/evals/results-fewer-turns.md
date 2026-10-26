@@ -172,3 +172,35 @@ you." The report step becomes:
 Expect about half the main-thread turns and a third off the main-thread cost. Don't expect much
 off the wall time: these edits save 1–1.5 min of Opus wait per build. Wall time goes down when
 there are fewer full-suite runs and shorter subagent runs.
+
+## Follow-up: v5 with `--advisor opus` (small round)
+
+One task (`pd-corner-nudge`), 2 builds each of `lite-v5` (v5 as on `claude/feature-flow-lite-v3`)
+and `lite-v5-advisor` (the same with `--advisor opus`, which the Opus orchestrator and every Haiku
+subagent inherit), `-j 2`, re-graded serially. Not blind-judged.
+
+| arm | rep | outcome checks | cost $ (main / sub / advisor) | wall min | advisor calls (main / sub) | full-suite runs main / sub |
+|---|---|---|---|---|---|---|
+| lite-v5 | 1 | 7/7 | 1.44 (1.24 / 0.20 / –) | 53.0 | – | 5 / 1 |
+| lite-v5 | 2 | 7/7 | 1.28 (1.00 / 0.18 / –) | 39.9 | – | 5 / 1 |
+| lite-v5-advisor | 1 | 7/7 | 2.55 (1.66 / 0.24 / 0.64) | 46.0 | 1 / 1 | 2 / 3 |
+| lite-v5-advisor | 2 | 6/7 (the new playtest imports a type `playtest.ts` doesn't export) | 0.96 (0.88 / 0.08 / 0) | 18.1 | 0 / 0 | 1 / 2 |
+
+- **The advisor was barely used.** Across both builds there were two consultations. The
+  orchestrator made one while drafting the criteria, and the Haiku implementor made one just
+  before it started writing. The second build never consulted it. The docs give no setting to
+  force calls, and Haiku is known to under-call.
+- **The one call that happened was expensive.** The two consultations in build 1 cost about
+  $0.64, because each re-reads the whole transcript uncached at Opus rates. That build still took
+  46 min and two fix rounds.
+- **The fast build doesn't count for the advisor.** Build 2 (18 min, $0.96) never called the
+  advisor, so its speed is run-to-run variance (fewer suite runs and a shorter implementor run),
+  not an advisor effect.
+- **Verdict at this size: no measurable effect.** As configured, the advisor adds cost when it's
+  called and isn't called often enough to change fix rounds. Testing it properly would need the
+  role prompts to tell the implementor when to consult it (before its first edit and after a
+  failing check), then a full round.
+
+The advisor-cost column is the run's total cost minus the priced main and subagent messages.
+Advisor calls appear only in the per-model totals. On runs without the advisor this remainder
+is $0–0.10 of accounting noise; plain build 2 shows $0.10 (not in its row).
