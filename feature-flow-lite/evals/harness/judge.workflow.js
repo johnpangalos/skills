@@ -76,6 +76,8 @@ const PRODUCT = {
   feature: 'fit with the codebase: follows its existing patterns, naming, doc comments, test style and changelog/docs conventions; a maintainer would merge it as is',
 }
 // a challenge can pass its own `probe` text; feature changes in an existing repo always do
+// a challenge's `rubric` text (what the repo's owner values) goes to inspectors and judges alike
+const rubric = ch => (ch.rubric ? `\n\nWHAT THE OWNER VALUES (weigh it in code_quality and in your score):\n${ch.rubric}` : '')
 
 function kindOf(ch) {
   return ch.kind === 'library' || ch.kind === 'feature' ? 'a feature change in an existing open-source repo' : 'a small greenfield coding task'
@@ -93,7 +95,7 @@ Look only at this build. Don't open sibling folders. Before building or running 
 What to do: read all of the ${b.diff ? 'change' : 'code'}, then ${ch.probe || PROBES[ch.kind]}
 Record every defect with severity (blocker: a spec requirement fails; major: a real bug or a serious quality problem a reviewer would block on; minor: everything else) and evidence a skeptic could reproduce (the command and what it printed, or file:line).
 
-Score 1-10 each: correctness (meets the spec, including edge cases), robustness, code_quality (structure, idiom, clarity; more code is not better), tests (do they test meaningful behavior), docs (${b.diff ? 'the docs, changelog and comments the repo expects for a change like this' : 'README and run instructions'}), product (${PRODUCT[ch.kind]}). overall is your holistic 1-10. Calibrate: 5 = works with notable gaps, 7 = good, 8 = ${b.diff ? 'a maintainer would merge it with at most small edits' : 'solid production-quality small project'}, 10 = exemplary. stats: files, non-blank source lines (excluding lockfiles and generated files), test cases.`
+Score 1-10 each: correctness (meets the spec, including edge cases), robustness, code_quality (structure, idiom, clarity; more code is not better), tests (do they test meaningful behavior), docs (${b.diff ? 'the docs, changelog and comments the repo expects for a change like this' : 'README and run instructions'}), product (${PRODUCT[ch.kind]}). overall is your holistic 1-10. Calibrate: 5 = works with notable gaps, 7 = good, 8 = ${b.diff ? 'a maintainer would merge it with at most small edits' : 'solid production-quality small project'}, 10 = exemplary. stats: files, non-blank source lines (excluding lockfiles and generated files), test cases.${rubric(ch)}`
 }
 
 function judgePrompt(ch, reports) {
@@ -107,22 +109,23 @@ BUILDS (read-only; before building or running one, copy it to a fresh folder: rm
 ${builds}
 
 Independent inspectors scored each build (they may be calibrated differently from each other):
-${JSON.stringify(reports, null, 1)}
+${JSON.stringify(reports, null, 1)}${ch.reportsFile ? `\n\nThe inspector reports for builds ${ch.reportedLetters.join(', ')} are in ${ch.reportsFile} (JSON). Read that file in full before you start; those builds were inspected earlier, by the same instructions.` : ''}
 
 1. Re-check every blocker and major defect the inspectors claimed by reproducing it yourself. List each as confirmed or refuted with a one-line reason. Also look for anything important an inspector missed.
 2. Then score every build 1-10 on one shared scale (5 = works with notable gaps, 8 = ${ch.builds.some(b => b.diff) ? 'a maintainer would merge it with at most small edits' : 'solid production-quality small project'}), weighing correctness and robustness most, then code quality and tests, then product polish and docs. Don't reward size or features beyond the spec unless they make the result better for its user.
-3. ranking: best first. verdict: 2-4 sentences on what separates the builds.`
+3. ranking: best first. verdict: 2-4 sentences on what separates the builds.${rubric(ch)}`
 }
 
 const results = await pipeline(
   args,
   ch =>
     parallel(
-      ch.builds.filter(b => !(ch.reports || []).some(r => r.letter === b.letter)).map(b => () =>
+      ch.builds.filter(b => !(ch.reports || []).some(r => r.letter === b.letter) && !(ch.reportedLetters || []).includes(b.letter)).map(b => () =>
         agent(inspectPrompt(ch, b), { label: `inspect ${ch.id} ${b.letter}`, phase: 'Inspect', schema: INSPECT, effort: 'medium' })
       )
     ).then(reports => [...(ch.reports || []), ...reports.filter(Boolean)].sort((a, b) => a.letter.localeCompare(b.letter))),
   (reports, ch) => {
+    // a challenge can point at earlier inspector reports on disk (reportsFile + reportedLetters) instead of inlining them
     // ch.judges independent judges (default 1) score the same reports; their spread measures judge noise
     const n = ch.judges || 1
     log(`${ch.id}: ${reports.length}/${ch.builds.length} inspections back, ${n} judge(s)`)

@@ -6,10 +6,11 @@ description: Use when implementing a feature, building a small project, or track
 # Feature Flow Lite
 
 Four named agents and one loop. The main conversation (Opus) writes the acceptance criteria,
-hands the work to Haiku, runs the checks itself, and stops after two fix rounds. In
-blind-judged benchmarks on features and bug fixes in real repos, this scored above plain Opus
-at about the same cost, and took about two and a half times as long. The acceptance criteria
-and the reviewer's checklist matter more than the subagents' model.
+hands the work to Haiku, runs the checks itself, and stops after two fix rounds. Every role
+runs on every task in an existing codebase: left to judgment, the investigator and simplifier
+were skipped in every benchmarked run, and running them costs a few cents. The investigator
+names the code to copy the shape of, the implementor writes the plain version, the simplifier
+removes flag-branch helpers and structure nobody asked for, and the reviewer blocks what's left.
 
 ## Roles
 
@@ -21,30 +22,39 @@ prompt with `ROLE: <role>`, and end it with the result template.
 
 | Agent | Model / effort | Tools | When |
 |---|---|---|---|
-| `investigator` | haiku / low | Read, Grep, Glob | Only on an existing codebase too large to read the relevant parts directly. |
-| `implementor` | haiku / medium | Read, Edit, Write, Bash, Grep, Glob | Every run: builds the change, running targeted tests as it goes and the full checks once at the end. |
-| `simplifier` | haiku / medium | Read, Edit, Grep, Glob | Only when the diff is large. Behavior-preserving cleanup. |
-| `reviewer` | haiku / medium | Read, Grep, Glob, Bash | Every run, after the checks pass. For auth, payments, migrations or concurrency, pass `model: opus` and `effort: medium` on the call. |
+| `investigator` | haiku / low | Read, Grep, Glob | Every task in an existing codebase, first, in the background while you write the acceptance criteria. Maps the code, the conventions, similar code to copy the shape of, shared helpers not to stretch, and docs that contradict the code. |
+| `implementor` | haiku / medium | Read, Edit, Write, Bash, Grep, Glob | Every run: builds the plain version of the change, running targeted tests as it goes and the full checks once at the end, then strips its own leftovers. |
+| `simplifier` | haiku / medium | Read, Edit, Write, Bash, Grep, Glob | Every task, after the checks pass. Makes the change simpler without changing behavior: splits or inlines helpers it gave a flag or mode parameter, rewrites over-engineered parts the plainer way, removes dead code. |
+| `reviewer` | haiku / medium | Read, Grep, Glob, Bash | Every task, after the simplifier and a passing check run. Works through its checklist, including simplicity. |
 
 No agent can spawn another; the main conversation spawns all of them.
 
 ## Flow
 
-1. **Acceptance criteria.** Before spawning anything, write a short list of testable
-   statements of what done looks like. Include the requirements the request only implies and
-   spell out how they combine ("filterable" plus "works without JavaScript" means the filter
-   works with JavaScript off; "today" means the user's local day). For a new project, a short
-   README with run instructions is a criterion. Numbers in a spec are floors. In an existing
-   repo, list its conventions for this kind of change as criteria: look at how a similar
-   feature was added (its changelog entry, docs, man page, shell completions, README tables,
-   where its tests live) and require the same.
-2. **Investigator**, only if the codebase is too large to read the relevant parts yourself.
+1. **Investigator**, on every task in an existing codebase (skip it only for a new project in
+   an empty repo). Spawn it first with the request, in the background, and write the
+   acceptance criteria while it reads.
+2. **Acceptance criteria.** Write a short list of testable statements of what done looks like.
+   Include the requirements the request only implies and spell out how they combine
+   ("filterable" plus "works without JavaScript" means the filter works with JavaScript off;
+   "today" means the user's local day). For a new project, a short README with run
+   instructions is a criterion. Numbers in a spec are floors. In an existing repo, list its
+   conventions for this kind of change as criteria: look at how a similar feature was added
+   (its changelog entry, docs, man page, shell completions, README tables, where its tests
+   live) and require the same. Criteria describe behavior, not design: don't call for a
+   refactor, base class, shared helper or new abstraction unless the request asks for one. A
+   new piece follows the shape of the code beside it, and copying that shape is fine. "More
+   are coming" is not a request for a framework. When the investigator returns, add any
+   convention it found and pass its findings into the implementor's handoff under FILES and
+   CONSTRAINTS.
 3. **Implementor** with the handoff below. Its CHECKS include a targeted test command (the
    test file or package for the code it changes), so it doesn't run the full suite while it
    works.
 4. **Checks.** Run the project's full test suite and linters yourself, once per round. If they
    fail, send the failing lines back to the implementor; this counts as a fix round.
-5. **Simplifier**, only for a large diff; re-run the checks after it.
+5. **Simplifier**, on every task once the checks pass. Give it the diff and the acceptance
+   criteria. Re-run the full checks after it; if it broke something, revert its edits rather
+   than spending a fix round on them.
 6. **Reviewer** with the same acceptance criteria. It works through its checklist and
    reproduces edge cases.
 7. **Fix loop.** Blocking findings go back to the implementor, then checks, then an
@@ -64,8 +74,10 @@ ACCEPTANCE CRITERIA:
 CHECKS: <targeted test command while working; full test and lint commands for the end>
 ```
 
-Every implementor and reviewer handoff carries the `ACCEPTANCE CRITERIA:` block unchanged. The
-agents already return this result format, so don't restate it:
+Every handoff starts with GOAL. The investigator's has GOAL, FILES and CONSTRAINTS (it runs
+before the criteria exist); every implementor, simplifier and reviewer handoff carries the
+`ACCEPTANCE CRITERIA:` block unchanged. The agents already return this result format, so
+don't restate it:
 
 ```
 STATUS: pass | fail | blocked

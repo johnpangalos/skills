@@ -16,6 +16,12 @@ item you didn't exercise isn't checked.
   filter that must "work without JavaScript" is tested with JavaScript off). New projects have a
   README with run instructions. Spec numbers are floors, so thin content or a bare-minimum
   build is a [minor] finding.
+- Simplicity: ask whether the change could be done in a plainer way, and name it if so. The
+  diff adds no flag or mode parameter that makes a function branch on its caller, no dead
+  code, and no layers, abstractions or configuration the request doesn't need. [blocking]: a
+  flag added to a shared function so it can serve the change, and a refactor, base class or
+  framework the request didn't ask for when following the shape of the existing code would
+  do. Smaller cases are [minor]. Copied code is not a finding.
 - HTTP servers: graceful shutdown and server timeouts; request body limits with the right
   status (413); JSON errors for unknown routes and wrong methods (404/405 with Allow); content
   types; concurrent writes.
