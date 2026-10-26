@@ -57,7 +57,60 @@ Means per arm:
 - **Judged quality fell**: 5.50 to 5.00 on corner-nudge, and 7.50 to 6.17 on belt-side-lift. Most of the drop is one belt build (one-suite rep 1, 4.0). Its lift is gated on `velocityX ~= 0`, so a player standing still against the belt is never lifted. That is the case the task names, and the hidden tests don't cover it. The best belt build was also a variant build (rep 3, 8.0). On corner-nudge, only one build (v4 rep 1) finished the frame's rise after the nudge, and the others hang under the pipe mouth when the jump has leftover drift. The worst corner build was a v4 build (rep 2, 3.0, a device crash on every head bonk). With 3 builds per cell and judge spreads up to ±0.5, the quality gap is within noise. It doesn't favor the variant, though, and with fewer second review rounds the variant has less chance to catch a missed case.
 - Process checks failed about equally in both arms. "Stages announced before the first spawn" and "checks pass before any review" failed in nearly every build of both arms, so they don't separate the arms. In two variant corner builds, the final report named only the reviewer.
 
-**Verdict:** the change does what it was meant to do. Subagent full-suite runs go to zero and builds run about 25% faster, with no change in cost or outcome checks. The judged scores are a little lower, mostly from one bad build, and n=3 can't settle whether that is noise. It is worth porting into v5. Check judged quality again at larger n, and watch whether the reviewer still asks for a second round as often as v4's did.
+After round 8a alone, the judged drop looked like noise. Round 8b below repeats the benchmark to check that.
+
+# Round 8b: a second batch
+
+Round 8b reran the round 8a benchmark to see whether the quality drop holds. Batch `results/r8b-onesuite` had the same arms, tasks and setup, 3 more builds per cell, and its own blind judging (2 judges per task). This time each scenario ran its variant builds first, to balance 8a's order.
+
+| task | arm | rep | outcome | cost $ | wall min | model min | full suites (main / sub) | reviews | judged |
+|---|---|---|---|---|---|---|---|---|---|
+| corner-nudge | v4 | 1 | 6/7 (hidden) | 0.89 | 15.5 | 13.3 | 1 / 1 | 1 | 6.0 |
+| corner-nudge | v4 | 2 | 7/7 | 1.66 | 28.0 | 23.1 | 3 / 2 | 2 | 7.75 |
+| corner-nudge | v4 | 3 | 7/7 | 1.19 | 26.9 | 20.1 | 3 / 2 | 2 | 8.5 |
+| corner-nudge | one-suite | 1 | 7/7 | 1.54 | 30.2 | 26.6 | 2 / 0 | 2 | 8.25 |
+| corner-nudge | one-suite | 2 | 6/7 (hidden) | 0.80 | 15.3 | 12.7 | 1 / 0 | 1 | 4.25 |
+| corner-nudge | one-suite | 3 | 6/7 (hidden) | 1.19 | 20.0 | 14.9 | 4 / 0 | 1 | 6.5 |
+| belt-side-lift | v4 | 1 | 7/7 | 0.99 | 20.9 | 15.3 | 2 / 1 | 2 | 6.5 |
+| belt-side-lift | v4 | 2 | 7/7 | 1.07 | 20.4 | 12.7 | 3 / 1 | 2 | 8.0 |
+| belt-side-lift | v4 | 3 | 7/7 | 0.99 | 15.1 | 9.9 | 4 / 1 | 1 | 7.5 |
+| belt-side-lift | one-suite | 1 | 6/7 (TS) | 0.66 | 9.1 | 7.1 | 2 / 0 | 1 | 6.0 |
+| belt-side-lift | one-suite | 2 | 7/7 | 1.11 | 19.4 | 15.3 | 2 / 0 | 2 | 4.25 |
+| belt-side-lift | one-suite | 3 | 7/7 | 1.00 | 16.1 | 13.2 | 2 / 0 | 1 | 7.0 |
+
+The outcome failures are real. I re-ran each one alone after the serial re-grade:
+- The three hidden-test failures are the same test, "enters from a rest N px off centre": the player stops at y=168 instead of rising past 152. One is a v4 build and two are variant builds.
+- The variant belt failure is `vp check`, which fails with 5 errors.
+
+Means for round 8b alone:
+
+| task | arm | cost $ | wall min | subagent full suites | builds with 7/7 | judged |
+|---|---|---|---|---|---|---|
+| corner-nudge | v4 | 1.25 | 23.4 | 1.7 | 2 of 3 | 7.42 |
+| corner-nudge | one-suite | 1.18 | 21.8 | 0 | 1 of 3 | 6.33 |
+| belt-side-lift | v4 | 1.02 | 18.8 | 1.0 | 3 of 3 | 7.33 |
+| belt-side-lift | one-suite | 0.92 | 14.8 | 0 | 2 of 3 | 5.75 |
+
+## Both rounds together (6 builds per cell)
+
+| task | arm | cost $ | wall min | builds with 7/7 | judged mean (sd) |
+|---|---|---|---|---|---|
+| corner-nudge | v4 | 1.25 | 26.1 | 5 of 6 | 6.46 (1.93) |
+| corner-nudge | one-suite | 1.21 | 20.9 | 4 of 6 | 5.67 (1.50) |
+| belt-side-lift | v4 | 0.93 | 18.8 | 6 of 6 | 7.42 (0.52) |
+| belt-side-lift | one-suite | 0.95 | 14.5 | 5 of 6 | 5.96 (1.57) |
+
+Each round was judged on its own scale: the 6 builds of a task were judged together, so both arms always share a scale.
+
+- **The quality drop is real on this evidence.** The variant scored lower than v4 on both tasks in both rounds. Pooled, the gap is 1.1 points (one-sided permutation test over arm labels within each task, p ≈ 0.04). On belt-side-lift alone it is 1.5 points (p ≈ 0.03). On corner-nudge it is 0.8 points (p ≈ 0.23), which is still within noise.
+- **The quality drop isn't explained by fewer review rounds.** Variant builds scored 6.09 with one review round and 5.25 with two. v4 builds scored 6.75 and 6.97. The variant's weakest builds (4.0, 4.25, 4.25, 4.5) include three that ran two rounds.
+- **Variant failures are core behavior misses.** The belt builds at 4.0 and 4.25 broke what the task asks for: one never lifts a player standing still, and the other doubles the climb speed and skips the throw at some heights. Neither failure shows up in the hidden tests or the existing suite. v4's belt builds were all between 6.5 and 8.0.
+- **Outcome checks:** 4 of 12 variant builds failed one check, against 1 of 12 for v4. That's too few to be conclusive, but it points the same way as the judged scores.
+- **The speed gain holds**, but it's smaller than round 8a showed. Pooled wall time fell 20% on corner-nudge (26.1 to 20.9 min) and 23% on belt-side-lift (18.8 to 14.5 min). Cost didn't change. Subagent full-suite runs stayed at 0 in all 12 variant builds.
+
+**All of v4's subagent suite runs were the implementor's**: 22 of 22 across both rounds. v4's reviewer already never ran the full suite. So the variant changed one behavior in practice: the implementor no longer runs the whole suite before it hands back. That one change produced both the speed gain and, on this evidence, the quality drop. A likely mechanism is that the implementor's own full run makes it re-check its change against the existing tests while it still has the context. Without that run it hands back sooner, and the misses the judges found survive review.
+
+**Verdict:** the variant is faster, but over 6 builds per cell it also scores worse, by about 1 point on the owner rubric. Don't port it into v5 as it is. The speed gain and the quality loss come from the same change, so restoring the implementor's run would give back the time as well. A cheaper variant could keep the implementor's full run but cap it at one, at the end, which v4 already asks for. v4 implementors averaged 2.3 full runs per build in round 8a and 1.3 in round 8b, so the most to gain is roughly one run, about 1–2 minutes per build. The "Porting to v5" wording below is kept for reference and doesn't apply on these results.
 
 ## Porting to v5
 
@@ -99,4 +152,4 @@ In the fix loop, a round is implementor → checks → incremental review. As in
 
 ## Raw data
 
-`results/` is not committed. On the container that ran this round, the batch is in `harness/results/r8-onesuite/`. It holds the traces, diffs, gradings, `blind-mapping.json` and `judging.json`, which contains the full inspector and judge reports.
+`results/` is not committed. On the container that ran these rounds, the batches are in `harness/results/r8-onesuite/` and `harness/results/r8b-onesuite/`. It holds the traces, diffs, gradings, `blind-mapping.json` and `judging.json`, which contains the full inspector and judge reports.
