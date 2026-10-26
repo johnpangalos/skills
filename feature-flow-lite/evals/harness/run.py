@@ -119,8 +119,6 @@ def command(scenario, arm, prompt):
     return [
         "claude", "-p", prefix + prompt, *plugin,
         "--model", arm["model"], "--effort", arm["effort"],
-        # the advisor applies to the main session and every subagent whose model can take it
-        *(["--advisor", arm["advisor"]] if arm.get("advisor") else []),
         "--output-format", "stream-json", "--verbose", "--forward-subagent-text",
         "--permission-mode", "acceptEdits", "--allowedTools", TOOLS, "--permission-prompts", "none",
         "--max-budget-usd", str(scenario.get("budget_usd", 5)),

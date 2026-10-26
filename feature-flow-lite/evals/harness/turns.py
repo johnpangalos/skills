@@ -9,9 +9,7 @@ its last streamed block, so idle time spent waiting on background agents isn't c
 notification's arrival is taken from the task's end_time). The first turn has no start event and
 counts as 0. Each
 turn is labelled by what it did: spawn:<role>, read (Read/Grep/Glob), check (a full test or
-lint run), bash (any other command), wait (ReadNotifications, TaskOutput, sleep), advisor (a
-consultation of the advisor model, which runs inside the turn), or text. Advisor calls are also
-counted per thread.
+lint run), bash (any other command), wait (ReadNotifications, TaskOutput, sleep), or text.
 
 Full-suite runs are Bash commands that run the whole test suite: the scenario's own patterns
 (the playdate playtests, vitest, pytest, go test, cargo test) with no single test file named.
@@ -42,8 +40,6 @@ def is_full_suite(cmd):
 def label(blocks):
     kinds = []
     for b in blocks:
-        if b.get("type") == "server_tool_use" and b.get("name") == "advisor":
-            kinds.append("advisor")
         if b.get("type") != "tool_use":
             continue
         name, args = b["name"], b.get("input") or {}
@@ -73,7 +69,6 @@ def analyze(run_dir):
     last_main = None  # timestamp of the previous main-thread event
     last_any = None  # latest timestamp in either thread
     suite = {"main": 0, "sub": 0}
-    advisor = {"main": 0, "sub": 0}
     result = {}
     for line in open(run_dir / "trace.jsonl", errors="replace"):
         try:
@@ -98,8 +93,6 @@ def analyze(run_dir):
         blocks = blocks if isinstance(blocks, list) else []
         if e["type"] == "assistant":
             for b in blocks:
-                if b.get("type") == "server_tool_use" and b.get("name") == "advisor":
-                    advisor["sub" if sub else "main"] += 1
                 if b.get("type") == "tool_use" and b["name"] == "Bash" and is_full_suite((b.get("input") or {}).get("command", "")):
                     suite["sub" if sub else "main"] += 1
         if sub:
@@ -130,8 +123,7 @@ def analyze(run_dir):
         "scenario": meta["scenario"], "arm": meta["arm"], "rep": meta["rep"], "wall_s": meta.get("wall_s"),
         "api_s": round((result.get("duration_api_ms") or 0) / 1000, 1),
         "main_turns": len(rows), "main_wait_s": round(sum(r["wait_s"] or 0 for r in rows), 1),
-        "suite_main": suite["main"], "suite_sub": suite["sub"],
-        "advisor_main": advisor["main"], "advisor_sub": advisor["sub"], "turns": rows,
+        "suite_main": suite["main"], "suite_sub": suite["sub"], "turns": rows,
     }
 
 
@@ -144,10 +136,10 @@ def main():
     for d in args.dirs:
         traces = [d / "trace.jsonl"] if (d / "trace.jsonl").exists() else sorted(d.glob("*/*/rep-*/trace.jsonl"))
         runs += [analyze(t.parent) for t in traces]
-    print(f"{'scenario':<20} {'arm':<16} rep {'wall':>6} {'api':>6} {'turns':>5} {'mainwait':>8} suite(main/sub) advisor(main/sub)")
+    print(f"{'scenario':<20} {'arm':<14} rep {'wall':>6} {'api':>6} {'turns':>5} {'mainwait':>8} suite(main/sub)")
     for r in runs:
-        print(f"{r['scenario']:<20} {r['arm']:<16} {r['rep']:>3} {r['wall_s'] or 0:>6.0f} {r['api_s']:>6.0f} "
-              f"{r['main_turns']:>5} {r['main_wait_s']:>8.0f} {r['suite_main']}/{r['suite_sub']:<13} {r['advisor_main']}/{r['advisor_sub']}")
+        print(f"{r['scenario']:<20} {r['arm']:<14} {r['rep']:>3} {r['wall_s'] or 0:>6.0f} {r['api_s']:>6.0f} "
+              f"{r['main_turns']:>5} {r['main_wait_s']:>8.0f} {r['suite_main']}/{r['suite_sub']}")
         if args.verbose:
             for i, t in enumerate(r["turns"], 1):
                 print(f"   {i:>2} {t['wait_s'] if t['wait_s'] is not None else '-':>6}s {t['label']:<28} {t['text']}")
@@ -157,9 +149,8 @@ def main():
     print()
     for (sid, arm), rs in sorted(by_arm.items()):
         mean = lambda k: statistics.mean(r[k] or 0 for r in rs)
-        print(f"{sid:<20} {arm:<16} n={len(rs)} wall {mean('wall_s'):.0f}s api {mean('api_s'):.0f}s turns {mean('main_turns'):.1f} "
-              f"main wait {mean('main_wait_s'):.0f}s suite {mean('suite_main'):.1f}/{mean('suite_sub'):.1f} "
-              f"advisor {mean('advisor_main'):.1f}/{mean('advisor_sub'):.1f}")
+        print(f"{sid:<20} {arm:<14} n={len(rs)} wall {mean('wall_s'):.0f}s api {mean('api_s'):.0f}s turns {mean('main_turns'):.1f} "
+              f"main wait {mean('main_wait_s'):.0f}s suite {mean('suite_main'):.1f}/{mean('suite_sub'):.1f}")
 
 
 if __name__ == "__main__":
