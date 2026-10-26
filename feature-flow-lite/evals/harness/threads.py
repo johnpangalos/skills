@@ -114,6 +114,9 @@ def analyze(run_dir):
                 total[k] += v
         row[thread] = {k: round(v, 4) for k, v in total.items()}
         row[thread]["total"] = round(sum(total.values()), 4)
+    # advisor sub-inferences (--advisor) don't appear in per-message usage, only in the run's per-model
+    # totals, so their cost is what's left over (slightly low: their output tokens land in fix_output)
+    row["advisor"] = round(max(0.0, row["reported_cost"] - row["main"]["total"] - row["sub"]["total"]), 4)
     # one follow-up turn re-reads the main context: from cache if it's warm (within the 1 h TTL), else rewritten
     i, _, r = PRICES["opus"]
     row["followup_reread_warm"] = round(context * r / 1e6, 4)
