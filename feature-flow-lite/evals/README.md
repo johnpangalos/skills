@@ -49,6 +49,7 @@ A summary of every eval run on feature-flow-lite and its Figma offshoots so far 
 | Project file | Per-repo `FEATURE_FLOW.md` | 7.98 against 7.37 for v5 + mod, ahead on all three tasks. | Yes (PR #7) |
 | Figma | Pipeline vs plain model on Button and Tabs | Plain Opus and Sonnet passed everything for a quarter of the cost or less. | figma-flow builds directly (PR #10) |
 | Opus reviewer | Does moving the reviewer to Opus on risky paths pay? | No. Both arms passed every hidden case in 30 of 30 builds; Opus cost 27% more. | Removed |
+| Workflow | Steps 2–7 as a Workflow script on the same agents | A third cheaper and faster, but 6.62 against 7.62 blind-judged; it lost on ui-lib's fix loop. | No |
 
 ### Earlier rounds (1–5)
 
@@ -263,13 +264,29 @@ Does the same pipeline cost less, or run faster, as a Workflow script? The `lite
 - Workflow agents' text isn't forwarded to stream-json. `run.py` copies their transcripts into `<run>/workflows/`, and `grade.py` counts them as spawns for the scenario's role checks. The generic pipeline rules are skipped for this arm. `modelUsage` did count their tokens in all 6 workflow builds (`workflow_tokens_counted`).
 - Runs ran 4 at a time on one machine, and 2 builds per arm is a smoke-level sample.
 
+**Follow-up, blind-judged.** These builds ran on `chi-etag` and `ui-lib`, with 3 builds per setup and two judges per task. In the workflow arm (`lite-workflow-inline`) Opus reads the script and passes it as `script`, as a plugin install has to. The first attempt is in `results/wf-bench-2-killed/`: headless `-p` stops background tasks 10 minutes after the last turn, which cut 5 of 6 workflow builds short. `run.py` now sets `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0`, and `grade.py` fails a run whose workflow was killed.
+
+| Task | Skill: judge | Workflow: judge | Skill: hidden | Workflow: hidden | Skill cost | Workflow cost | Skill time | Workflow time |
+|---|---|---|---|---|---|---|---|---|
+| chi-etag | **7.67** | 7.25 | 0 of 3 | 0 of 3 | $1.27 | $0.89 | 15.7 min | 13.7 min |
+| ui-lib | **7.58** | 6.00 | 2 of 3 | 2 of 3 | $1.27 | $0.86 | 17.6 min | 13.5 min |
+| Both | **7.62** | 6.62 | | | $1.27 | **$0.87** | 16.7 min | **13.6 min** |
+
+- The workflow stayed about a third cheaper with the script inline, but it lost a point of quality. On ui-lib every skill build scored above every workflow build, and both judges agreed.
+- The judges separated the ui-lib builds on nested dialogs and on an active option keyed by value. Every build's criteria named both, so the loss happened in the fix loop:
+  - In the skill, Opus distilled each review into a short fix handoff (2.5–4k characters) and kept going on the nested-dialog stack.
+  - The script resent the full handoff with the raw review (11–14k characters). One build spent both rounds on minor focus findings, and another got a review with nothing blocking.
+- On chi-etag every build in both arms failed the hidden Flush test. That confirms the first bench's 2-of-2 for the workflow was the criteria's luck, not the workflow.
+- Verdict: not shipped. The saving comes from taking Opus out of the review-and-fix loop, and that loop is where the red-team reviewer's gains were made (§4).
+
+
 ### Open questions
 
 - Does v5 plus the screenshot reviewer alone (without v9's verify paragraph) keep the product gain and the tests?
 - Does a second run that reads an existing `FEATURE_FLOW.md` do better than the first?
 - Is a pipeline worth it for a page-sized Figma design?
 - Does any gain this size hold at 5+ builds per setup? Most measured effects are within the noise of 3 builds.
-- Does the workflow arm's third-lower cost hold at 5+ builds, blind-judged, and does letting Opus triage `[blocking]` findings between rounds keep the saving?
+- Would a hybrid keep most of the workflow's saving: a script for investigate → implement → checks → simplify, then Opus running the review and fix loop?
 
 ### Raw data
 
