@@ -183,6 +183,7 @@ AGENT_ROLES = {
     "docs-writer": "docs", "summarizer": "summarizer", "security-reviewer": "security",
     "migration": "migration", "planner": "planner",
     "looker": "looker",  # figma-flow's agent
+    "user-tester": "user_tester",
 }
 
 
