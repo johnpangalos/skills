@@ -109,7 +109,10 @@ def command(scenario, arm, prompt):
         plugin += ["--plugin-dir", str(other)]
     # a workflow arm needs the Workflow tool, and a persisted session so its agents' transcripts
     # can be collected after the run
+    # (Workflow only loads a scriptPath from the working directory or an added one)
     workflow = arm.get("workflow")
+    if workflow:
+        plugin += ["--add-dir", str(arm["source"])]
     return [
         "claude", "-p", prefix + prompt, *plugin,
         "--model", arm["model"], "--effort", arm["effort"],
