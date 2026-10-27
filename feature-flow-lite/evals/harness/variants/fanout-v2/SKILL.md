@@ -151,6 +151,11 @@ right section and name it in the report. Never remove a line the user wrote.
    reported). For a CLI or service it runs the binary or hits the endpoint. A seam it could
    only trace in code, not reproduce, is [minor] "not reproduced"; if the program can't start
    here, it says so and falls back to tracing. A seam finding goes to the slice that owns it.
+   Its handoff sets a time box: about 10 minutes. It checks each seam once, at the sizes and
+   inputs that seam names, writes one probe script that covers them all rather than exploring,
+   and goes past the list only if time is left. A seam it didn't get to is reported as
+   unchecked, not passed. The wave waits for the slowest reviewer, so an open-ended browser
+   session stalls every slice.
 7. **Fix loop.** Blocking findings go back to the implementor, then checks, then an
    incremental review of only the changed hunks plus the reviewer's earlier findings. Sliced:
    each finding goes to the slice that owns the file, all affected owners in one parallel wave,
