@@ -138,6 +138,7 @@ class Trace:
                                 {
                                     "id": block["id"],
                                     "idx": idx,
+                                    "message": e["message"].get("id") or idx,  # spawns sent together share it
                                     "parent": parent,
                                     "model": args.get("model"),
                                     "effort": args.get("effort"),
@@ -316,9 +317,11 @@ def fix_rounds_capped(t, sc, rule):
     if not reviews:
         return True, "no reviewer spawned (n/a)"
     first = reviews[0]["idx"]
-    fixes = [s for s in t.main_spawns if s["role"] in ("implementor", "debugger") and s["idx"] > first]
-    ok = len(fixes) <= 2 and len(reviews) <= 3
-    return ok, f"{len(fixes)} fix spawns after first review, {len(reviews)} reviews"
+    # a round is a wave: the spawns of one message, so parallel per-slice agents count once
+    fixes = {s["message"] for s in t.main_spawns if s["role"] in ("implementor", "debugger") and s["idx"] > first}
+    waves = {s["message"] for s in reviews}
+    ok = len(fixes) <= 2 and len(waves) <= 3
+    return ok, f"{len(fixes)} fix waves after first review, {len(waves)} review waves ({len(reviews)} reviewers)"
 
 
 def debugger_at_most_once(t, sc, rule):
@@ -430,6 +433,18 @@ PIPELINE_RULES = [
 ]
 
 
+def load_config():
+    """scenarios.json, plus the scenarios and arms of the file FF_EVALS_EXTRA names, if any: a way to
+    run a scenario on a private repo without committing it here. Its "hidden" can be an absolute path."""
+    config = json.loads((HERE / "scenarios.json").read_text())
+    extra = os.environ.get("FF_EVALS_EXTRA")
+    if extra:
+        more = json.loads(pathlib.Path(extra).read_text())
+        config["scenarios"] += more.get("scenarios", [])
+        config["arms"].update(more.get("arms", {}))
+    return config
+
+
 def run_command(check, workspace, scenario_id):
     env = dict(os.environ, HIDDEN=str(HERE / "hidden" / scenario_id), PYTHONPATH=str(workspace), PYTHONDONTWRITEBYTECODE="1")
     proc = subprocess.run(check["cmd"], shell=True, cwd=workspace, env=env, capture_output=True, text=True, timeout=900)
@@ -519,7 +534,7 @@ def grade(run_dir, scenario, arm):
 
 if __name__ == "__main__":
     run_dir, scenario_id = sys.argv[1], sys.argv[2]
-    config = json.loads((HERE / "scenarios.json").read_text())
+    config = load_config()
     scenario = next(s for s in config["scenarios"] if s["id"] == scenario_id)
     meta = json.loads((pathlib.Path(run_dir) / "meta.json").read_text())
     result = grade(run_dir, scenario, config["arms"][meta["arm"]])

@@ -188,7 +188,7 @@ def summarize(out, results):
 
 
 def main():
-    config = json.loads((HERE / "scenarios.json").read_text())
+    config = grade.load_config()
     by_id = {s["id"]: s for s in config["scenarios"]}
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("-s", "--scenarios", default=",".join(by_id), help="comma-separated scenario ids")
