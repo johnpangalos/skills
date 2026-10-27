@@ -108,7 +108,8 @@ def command(scenario, arm, prompt):
     for other in arm.get("also_sources", ()):  # plugins the arm's skill hands off to
         plugin += ["--plugin-dir", str(other)]
     return [
-        "claude", "-p", prefix + prompt, *plugin,
+        # FF_CLAUDE_BIN pins the CLI, so a mid-batch auto-update can't change behavior between arms
+        os.environ.get("FF_CLAUDE_BIN", "claude"), "-p", prefix + prompt, *plugin,
         "--model", arm["model"], "--effort", arm["effort"],
         "--output-format", "stream-json", "--verbose", "--forward-subagent-text",
         "--permission-mode", "acceptEdits", "--allowedTools", TOOLS, "--permission-prompts", "none",
@@ -132,6 +133,7 @@ def run_one(out, scenario, arm_name, arm, rep, prompt, dry_run):
     # -p stops background subagents 10 minutes after the main turn ends; a long Haiku
     # implementor on a big change outlives that, so wait for them instead
     env["CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS"] = "0"
+    env["DISABLE_AUTOUPDATER"] = "1"
     env["FEATURE_FLOW_USAGE_LOG"] = str(run_dir / "usage.jsonl")  # read by the plugin's mod, when loaded
     started = time.time()
     with open(run_dir / "trace.jsonl", "w") as trace, open(run_dir / "stderr.txt", "w") as err:
