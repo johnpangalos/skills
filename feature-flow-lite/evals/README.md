@@ -245,12 +245,31 @@ The hidden tests were checked against a careful and a naive reference: the caref
 - Haiku raised more blocking findings, and more of them were contrived: int subclasses that override `__gt__`, a spoofed `__class__`, a mutated frozen dataclass. Fix rounds came out about even (1.6 against 1.5 implementor runs per build), so the extra noise didn't cost much.
 - The tasks hit the ceiling, so this can't rule out a gain on a harder risky change. But 30 perfect builds without the rule leaves the rule nothing to prove, and it cost 27% more per build. It was removed. The reviewer stays a Haiku red team everywhere.
 
+### 11. The pipeline as a dynamic workflow (small bench)
+
+Does the same pipeline cost less, or run faster, as a Workflow script? The `lite-workflow` arm keeps step 1 (Opus writes the criteria, sibling and hostile inputs) and the final read, and moves steps 2 to 7 into `variants/workflow/workflow/feature-flow.workflow.js`. That script calls the same named Haiku agents with `agentType`, and a Haiku runner does the checks, because a script can't run commands. The control is the shipped skill with its mod. There were 2 builds per task, scored on hidden tests only, not blind-judged.
+
+| Task | Skill: hidden | Workflow: hidden | Skill cost | Workflow cost | Skill time | Workflow time |
+|---|---|---|---|---|---|---|
+| discount-codes | 10/10 in 2 of 2 | 10/10 in 2 of 2 | $0.68 | $0.49 | 4.9 min | 4.0 min |
+| risky-refunds | 17/17 in 2 of 2 | 17/17 in 2 of 2 | $0.86 | $0.46 | 8.3 min | 4.7 min |
+| chi-etag | 0 of 2 | 2 of 2 | $0.96 | $0.70 | 12.3 min | 10.5 min |
+| All | | | $0.83 | **$0.55** | 8.5 min | **6.4 min** |
+
+- The saving is all on the Opus side. Opus writes the handoff once, as the workflow's `args`, instead of once per stage. It takes 2 or 3 turns instead of 5 to 14, so its output and cache-read cost both halve. Haiku cost the same in both arms ($0.05 per build).
+- The chi-etag gap comes from the criteria, not the workflow. Both skill builds' criteria told the implementor that Flush ends buffering, which fails the hidden `TestFlushDoesNotBypassTheBuffer`. Both workflow builds' criteria said Flush must not bypass the buffer. Step 1 is the same in both arms, so this is orchestrator noise until more builds show otherwise.
+- The script enforces the process. Every workflow build ran all four roles in order and stayed within the 2-round cap, and its main session never edited code. Both skill builds on chi-etag fixed things in the main session instead of the implementor. On the other hand, the script treats every `[blocking]` finding as a round: one chi build spent both rounds on 7 findings, where Opus could have dismissed the contrived ones.
+- `scriptPath` loads only from the working directory or an added one. The smoke run hit that limit and pasted the whole script inline instead. The harness adds the skill folder with `--add-dir`, but a real install would need its own way to ship the script.
+- Workflow agents' text isn't forwarded to stream-json. `run.py` copies their transcripts into `<run>/workflows/`, and `grade.py` counts them as spawns for the scenario's role checks. The generic pipeline rules are skipped for this arm. `modelUsage` did count their tokens in all 6 workflow builds (`workflow_tokens_counted`).
+- Runs ran 4 at a time on one machine, and 2 builds per arm is a smoke-level sample.
+
 ### Open questions
 
 - Does v5 plus the screenshot reviewer alone (without v9's verify paragraph) keep the product gain and the tests?
 - Does a second run that reads an existing `FEATURE_FLOW.md` do better than the first?
 - Is a pipeline worth it for a page-sized Figma design?
 - Does any gain this size hold at 5+ builds per setup? Most measured effects are within the noise of 3 builds.
+- Does the workflow arm's third-lower cost hold at 5+ builds, blind-judged, and does letting Opus triage `[blocking]` findings between rounds keep the saving?
 
 ### Raw data
 
@@ -330,6 +349,7 @@ Process checks (`kind: process`) apply only to skill arms. Outcome checks (hidde
 | `lite`, `lite-haiku` | feature-flow-lite at `2540fb3`, before it moved to Haiku: Sonnet agents, or every agent pinned to Haiku at high effort |
 | `skill`, `skill-v2`, `skill-haiku` | The full feature-flow skill at its last commit (`1a69784`), at `2540fb3` (with the direct path), and at `2540fb3` with every agent on Haiku |
 | `skill-v1`, `skill-v0` | feature-flow with named agents (`b6eface`), and as first committed (`0263562`), loaded as a bare project skill with no agents |
+| `lite-workflow` | The working tree with its mod and the `workflow` variant: steps 2–7 run as a Workflow script calling the same named agents (`"workflow": true` adds the Workflow tool and `--add-dir`, and keeps the session so its agents' transcripts can be collected) |
 | `lite-opus-reviewer`, `lite-no-opus-reviewer` | The skill with its mod before the Opus-reviewer clause was removed (`f11f50c`; the batch ran it as `lite-pc-mod`), and the working tree |
 
 The full feature-flow skill isn't in the tree any more, so its arms load it from history: an arm can pin any git `ref` of any skill `folder`, and the harness extracts that version with `git archive`. An arm can also lay a variant's files over the skill (`variant`: `harness/variants/<name>/`, which can replace SKILL.md or add and replace agents), pin every agent's model and effort or a single agent's (`agents`), and tell the grader which model every role should run on (`roster_model`). The skill's value claim is that `lite-v2` matches `baseline` on outcomes for no more money.
