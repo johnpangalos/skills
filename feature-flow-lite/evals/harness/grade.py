@@ -59,6 +59,7 @@ ROSTER = {
 ROLE_WORDS = {
     "planner": r"plann",
     "investigator": r"investigat",
+    "user_tester": r"user.?tester",
     "explorer": r"explor",
     "implementor": r"implement",
     "simplifier": r"simplif",
