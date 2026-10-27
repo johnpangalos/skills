@@ -129,6 +129,9 @@ def run_one(out, scenario, arm_name, arm, rep, prompt, dry_run):
     prepare(workspace, scenario, arm)
     env = {k: v for k, v in os.environ.items() if k not in SCRUB}
     env["CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH"] = str(scenario.get("depth", 3))
+    # -p stops background subagents 10 minutes after the main turn ends; a long Haiku
+    # implementor on a big change outlives that, so wait for them instead
+    env["CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS"] = "0"
     env["FEATURE_FLOW_USAGE_LOG"] = str(run_dir / "usage.jsonl")  # read by the plugin's mod, when loaded
     started = time.time()
     with open(run_dir / "trace.jsonl", "w") as trace, open(run_dir / "stderr.txt", "w") as err:
