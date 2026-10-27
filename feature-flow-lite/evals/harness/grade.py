@@ -74,7 +74,7 @@ ROLE_WORDS = {
 }
 
 STAGE_WORDS = r"investigat|explor|implement|verif|simplif|review|test.?writer|debug|docs"
-CHECK_COMMAND = r"check\.sh|unittest|pytest|ruff|mypy|go (test|vet)|gofmt|cargo (test|clippy|fmt)|vitest|prettier|tsc\b"
+CHECK_COMMAND = r"check\.sh|unittest|pytest|ruff|mypy|go (test|vet)|gofmt|cargo (test|clippy|fmt)|vitest|prettier|tsc\b|(bun|pnpm|npm|yarn) (run )?test|vp (check|test|lint)"
 EDIT_TOOLS = {"Edit", "Write", "NotebookEdit", "MultiEdit"}
 
 
