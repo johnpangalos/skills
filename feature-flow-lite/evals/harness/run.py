@@ -107,14 +107,26 @@ def command(scenario, arm, prompt):
     plugin = ["--plugin-dir", str(arm["source"])] if arm["skill"] == "plugin" else []
     for other in arm.get("also_sources", ()):  # plugins the arm's skill hands off to
         plugin += ["--plugin-dir", str(other)]
+    # a workflow arm needs the Workflow tool, and a persisted session so its agents' transcripts
+    # can be collected after the run
+    workflow = arm.get("workflow")
     return [
         "claude", "-p", prefix + prompt, *plugin,
         "--model", arm["model"], "--effort", arm["effort"],
         "--output-format", "stream-json", "--verbose", "--forward-subagent-text",
-        "--permission-mode", "acceptEdits", "--allowedTools", TOOLS, "--permission-prompts", "none",
+        "--permission-mode", "acceptEdits", "--allowedTools", TOOLS + (",Workflow" if workflow else ""),
+        "--permission-prompts", "none",
         "--max-budget-usd", str(scenario.get("budget_usd", 5)),
-        "--no-session-persistence",
+        *(() if workflow else ("--no-session-persistence",)),
     ]
+
+
+def collect_workflows(run_dir):
+    """Copy the session's workflow transcripts (one folder per Workflow call) into the run."""
+    session = next((e.get("session_id") for e in grade.load_trace(run_dir / "trace.jsonl") if e.get("session_id")), None)
+    projects = pathlib.Path(os.environ.get("CLAUDE_CONFIG_DIR", pathlib.Path.home() / ".claude")) / "projects"
+    for src in projects.glob(f"*/{session}/subagents/workflows/*") if session else ():
+        shutil.copytree(src, run_dir / "workflows" / src.name, dirs_exist_ok=True)
 
 
 def run_one(out, scenario, arm_name, arm, rep, prompt, dry_run):
@@ -136,6 +148,8 @@ def run_one(out, scenario, arm_name, arm, rep, prompt, dry_run):
             subprocess.run(cmd, cwd=workspace, env=env, stdout=trace, stderr=err, timeout=scenario.get("timeout_s", 2400))
         except subprocess.TimeoutExpired:
             err.write("\nharness: timed out\n")
+    if arm.get("workflow"):
+        collect_workflows(run_dir)
     # the skill's per-repo project file is kept with the run, out of the build a judge sees
     project_file = workspace / "FEATURE_FLOW.md"
     if project_file.exists():

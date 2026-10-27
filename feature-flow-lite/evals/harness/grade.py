@@ -9,6 +9,7 @@ Writes grading.json in the skill-creator shape: expectations[] with text /
 passed / evidence, a summary, and metrics.
 """
 
+from datetime import datetime
 import json
 import os
 import pathlib
@@ -172,6 +173,54 @@ class Trace:
             return texts[-1][1]
         done = self.finished.get(spawn["id"])
         return done[1].get("summary") or "" if done else ""
+
+
+def workflow_agents(root):
+    """Every agent a Workflow call ran, from the transcripts run.py copies into <run>/workflows/,
+    in start order: id, type, label, model, prompt, returned text, seconds and usage by model."""
+    agents = []
+    for path in sorted(pathlib.Path(root).glob("*/agent-*.jsonl")):
+        meta_path = path.with_name(path.name.replace(".jsonl", ".meta.json"))
+        meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+        events = load_trace(path)
+        stamps = [e["timestamp"] for e in events if e.get("timestamp")]
+        prompt = next((e["message"]["content"] for e in events if e.get("type") == "user"), "")
+        if isinstance(prompt, list):
+            prompt = "\n".join(b.get("text", "") for b in prompt if isinstance(b, dict))
+        usage, texts, model = {}, [], None
+        for e in events:
+            if e.get("type") != "assistant":
+                continue
+            message = e["message"]
+            model = model or message.get("model")
+            usage[message.get("id") or e.get("uuid")] = (message.get("model"), message.get("usage") or {})
+            texts += [b["text"] for b in message.get("content") or [] if b.get("type") == "text"]
+        tokens = {}
+        for msg_model, u in usage.values():
+            fam = tokens.setdefault(family(msg_model), {})
+            for key in ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"):
+                fam[key] = fam.get(key, 0) + (u.get(key) or 0)
+        agents.append({
+            "id": path.stem.removeprefix("agent-"), "type": meta.get("agentType"), "label": meta.get("description") or "",
+            "model": model, "prompt": prompt, "text": texts[-1] if texts else "", "start": min(stamps, default=""),
+            "seconds": round((datetime.fromisoformat(max(stamps)) - datetime.fromisoformat(min(stamps))).total_seconds(), 1) if stamps else 0,
+            "tokens": tokens,
+        })
+    return sorted(agents, key=lambda a: a["start"])
+
+
+def add_workflow_spawns(t, agents):
+    """Count a workflow's agents as main-level spawns, placed at the Workflow call, so the
+    scenario's role checks apply to a workflow arm the same way."""
+    at = next((idx for idx, name, _, parent in t.tools if name == "Workflow" and not parent), len(t.tools))
+    for n, a in enumerate(agents):
+        spawn = {"id": a["id"], "idx": at + n / 1000, "parent": None, "model": None, "effort": None,
+                 "type": a["type"], "description": a["label"], "prompt": a["prompt"]}
+        spawn["role"] = AGENT_ROLES.get(named_agent(spawn)) or ("checks" if "checks" in a["label"] else a["label"] or "other")
+        spawn["family"] = family(a["model"])
+        t.spawns.append(spawn)
+        t.sub_models[a["id"]] = a["model"]
+        t.sub_texts[a["id"]] = [(spawn["idx"], a["text"])]
 
 
 # the skill's named agents (agents/*.md), loaded as feature-flow:<agent>
@@ -464,6 +513,27 @@ def metrics(t):
     }
 
 
+def workflow_metrics(t, agents, run_dir):
+    """Wall-clock time for every arm (a workflow run's last result event times only its last
+    turn), plus a workflow's agents and whether modelUsage counted their tokens."""
+    meta = json.loads((run_dir / "meta.json").read_text())
+    out = {"wall_s": meta.get("wall_s")}
+    if not agents:
+        return out
+    wf = {}
+    for a in agents:
+        for fam, u in a["tokens"].items():
+            wf[fam] = wf.get(fam, 0) + sum(u.values())
+    reported = {}
+    for model, u in (t.result.get("modelUsage") or {}).items():
+        fam = family(model)
+        reported[fam] = reported.get(fam, 0) + sum(u.get(k, 0) for k in ("inputTokens", "outputTokens", "cacheReadInputTokens", "cacheCreationInputTokens"))
+    out["workflow_agents"] = [f"{a['label']}:{family(a['model'])} {a['seconds']}s" for a in agents]
+    out["workflow_tokens"] = wf
+    out["workflow_tokens_counted"] = all(reported.get(fam, 0) >= n for fam, n in wf.items())
+    return out
+
+
 def grade(run_dir, scenario, arm):
     run_dir = pathlib.Path(run_dir)
     t = Trace(load_trace(run_dir / "trace.jsonl"))
@@ -481,7 +551,10 @@ def grade(run_dir, scenario, arm):
         checks.append(("setup", "run waited for its subagents", False,
                        f"{stats['spawned'] - settled} of {stats['spawned']} subagents still running when the run ended; re-run it"))
     rules = list(scenario.get("checks", []))
-    if scenario.get("pipeline", True):
+    agents = workflow_agents(run_dir / "workflows") if arm.get("workflow") else []
+    add_workflow_spawns(t, agents)
+    # the generic pipeline rules describe an orchestrator spawning with the Agent tool
+    if scenario.get("pipeline", True) and not arm.get("workflow"):
         rules = [dict(r, kind="process") for r in PIPELINE_RULES] + rules
     for check in rules:
         kind = check.get("kind", "outcome")
@@ -511,7 +584,7 @@ def grade(run_dir, scenario, arm):
             "process_pass_rate": rate("process"),
             "outcome_pass_rate": rate("outcome"),
         },
-        "metrics": metrics(t),
+        "metrics": dict(metrics(t), **workflow_metrics(t, agents, run_dir)),
     }
     (run_dir / "grading.json").write_text(json.dumps(grading, indent=2))
     return grading
