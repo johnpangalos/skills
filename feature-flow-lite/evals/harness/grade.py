@@ -550,6 +550,11 @@ def grade(run_dir, scenario, arm):
     if stats.get("spawned", 0) > settled:
         checks.append(("setup", "run waited for its subagents", False,
                        f"{stats['spawned'] - settled} of {stats['spawned']} subagents still running when the run ended; re-run it"))
+    killed = [e.get("task_id") for e in load_trace(run_dir / "trace.jsonl")
+              if e.get("subtype") == "task_updated" and (e.get("patch") or {}).get("status") == "killed"]
+    if killed:
+        checks.append(("setup", "background tasks ran to completion", False,
+                       f"{len(killed)} background task(s) killed before finishing (a workflow cut off at the -p wait limit?); re-run it"))
     rules = list(scenario.get("checks", []))
     agents = workflow_agents(run_dir / "workflows") if arm.get("workflow") else []
     add_workflow_spawns(t, agents)
