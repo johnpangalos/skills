@@ -144,7 +144,8 @@ def run_one(out, scenario, arm_name, arm, rep, prompt, dry_run):
     if project_file.exists():
         shutil.move(project_file, run_dir / "FEATURE_FLOW.md")
     diff = subprocess.run(
-        "git add -A -N . ':!.claude' && git diff HEAD -- . ':!.claude'",
+        # `;`, not `&&`: git add exits 1 when the repo itself ignores .claude/, and the diff must still run
+        "git add -A -N . ':!.claude' 2>/dev/null; git diff HEAD -- . ':!.claude'",
         shell=True, cwd=workspace, capture_output=True, text=True,
     ).stdout
     (run_dir / "diff.patch").write_text(diff)
