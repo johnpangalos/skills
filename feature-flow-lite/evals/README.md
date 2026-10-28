@@ -23,14 +23,17 @@ A summary of every eval run on feature-flow-lite and its Figma offshoots so far 
   - One red-team reviewer (v5): the first change with a large gain on a task it wasn't written against.
   - The mod (handoff guard, tests check, `/ff-usage`): costs nothing and catches dropped criteria, but doesn't measurably raise quality.
   - The per-repo `FEATURE_FLOW.md`: beat v5 + mod on all three tasks, by 0.6 on average, at about 24% more cost.
+  - The user-tester: on two large web changes it scored best or joint best with no weak build, for 8–26% more. On an HTTP middleware and a CLI flag it tied at the same cost.
 - **What didn't ship:**
   - v4's extra rules: overfit to the benchmark tasks.
   - More reviewers (v6, v7): cost more without a reliable gain.
   - Opus triage of findings (v8): twice the cost, and the gain vanished on a held-out site.
   - The article learnings plus a screenshot reviewer (v9): no better than v5, and it stopped writing tests for websites.
+  - Fan-out (one Haiku implementor and reviewer per slice of a large change): 35–80% more cost, and it produced both the best and the worst builds. A seams list and an integration reviewer (fan-out v2) removed the seam failures but didn't lift the average.
 - **What was removed:** the Opus reviewer on risky paths. On 30 builds of auth, payments and concurrency tasks, a Haiku reviewer matched it on every hidden case for 21% less. Haiku also reproduced the token and refund races itself.
 - **On websites, plain Opus still builds the best-looking product**, but it barely tests it. That pattern holds on every task so far.
 - **For Figma component work the pipeline doesn't pay.** With an exact-value test in the repo, plain Opus or plain Sonnet matched every value at a fraction of the cost. figma-flow now builds directly.
+- **On large UI changes, what separates builds only shows in the running program.** Hidden tests passed in every build of both large web tasks; the judges told builds apart by driving them in a browser. The user-tester is the cheapest way found so far to put that check inside the run.
 - **Noise is large.** About 0.9 points of spread per build means 3 builds per setup can only show gains of roughly half a point or more. Several early leads disappeared on a re-run.
 
 ### Timeline
@@ -49,6 +52,9 @@ A summary of every eval run on feature-flow-lite and its Figma offshoots so far 
 | Project file | Per-repo `FEATURE_FLOW.md` | 7.98 against 7.37 for v5 + mod, ahead on all three tasks. | Yes (PR #7) |
 | Figma | Pipeline vs plain model on Button and Tabs | Plain Opus and Sonnet passed everything for a quarter of the cost or less. | figma-flow builds directly (PR #10) |
 | Opus reviewer | Does moving the reviewer to Opus on risky paths pay? | No. Both arms passed every hidden case in 30 of 30 builds; Opus cost 27% more. | Removed |
+| Fan-out | Does splitting a large change across parallel Haiku slices raise quality? | Mixed: 7.83 against 6.38 on one task, 5.75 against 6.0 on the other, at 35–80% more cost. Two of three losses were seams no slice owned. | No |
+| Fan-out v2 | Do a seams list and an integration reviewer fix that? | The seam failures went (worst build 6 instead of 4), but the average stayed within noise of the skill without fan-out. | No |
+| User-tester | Does one Haiku agent that uses the change through the running program help? | Best or joint best on both web tasks (6.75 and 7.85), worst build 6.5, 8–26% more cost. Tied on HTTP and CLI at the same cost. | Yes |
 
 ### Earlier rounds (1–5)
 
@@ -78,6 +84,7 @@ Round 4 is the only early round run on the released skill and this harness. Its 
 | `website-trails` | A hiking-club site, held out from all tuning |
 | `figma-button`, `figma-tabs` | Build from a saved Figma export, measured against its exact values |
 | `risky-auth`, `risky-refunds`, `risky-inventory` | Auth tokens, refunds with idempotency keys, and stock reservations under threads, on the shop package |
+| `editor-touch`, `editor-tablet` | Two merged PRs replayed from a private repo's React level editor: a phone layout with canvas touch gestures (19 files, about 2,000 lines), and a tablet layout with pen and touch in a pixel editor (30 files, about 1,200 lines). Hidden checks are the PRs' own tests. Not in this repo; run through `FF_EVALS_EXTRA`. |
 
 The first six are "the benchmark" below.
 
@@ -245,12 +252,68 @@ The hidden tests were checked against a careful and a naive reference: the caref
 - Haiku raised more blocking findings, and more of them were contrived: int subclasses that override `__gt__`, a spoofed `__class__`, a mutated frozen dataclass. Fix rounds came out about even (1.6 against 1.5 implementor runs per build), so the extra noise didn't cost much.
 - The tasks hit the ceiling, so this can't rule out a gain on a harder risky change. But 30 perfect builds without the rule leaves the rule nothing to prove, and it cost 27% more per build. It was removed. The reviewer stays a Haiku red team everywhere.
 
+### 11. Fan-out on large changes
+
+The question was whether a single Haiku implementor and reviewer lose track of a large change, and whether splitting the work helps. Two merged PRs from a private web app (`editor-touch` and `editor-tablet` above) were replayed from their parent commits. The `fanout` variant has Opus split a change of about six or more files into 2–4 slices, each with its own files and one shared contract. It then runs one Haiku implementor and one Haiku reviewer per slice, each set as one parallel wave. Smaller changes stay single-lane, and in `click-param-spec` and `discount-codes` it correctly didn't fan out.
+
+| | Skill without it | Fan-out |
+|---|---|---|
+| `editor-touch`, 3 builds each | **6.0** | 5.75 |
+| `editor-tablet`, 2 builds each | 6.38 | **7.83** |
+| Cost per build (touch / tablet) | **$2.86 / $2.75** | $5.02 / $3.65 |
+
+- Every build in both arms passed every hidden test, the suite, `vp check` and the build.
+- Fan-out made the best touch build of the round and also the worst. Two of its three touch builds broke at a seam no slice owned. In one, the tool rail was painted under the canvas because one slice owned the canvas's order class and another the layout around it. In the other, the rail's height was never reported because the contract declared the setter but not who calls it, or when. Static checks and per-slice reviewers can't see either bug; the judges found both in a browser.
+- The extra cost is Opus, not Haiku. Sixteen Haiku agents cost about $0.50; Opus writing the slice handoffs and reading their results took the main context from about 130k to 210k tokens.
+- The skill without fan-out already split implementors on its own sometimes: one control run spawned a store implementor and a UI implementor in parallel.
+
+**Fan-out v2** added a `SEAMS:` list to the contract: for each place two slices meet at runtime, who acts, on what, and when, plus the observable fact that proves it. It also gave each runtime fact a single owner, added one integration reviewer that drives the assembled app in Playwright, and signs a seam off only on a reproduced pass. Its first round hit the 60-minute timeout in every run, because the integration reviewer explored for 19–40 minutes and each wave waits for its slowest agent. Time-boxed to about 10 minutes, it finished in 18–52 minutes.
+
+| | Skill without it | Fan-out | Fan-out v2 |
+|---|---|---|---|
+| `editor-touch`, 3 builds each | 6.25 | 5.83 | **6.42** |
+| `editor-tablet`, 2 builds each | 6.38 | **8.0** | 6.63 |
+| Cost per build (touch / tablet) | **$2.86 / $2.75** | $5.02 / $3.65 | $5.22 / $3.75 |
+
+- No v2 build failed at a seam, and its worst touch build was 6 instead of 4.
+- What still separated builds wasn't seams. These were single-slice touch-UX bugs that almost every build in every arm shared: corner handles that swallow small selections at phone zoom, a selection bar wider than a 390px screen, and a pinch that wipes the selection. No acceptance criterion named them, so no reviewer looked for them.
+- The weak v2 tablet build came from the one run whose orchestrator wrongly decided Playwright wasn't installed and skipped the browser check. It shipped the same phone-layout regression as the weaker build of the skill without fan-out.
+
+### 12. The user-tester
+
+Sections 9–11 kept pointing at the same thing: the defects that separate builds show up when the program is used, not when its code is probed. The `use-it` variant keeps the single lane and adds a Haiku **user-tester** in the same wave as the reviewer. It starts the assembled program from the project file's `Run it:` line and uses the change the way its user would: Playwright for a web UI, the built binary for a CLI, `curl` for a service, a consumer project for a library. It checks the criteria with a visible effect and the existing flows next to the change, in about 10 minutes.
+
+All four arms were ranked in one judging pass on the web tasks, with two judges per task:
+
+| | Skill without it | Fan-out | Fan-out v2 | **User-tester** |
+|---|---|---|---|---|
+| `editor-touch` | 6.08 | 5.75 | 6.33 | **6.75** |
+| `editor-tablet` | 6.17 | **7.85** | 6.75 | **7.85** |
+| Worst build | 5.0 | 4.0 | 5.3 | **6.5** |
+| Cost per build (touch / tablet) | **$2.86 / $2.75** | $5.02 / $3.65 | $5.22 / $3.75 | $3.60 / $2.96 |
+
+And on two non-web tasks it hadn't been tuned on, with fresh inspectors, 2 builds per arm:
+
+| | Skill without it | User-tester |
+|---|---|---|
+| `chi-etag` (HTTP) | 8.25 | 8.28 |
+| `fd-count` (CLI) | 8.43 | 8.2 |
+| Cost per build (chi / fd) | $1.26 / $0.98 | $1.23 / $1.04 |
+
+- Every user-tester used the real interface: Playwright against the dev server in all four web runs, `curl` against a running chi router, and the built `fd` binary.
+- On the web tasks no user-tester build broke the existing phone layout, the regression that sank the weak builds in the other arms.
+- On chi and fd no build in either arm had a major defect, and the judges separated them only on polish. These tasks are at the ceiling, so the user-tester had nothing to catch, but it didn't add cost or noise either.
+- All four chi builds failed the same hidden test: each forwarded `Flush` the way the sibling `compress.go` does, which streams the body past the ETag. The fault is shared by both arms and likely comes from the sibling step of the criteria, not the reviewers.
+- With 2 builds per arm, the lead is consistent (best or joint best on both web tasks, no weak build) but still inside the noise of one build. It shipped because it was the only change that never made a bad build, at a fraction of fan-out's cost.
+
 ### Open questions
 
 - Does v5 plus the screenshot reviewer alone (without v9's verify paragraph) keep the product gain and the tests?
 - Does a second run that reads an existing `FEATURE_FLOW.md` do better than the first?
 - Is a pipeline worth it for a page-sized Figma design?
 - Does any gain this size hold at 5+ builds per setup? Most measured effects are within the noise of 3 builds.
+- Would naming interaction hostile inputs in step 1 close the touch-UX gap every arm shared on the web tasks? These include the smallest size and zoom, input that lands mid-gesture, two inputs at once, and actions near an edge. Test it on held-out UI tasks only, since the examples came from these.
+- Does the user-tester's gain hold at 3+ builds per arm, and on a library task?
 
 ### Raw data
 
@@ -331,6 +394,8 @@ Process checks (`kind: process`) apply only to skill arms. Outcome checks (hidde
 | `skill`, `skill-v2`, `skill-haiku` | The full feature-flow skill at its last commit (`1a69784`), at `2540fb3` (with the direct path), and at `2540fb3` with every agent on Haiku |
 | `skill-v1`, `skill-v0` | feature-flow with named agents (`b6eface`), and as first committed (`0263562`), loaded as a bare project skill with no agents |
 | `lite-opus-reviewer`, `lite-no-opus-reviewer` | The skill with its mod before the Opus-reviewer clause was removed (`f11f50c`; the batch ran it as `lite-pc-mod`), and the working tree |
+| `lite-fanout`, `lite-fanout-v2` | The skill with the `fanout` or `fanout-v2` variant and its mod (slices, then slices plus a seams list and an integration reviewer). In section 12, `lite-no-opus-reviewer` was the skill before the user-tester. |
+| `lite-use-it` | The `use-it` variant, the user-tester before it was promoted into the skill; it now matches the working tree |
 
 The full feature-flow skill isn't in the tree any more, so its arms load it from history: an arm can pin any git `ref` of any skill `folder`, and the harness extracts that version with `git archive`. An arm can also lay a variant's files over the skill (`variant`: `harness/variants/<name>/`, which can replace SKILL.md or add and replace agents), pin every agent's model and effort or a single agent's (`agents`), and tell the grader which model every role should run on (`roster_model`). The skill's value claim is that `lite-v2` matches `baseline` on outcomes for no more money.
 
@@ -340,6 +405,10 @@ The full feature-flow skill isn't in the tree any more, so its arms load it from
 - The harness strips session-scoped variables (`CLAUDE_CODE_SESSION_ID`, `CLAUDE_EFFORT`, `CLAUDE_CODE_SUBAGENT_MODEL`, …) so the calling session's model and effort don't leak into the runs, and it sets the spawn depth explicitly (3 unless the scenario says otherwise).
 - Every run is capped with `--max-budget-usd`, and `run.py` prints the worst-case total before it starts. On Opus, one rep of everything with both arms usually costs a few dollars.
 - One rep is a smoke test, not a result. Agents choose their stages freshly on each run, so compare arms at `-n 3` or more.
+- Pin the CLI for a batch with `FF_CLAUDE_BIN` (for example a copy installed with `npm install --prefix <dir> @anthropic-ai/claude-code@<version>`). Runs set `DISABLE_AUTOUPDATER=1`, but the CLI the harness launches can still update between batches. One update changed whether a headless run waits for its subagents, and the `run waited for its subagents` setup check is how that showed.
+- `claude -p` stops background subagents 10 minutes after the main turn ends unless `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0`, which `run.py` sets. Without it, a long Haiku implementor on a large change is cut off mid-build.
+- A scenario on a private repo stays out of this public repo: put it in a JSON file of `scenarios` (and any `arms`), give it an absolute `hidden` path, and point `FF_EVALS_EXTRA` at the file. `run.py`, `grade.py` and `hidden_cases.py` all read it.
+- Give a large web change a long `timeout_s` (7200 worked). With a user-tester or integration reviewer driving Playwright, a run takes 30–50 minutes.
 
 ### Hidden tests by case
 

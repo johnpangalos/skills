@@ -4,6 +4,7 @@ import type { On } from 'claude-code'
 const BLOCK = ['ACCEPTANCE CRITERIA:', '- Adds the flag.', '- Rejects an empty name.'].join('\n')
 const IMPLEMENTOR = 'feature-flow-lite:implementor'
 const REVIEWER = 'feature-flow-lite:reviewer'
+const USER_TESTER = 'feature-flow-lite:user-tester'
 const AGENT_CALL = { tool: 'Agent', description: 'Build', prompt: 'GOAL: x' } as const
 
 type GitStub = { exitCode: number; stdout: string } | 'reject'
@@ -140,6 +141,17 @@ test('handoff: a reviewer\'s PROJECT CHECKLIST ends the saved block', async ($, 
   await $.agent.spawn({ prompt: 'GOAL: b', subagentType: IMPLEMENTOR })
 
   expect(w.spawned[1]).toBe(`GOAL: b\n\n${BLOCK}`)
+})
+
+test('handoff: a user-tester gets the block, and its RUN IT and USE lines end the saved block', async ($, on) => {
+  const w = world(on)
+  await $.skill.prompt({ skill: 'feature-flow-lite', text: '' })
+  await $.agent.spawn({ prompt: `GOAL: a\n${BLOCK}\nRUN IT: npm run dev\nUSE: the new flag`, subagentType: USER_TESTER })
+  await $.agent.spawn({ prompt: 'GOAL: b', subagentType: USER_TESTER })
+  await $.agent.spawn({ prompt: 'ROLE: user-tester\nGOAL: c', subagentType: 'general-purpose' })
+
+  expect(w.spawned[1]).toBe(`GOAL: b\n\n${BLOCK}`)
+  expect(w.spawned[2]).toBe(`ROLE: user-tester\nGOAL: c\n\n${BLOCK}`)
 })
 
 test('handoff: a prompt with the header is left alone, even when its block differs', async ($, on) => {

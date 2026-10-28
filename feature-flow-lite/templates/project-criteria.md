@@ -13,7 +13,10 @@ framework>
 
 - Full: <every command CI runs, in order: tests, lint, format, typecheck; one per line>
 - Targeted: <how to run one test file or package, e.g. `pytest tests/test_x.py`>
-- Run it: <how to start or render the thing for a probe: server start, page render, CLI entry>
+- Run it: <required: how a user meets this program, for the user-tester. Website or web app:
+  the dev server command and its URL (Playwright drives it). CLI: the build command and the
+  binary's path. HTTP server: the start command and port. Library: the build or pack command
+  a consumer project would install from. Anything else: the repo's own runner or harness.>
 
 ## Conventions
 

@@ -52,7 +52,7 @@ def score(run_dir, scenario):
 
 
 def main():
-    config = json.loads((HERE / "scenarios.json").read_text())
+    config = grade.load_config()
     by_id = {s["id"]: s for s in config["scenarios"]}
     rows = {}
     for batch in map(pathlib.Path, sys.argv[1:]):

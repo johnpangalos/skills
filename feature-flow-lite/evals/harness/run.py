@@ -108,7 +108,8 @@ def command(scenario, arm, prompt):
     for other in arm.get("also_sources", ()):  # plugins the arm's skill hands off to
         plugin += ["--plugin-dir", str(other)]
     return [
-        "claude", "-p", prefix + prompt, *plugin,
+        # FF_CLAUDE_BIN pins the CLI, so a mid-batch auto-update can't change behavior between arms
+        os.environ.get("FF_CLAUDE_BIN", "claude"), "-p", prefix + prompt, *plugin,
         "--model", arm["model"], "--effort", arm["effort"],
         "--output-format", "stream-json", "--verbose", "--forward-subagent-text",
         "--permission-mode", "acceptEdits", "--allowedTools", TOOLS, "--permission-prompts", "none",
@@ -129,6 +130,10 @@ def run_one(out, scenario, arm_name, arm, rep, prompt, dry_run):
     prepare(workspace, scenario, arm)
     env = {k: v for k, v in os.environ.items() if k not in SCRUB}
     env["CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH"] = str(scenario.get("depth", 3))
+    # -p stops background subagents 10 minutes after the main turn ends; a long Haiku
+    # implementor on a big change outlives that, so wait for them instead
+    env["CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS"] = "0"
+    env["DISABLE_AUTOUPDATER"] = "1"
     env["FEATURE_FLOW_USAGE_LOG"] = str(run_dir / "usage.jsonl")  # read by the plugin's mod, when loaded
     started = time.time()
     with open(run_dir / "trace.jsonl", "w") as trace, open(run_dir / "stderr.txt", "w") as err:
@@ -141,7 +146,8 @@ def run_one(out, scenario, arm_name, arm, rep, prompt, dry_run):
     if project_file.exists():
         shutil.move(project_file, run_dir / "FEATURE_FLOW.md")
     diff = subprocess.run(
-        "git add -A -N . ':!.claude' && git diff HEAD -- . ':!.claude'",
+        # `;`, not `&&`: git add exits 1 when the repo itself ignores .claude/, and the diff must still run
+        "git add -A -N . ':!.claude' 2>/dev/null; git diff HEAD -- . ':!.claude'",
         shell=True, cwd=workspace, capture_output=True, text=True,
     ).stdout
     (run_dir / "diff.patch").write_text(diff)
@@ -188,7 +194,7 @@ def summarize(out, results):
 
 
 def main():
-    config = json.loads((HERE / "scenarios.json").read_text())
+    config = grade.load_config()
     by_id = {s["id"]: s for s in config["scenarios"]}
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("-s", "--scenarios", default=",".join(by_id), help="comma-separated scenario ids")
