@@ -1,17 +1,20 @@
 ---
 name: feature-flow-lite
-description: Use when implementing a feature, building a small project, or tracking down and fixing a bug across files, with a four-role subagent pipeline (investigator, implementor, simplifier, reviewer) and a capped fix loop. The main Opus conversation orchestrates; Haiku subagents do the work.
+description: Use when implementing a feature, building a small project, or tracking down and fixing a bug across files, with a five-role subagent pipeline (investigator, implementor, simplifier, reviewer, user-tester) and a capped fix loop. The main Opus conversation orchestrates; Haiku subagents do the work.
 ---
 
 # Feature Flow Lite
 
-Four named agents and one loop. The main conversation (Opus) writes the acceptance criteria,
+Five named agents and one loop. The main conversation (Opus) writes the acceptance criteria,
 hands the work to Haiku, runs the checks itself, and stops after two fix rounds. In
 blind-judged benchmarks on features and bug fixes in real repos, this scored above plain Opus
 at about the same cost, and took about two and a half times as long. Every role runs on every
 task in an existing codebase: left to judgment, the investigator and simplifier were skipped in
 every benchmarked run, and running them costs a few cents. The acceptance criteria and the
-reviewer's checklist matter more than the subagents' model.
+reviewer's checklist matter more than the subagents' model. On large changes to a web UI, the
+user-tester, which uses the finished change through the running program, lifted the judged
+score and removed the worst builds for 10 to 25% more; on CLI and HTTP tasks it cost nothing
+extra.
 
 ## Roles
 
@@ -27,13 +30,15 @@ prompt with `ROLE: <role>`, and end it with the result template.
 | `implementor` | haiku / medium | Read, Edit, Write, Bash, Grep, Glob | Every run: builds the change, running targeted tests as it goes and the full checks once at the end. |
 | `simplifier` | haiku / medium | Read, Edit, Write, Bash, Grep, Glob | Every task, after the checks pass. Makes the change simpler without changing behavior: splits or inlines helpers it gave a flag or mode parameter, rewrites over-engineered parts the plainer way, removes dead code. |
 | `reviewer` | haiku / medium | Read, Grep, Glob, Bash | Every run, after the checks pass. Red team: writes and runs probes to break the change. |
+| `user-tester` | haiku / medium | Read, Grep, Glob, Bash | Every run, in the same wave as the reviewer. Starts the program and uses the change through its real interface (browser, binary, endpoint, consumer project), plus the existing flows next to it. |
 
 No agent can spawn another; the main conversation spawns all of them.
 
 The plugin also ships a mod in `hooks/` that starts once this skill is invoked. It puts the
-latest `ACCEPTANCE CRITERIA:` block back into any implementor or reviewer handoff that drops it,
-adds a note to the result when an implementor run leaves no changed test file in the repo, and
-records per-role tokens and time, which `/ff-usage` prints. It never blocks a spawn or a tool call.
+latest `ACCEPTANCE CRITERIA:` block back into any implementor, reviewer or user-tester handoff
+that drops it, adds a note to the result when an implementor run leaves no changed test file in
+the repo, and records per-role tokens and time, which `/ff-usage` prints. It never blocks a
+spawn or a tool call.
 
 ## Project file
 
@@ -100,14 +105,23 @@ right section and name it in the report. Never remove a line the user wrote.
    writes and runs probes that try to break each criterion and hostile input, and only
    reproduced failures count as blocking. Pass along the commands it needs to run the project
    (the project file's Run it line) and its Reviewer checklist as `PROJECT CHECKLIST:`.
+   **User-tester**, spawned in the same message as the reviewer so they run in parallel. The
+   reviewer probes the code; the user-tester starts the assembled program with the project
+   file's Run it line and uses the change the way its user would. Give it the acceptance
+   criteria, `RUN IT:`, and under `USE:` the criteria with a visible effect plus the existing
+   flows next to the change that must still work (the other layouts, flags or routes the
+   change shares code with). Its reproduced findings are blocking like the reviewer's.
 7. **Fix loop.** Blocking findings go back to the implementor, then checks, then an
-   incremental review of only the changed hunks plus the reviewer's earlier findings. Stop
+   incremental review of only the changed hunks plus the reviewer's earlier findings, and the
+   user-tester again on the items its last run failed, in the same wave. Stop
    after two rounds and report what passed, what still fails, and the open findings. Style
    nits are reported, not looped on.
 8. **Final read.** Before reporting, read the whole diff yourself against the sibling and the
    hostile inputs, as a maintainer reviewing it would. Anything they'd send back (a missing
    capability, a wrong edge case, a docs sentence the code doesn't back, an edit to an
    unrelated line) goes back to the implementor if a fix round is left; otherwise report it.
+   The diff can't show you how the program behaves when used, so take that from the
+   user-tester's latest run: an item it left unchecked is open in the report, not a pass.
 9. **Report** the outcome and which agents ran.
 
 ## Handoff
@@ -120,10 +134,12 @@ ACCEPTANCE CRITERIA:
 - <the list from step 1, word for word>
 CHECKS: <targeted test command while working; full test and lint commands for the end>
 PROJECT CHECKLIST: <reviewer only: the project file's Reviewer checklist, word for word>
+RUN IT: <reviewer and user-tester: the project file's Run it line>
+USE: <user-tester only: the criteria to use for real, and the neighbouring flows that must still work>
 ```
 
-Every implementor and reviewer handoff carries the `ACCEPTANCE CRITERIA:` block unchanged. The
-agents already return this result format, so don't restate it:
+Every implementor, reviewer and user-tester handoff carries the `ACCEPTANCE CRITERIA:` block
+unchanged. The agents already return this result format, so don't restate it:
 
 ```
 STATUS: pass | fail | blocked
