@@ -13,7 +13,7 @@ task in an existing codebase: left to judgment, the investigator and simplifier 
 every benchmarked run, and running them costs a few cents. The acceptance criteria and the
 reviewer's checklist matter more than the subagents' model. On large changes to a web UI, the
 user-tester, which uses the finished change through the running program, lifted the judged
-score and removed the worst builds for 10 to 25% more; on CLI and HTTP tasks it cost nothing
+score and removed the worst builds for 8 to 26% more; on CLI and HTTP tasks it cost nothing
 extra.
 
 ## Roles
