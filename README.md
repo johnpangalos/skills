@@ -5,6 +5,7 @@ Agent skills by [@johnpangalos](https://github.com/johnpangalos).
 | Skill | What it does |
 |---|---|
 | [feature-flow-lite](feature-flow-lite/SKILL.md) | Runs a feature or fix through a capped subagent pipeline: Opus writes the acceptance criteria and orchestrates four Haiku roles (investigator, implementor, simplifier, reviewer). |
+| [feature-flow-lite-codex](feature-flow-lite-codex/SKILL.md) | feature-flow-lite for OpenAI Codex CLI: the same flow, with the four roles as Codex custom agents. |
 | [figma-flow](figma-flow/SKILL.md) | Turns a Figma frame into React that matches it: export Figma's exact values with the scripts it carries, build with the project's own components and tokens, measure the result against those values, then have a fresh agent compare screenshots. |
 | [figma-setup](figma-setup/SKILL.md) | Sets a React repo up, once, to build from Figma and check the result against Figma's exact values: export scripts, a measuring test, the mapping rules in CLAUDE.md and one worked example. After it, "build X from Figma" works with figma-flow, or with no skill once the values are exported. |
 
@@ -30,6 +31,19 @@ feature-flow-lite ships four named subagents (`feature-flow-lite:implementor` an
 feature-flow-lite keeps what's true of one repo (check commands, conventions, standing criteria, the reviewer's checklist) in that repo's `FEATURE_FLOW.md`. The first run writes it from [`templates/project-criteria.md`](feature-flow-lite/templates/project-criteria.md); edit and commit it like a CLAUDE.md.
 
 feature-flow-lite also ships a mod (a handoff guard, a tests check and `/ff-usage`) that needs Claude Code v2.1.287 or later and loads only where the plugin's hooks load.
+
+### feature-flow-lite-codex
+
+For [OpenAI Codex CLI](https://github.com/openai/codex). It's a separate copy of feature-flow-lite with nothing shared, so each tool only reads instructions written for it.
+
+```sh
+git clone --depth 1 https://github.com/johnpangalos/skills
+sh skills/feature-flow-lite-codex/install.sh
+```
+
+This copies the skill to `~/.agents/skills/` and the four agents (`ff_investigator`, `ff_implementor`, `ff_simplifier`, `ff_reviewer`) to `~/.codex/agents/`. Then ask for a change with `$feature-flow-lite-codex`. The agents use the session's model unless you set `model` in their files.
+
+Compared with the Claude Code version, it has no mod, so the handoff guard and the tests check are steps in the skill and there's no usage report. Codex also can't limit a custom agent's tools, so the read-only roles are read-only by instruction. Don't install it with `codex plugin marketplace add`: Codex loads a plugin's skills only from a `skills/` folder and has no plugin agents.
 
 ```sh
 npx skills add johnpangalos/skills@figma-flow -g
