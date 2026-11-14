@@ -24,6 +24,7 @@ ROLE_PATTERNS = [
     ("test_writer", r"test[ -]?writer|write (the )?tests|tests? author"),
     ("planner", r"plann"),
     ("looker", r"looker|compare two images"),
+    ("gate", r"gatekeep|merge gate"),
     ("investigator", r"investigat"),
     ("explorer", r"explor|mapper|locat"),
     ("implementor", r"implement"),
@@ -52,6 +53,7 @@ ROSTER = {
     "security": {"sonnet"},
     "migration": {"sonnet"},
     "looker": {"opus"},  # figma-flow's fresh pair of eyes: weaker models miss subtle differences
+    "gate": {"opus"},  # the merge-gate variant's gatekeeper decides whether the change is mergeable
     "other": {"haiku", "sonnet"},
 }
 
@@ -71,6 +73,7 @@ ROLE_WORDS = {
     "security": r"security",
     "migration": r"migrat",
     "looker": r"looker|looked|screenshot",
+    "gate": r"gatekeep|merge gate",
 }
 
 STAGE_WORDS = r"investigat|explor|implement|verif|simplif|review|test.?writer|debug|docs"
@@ -182,6 +185,7 @@ AGENT_ROLES = {
     "docs-writer": "docs", "summarizer": "summarizer", "security-reviewer": "security",
     "migration": "migration", "planner": "planner",
     "looker": "looker",  # figma-flow's agent
+    "gatekeeper": "gate",  # the merge-gate variant's agent
 }
 
 
@@ -231,8 +235,8 @@ def roles_use_roster_models(t, sc, rule):
     bad = []
     for s in t.main_spawns:
         allowed = set(ROSTER.get(s["role"], ROSTER["other"]))
-        if sc.get("_pinned_model") and s["role"] != "looker":
-            allowed = {sc["_pinned_model"]}  # the arm pins every agent to one model (the looker keeps its own)
+        if sc.get("_pinned_model") and s["role"] not in ("looker", "gate"):
+            allowed = {sc["_pinned_model"]}  # the arm pins every agent to one model (the looker and gate keep their own)
         if sc.get("risky") and s["role"] == "reviewer":
             allowed.add("opus")
         earlier = [p for p in t.of_role(s["role"]) if p["idx"] < s["idx"]]
