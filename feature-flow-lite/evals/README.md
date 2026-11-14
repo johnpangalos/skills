@@ -255,10 +255,10 @@ The `until-satisfied` variant drops the two-round cap. Every fix is followed by 
 | Probes passed | **0.89** | 0.86 |
 | Cost per build (mean / max) | **$1.19** / $1.48 | $1.32 / $2.28 |
 | Reviews per build | 1.25 (max 2) | 1.92 (max 5) |
-| Builds with only one review | 9 of 12 | 8 of 12 |
+| Builds with only one review | 8 of 12 | 8 of 12 |
 
 - The cap never bound. No capped build went past one fix after its first review, so removing it changes nothing on most runs: in 8 of 12 uncapped builds the orchestrator was satisfied after the first review.
-- When the loop did run long (5 reviews on one click-duration and one click-param-spec build), it fixed one more hidden case on click-duration and cost up to $2.28, but the probe totals didn't move.
+- When the loop did run long (5 reviews on one click-duration and one click-param-spec build), it cost up to $2.28. click-duration was the one task where the uncapped arm passed every hidden test (3 of 3 builds against 2 of 3), but the probe totals didn't move.
 - chi-etag failed `TestFlushDoesNotBypassTheBuffer` in all 6 builds of both arms: every build streams the response when the handler flushes, and the hidden test expects the buffer to hold. More review didn't change a choice the acceptance criteria made.
 - So "more reviews" doesn't come from removing the stop. It would have to be required, for example "done only when a fresh reviewer returns no blocking findings", and that is v7's pattern, which cost more without a reliable gain.
 
