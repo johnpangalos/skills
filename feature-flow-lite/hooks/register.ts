@@ -1,15 +1,21 @@
 import type { EngineInterface, Register } from 'claude-code'
+import { noteFor, parseNotes, planRewrite, projectChecks } from './check-cache'
 
 // feature-flow-lite's mod. Silent until the skill is invoked (a skill.prompt
 // for feature-flow-lite); after that it keeps the ACCEPTANCE CRITERIA block in
 // implementor and reviewer handoffs, flags implementor runs that changed no
-// test file, and records per-role tokens and time for /ff-usage. Every hook
-// passes the event through unless its condition holds, and none of them can
-// deny a spawn or a tool call.
+// test file, and records per-role tokens and time for /ff-usage. With
+// FEATURE_FLOW_CHECK_CACHE=1 it also caches passing checks (check-cache.ts):
+// every agent's check commands go through a wrapper that replays a pass on an
+// unchanged tree instead of running it again. Every hook passes the event
+// through unless its condition holds, and none of them can deny a spawn or a
+// tool call.
 
-type Role = 'investigator' | 'implementor' | 'simplifier' | 'reviewer'
+type Role = 'investigator' | 'implementor' | 'simplifier' | 'reviewer' | 'gatekeeper' | 'criteria-checker'
 
-const ROLES: readonly Role[] = ['investigator', 'implementor', 'simplifier', 'reviewer']
+const ROLES: readonly Role[] = ['investigator', 'implementor', 'simplifier', 'reviewer', 'gatekeeper', 'criteria-checker']
+// the roles whose handoffs must carry the ACCEPTANCE CRITERIA block
+const CRITERIA_ROLES: readonly Role[] = ['implementor', 'reviewer']
 const ROLE_ORDER = ['orchestrator', ...ROLES, 'other']
 const AGENT_PREFIX = 'feature-flow-lite:'
 
@@ -38,15 +44,16 @@ function roleOf(subagentType: string | undefined, prompt: string | undefined): R
   }
   if (subagentType === 'general-purpose') {
     const first = (prompt ?? '').split('\n').find(line => line.trim() !== '')
-    const match = first?.trim().match(/^ROLE:\s*([a-z]+)$/)
-    return match && isRole(match[1]) ? match[1] : undefined
+    const match = first?.trim().match(/^ROLE:\s*([a-z-]+)$/)
+    const name = match?.[1]
+    return name !== undefined && isRole(name) ? name : undefined
   }
   return undefined
 }
 
 // The handoff headers that can follow the criteria. A criterion that merely
 // starts in capitals ("UI: ...") is not one.
-const HANDOFF_HEADER = /^(?:GOAL|FILES|CONSTRAINTS|HOSTILE INPUTS|CHECKS|PROJECT CHECKLIST|FOCUS|STATUS|SUMMARY|FILES TOUCHED|FINDINGS|OPEN QUESTIONS):/
+const HANDOFF_HEADER = /^(?:GOAL|FILES|CONSTRAINTS|HOSTILE INPUTS|CHECKS|PROJECT CHECKLIST|REQUEST|SIBLING|BASE|RULED ON|FOCUS|STATUS|SUMMARY|FILES TOUCHED|FINDINGS|OPEN QUESTIONS):/
 
 // The ACCEPTANCE CRITERIA block: from its header line through the line before
 // the next handoff header (CHECKS:, HOSTILE INPUTS:, ...), or the end.
@@ -56,7 +63,7 @@ function criteriaBlock(prompt: string): string | undefined {
   if (start < 0) return undefined
   let end = lines.length
   for (let i = start + 1; i < lines.length; i++) {
-    if (HANDOFF_HEADER.test(lines[i])) {
+    if (HANDOFF_HEADER.test(lines[i] ?? '')) {
       end = i
       break
     }
@@ -97,7 +104,7 @@ async function changedPaths($: EngineInterface): Promise<string[] | undefined> {
 }
 
 const ROLE_ROW = (cells: readonly string[]) =>
-  [cells[0].padEnd(14), ...cells.slice(1).map(cell => cell.padStart(12))].join(' ').trimEnd()
+  [(cells[0] ?? '').padEnd(14), ...cells.slice(1).map(cell => cell.padStart(12))].join(' ').trimEnd()
 
 function usageTable(records: readonly UsageRecord[]): string {
   if (records.length === 0) return 'ff-usage: nothing recorded yet. Records start once feature-flow-lite is invoked.'
@@ -133,13 +140,38 @@ export const register: Register = on => {
   const roleByAgent = new Map<string, Role>()
   const records: UsageRecord[] = []
 
-  on('skill.prompt', ($, e, next) => {
+  let cache: CacheSetup | undefined
+
+  on('skill.prompt', async ($, e, next) => {
     // Each invocation is a new feature: forget the last one's criteria.
     if (isOurSkill(e.skill)) {
       gated = true
       savedCriteria = undefined
+      cache = await setUpCache($)
     }
     return next(e)
+  }).catch(($, e, next) => next(e))
+
+  // The check cache: route each check in a Bash call through the wrapper, then
+  // say what was replayed. Off unless FEATURE_FLOW_CHECK_CACHE=1.
+  on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
+    if (!gated || cache === undefined) return next(e)
+    const checks = await readProjectChecks($, cache.root)
+    const notes = `${cache.dir}/notes/${crypto.randomUUID()}`
+    const plan = planRewrite(e.command, { script: cache.script, cacheDir: cache.dir, notes, projectChecks: checks })
+    if (plan === undefined) return next(e)
+    const ran = await next({ ...e, command: plan.command })
+    if (e.run_in_background === true || ran.deny !== undefined) return ran
+    let note: string | undefined
+    try {
+      if (await $.fs.exists(notes)) {
+        note = noteFor(parseNotes(await $.fs.read(notes)), $.plugin.name)
+        await $.process.run(['rm', '-f', notes])
+      }
+    } catch {
+      return ran
+    }
+    return note === undefined ? ran : { ...ran, context: [...(ran.context ?? []), note] }
   }).catch(($, e, next) => next(e))
 
   on('agent.spawn', async ($, e, next) => {
@@ -148,7 +180,7 @@ export const register: Register = on => {
     const role = roleOf(e.subagentType, e.prompt)
     let prompt = e.prompt
 
-    if (role === 'implementor' || role === 'reviewer') {
+    if (role !== undefined && CRITERIA_ROLES.includes(role)) {
       const block = criteriaBlock(prompt)
       if (block !== undefined) {
         savedCriteria = block
@@ -167,7 +199,7 @@ export const register: Register = on => {
     const ran = await next(e)
     if (!gated || ran.deny !== undefined || ran.isError === true) return ran
 
-    const result = ran.result
+    const result = ran.result as { status?: string; agentId?: string } | undefined
     if (result?.status !== 'completed') return ran
 
     const role = (result.agentId && roleByAgent.get(result.agentId)) || roleOf(e.subagent_type, e.prompt)
@@ -233,5 +265,42 @@ async function appendUsageLine($: EngineInterface, record: UsageRecord): Promise
     await $.fs.write(path, `${prior}${lead}${JSON.stringify(record)}\n`)
   } catch (err) {
     $.ui.log(`${$.plugin.name}: could not write the usage log ${path}: ${String((err as Error)?.message ?? err)}`)
+  }
+}
+
+type CacheSetup = { root: string; dir: string; script: string }
+
+// Turns the check cache on for this invocation when FEATURE_FLOW_CHECK_CACHE=1:
+// the cache lives in the repo's git dir (out of every diff), and the base
+// commit is recorded there. The wrapper is the plugin's hooks/ffcc.sh. Undefined (cache off) when the variable is unset or git
+// can't say where the repo is.
+async function setUpCache($: EngineInterface): Promise<CacheSetup | undefined> {
+  if ((await $.env.get('FEATURE_FLOW_CHECK_CACHE')) !== '1') return undefined
+  try {
+    const top = await $.process.run(['git', 'rev-parse', '--show-toplevel'])
+    const common = await $.process.run(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'])
+    const head = await $.process.run(['git', 'rev-parse', 'HEAD'])
+    if (top.exitCode !== 0 || common.exitCode !== 0) return undefined
+    const root = top.stdout.trim()
+    const dir = `${common.stdout.trim()}/ff-check-cache`
+    const script = `${$.plugin.root}/hooks/ffcc.sh`
+    if (!(await $.fs.exists(script))) return undefined
+    await $.fs.write(`${dir}/base`, head.exitCode === 0 ? `${head.stdout.trim()}\n` : 'none\n')
+    $.ui.log(`${$.plugin.name}: check cache on (${dir}).`)
+    return { root, dir, script }
+  } catch (err) {
+    $.ui.log(`${$.plugin.name}: check cache off: ${String((err as Error)?.message ?? err)}`)
+    return undefined
+  }
+}
+
+// The project file's Checks, read on each call (the orchestrator may write it
+// after the first check runs). None when it is missing.
+async function readProjectChecks($: EngineInterface, root: string): Promise<string[][]> {
+  try {
+    const path = `${root}/FEATURE_FLOW.md`
+    return (await $.fs.exists(path)) ? projectChecks(await $.fs.read(path)) : []
+  } catch {
+    return []
   }
 }
