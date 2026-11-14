@@ -15,24 +15,28 @@ own=$(cd "$root" && cd "$(git rev-parse --git-common-dir)" 2>/dev/null && pwd -P
 rel=${PWD#"$root"}
 head=$(git -C "$root" rev-parse HEAD 2>/dev/null || echo none)
 base=$(cat "$cache/base" 2>/dev/null || echo none)
-changed=$({ git -C "$root" diff --name-only -z HEAD -- 2>/dev/null; git -C "$root" ls-files -z -o --exclude-standard 2>/dev/null; } |
-  tr '\0' '\n' | grep -vx 'FEATURE_FLOW.md' | grep -v '^$' | sort -u)
-nchanged=0
-present=()
-gone=()
-if [ -n "$changed" ]; then
-  while IFS= read -r p; do
-    nchanged=$((nchanged + 1))
-    if [ -f "$root/$p" ]; then present+=("$p"); else gone+=("$p"); fi
-  done <<<"$changed"
-fi
-tree=$({
-  echo "$head"
-  if [ ${#present[@]} -gt 0 ]; then
-    paste -d' ' <(printf '%s\n' "${present[@]}" | (cd "$root" && git hash-object --no-filters --stdin-paths)) <(printf '%s\n' "${present[@]}")
+# The tree fingerprint: HEAD plus the hash of every modified and untracked non-ignored file.
+fingerprint() {
+  local changed p
+  changed=$({ git -C "$root" diff --name-only -z HEAD -- 2>/dev/null; git -C "$root" ls-files -z -o --exclude-standard 2>/dev/null; } |
+    tr '\0' '\n' | grep -vx 'FEATURE_FLOW.md' | grep -v '^$' | sort -u)
+  nchanged=0
+  local present=() gone=()
+  if [ -n "$changed" ]; then
+    while IFS= read -r p; do
+      nchanged=$((nchanged + 1))
+      if [ -f "$root/$p" ]; then present+=("$p"); else gone+=("$p"); fi
+    done <<<"$changed"
   fi
-  [ ${#gone[@]} -gt 0 ] && printf 'deleted %s\n' "${gone[@]}"
-} | sha256sum | cut -c1-16)
+  tree=$({
+    echo "$head"
+    if [ ${#present[@]} -gt 0 ]; then
+      paste -d' ' <(printf '%s\n' "${present[@]}" | (cd "$root" && git hash-object --no-filters --stdin-paths)) <(printf '%s\n' "${present[@]}")
+    fi
+    [ ${#gone[@]} -gt 0 ] && printf 'deleted %s\n' "${gone[@]}"
+  } | sha256sum | cut -c1-16)
+}
+fingerprint
 toolchain() {
   case $family in
     go) go env GOVERSION GOFLAGS GOOS GOARCH CGO_ENABLED GOEXPERIMENT 2>/dev/null ;;
@@ -42,9 +46,9 @@ toolchain() {
   esac
   local f
   for f in .yarn/install-state.gz node_modules/.yarn-state.yml node_modules/.package-lock.json node_modules/.modules.yaml node_modules .venv/pyvenv.cfg .venv; do
-    [ -e "$root/$f" ] && stat -c '%n %s %Y' "$root/$f"
+    [ -e "$root/$f" ] && echo "$f $(stat -L -c '%s %Y' "$root/$f")"
   done
-  for f in "$root"/.venv/lib/*/site-packages; do [ -d "$f" ] && stat -c '%n %Y' "$f"; done
+  for f in "$root"/.venv/lib/*/site-packages; do [ -d "$f" ] && echo "${f#"$root"} $(stat -L -c '%Y' "$f")"; done
   return 0
 }
 tools=$(toolchain | sha256sum | cut -c1-16)
@@ -56,7 +60,10 @@ mkdir -p "$cache/entries" "$cache/locks" "$cache/base-results"
 now() { date +%s.%N; }
 since() { awk -v a="$1" -v b="$(now)" 'BEGIN { printf "%.1f", b - a }'; }
 note() { [ "$notes" = - ] || printf '%s\n' "$1" >>"$notes"; }
-ledger() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date +%s)" "$1" "$key" "$rel" "$tree" "$2" "$3" >>"$cache/ledger.tsv"; }
+# FF_CACHE_ORIGIN says who started the run (an agent, or the mod ahead of time); FF_CACHE_BASE=1
+# marks a run on a clean copy of the base commit, whose result is the base commit's.
+origin=${FF_CACHE_ORIGIN:-agent}
+ledger() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date +%s)" "$1" "$key" "$rel" "$tree" "$2" "$3" "$origin" >>"$cache/ledger.tsv"; }
 exec 9>"$cache/locks/$k"
 asked=$(now)
 flock -w 3600 9 || true
@@ -81,24 +88,35 @@ trap - TERM INT HUP
 seconds=$(since "$started")
 cat "$tmp/out"
 cat "$tmp/err" >&2
-if [ "$nchanged" = 0 ] && [ "$head" = "$base" ]; then
+atbase=0
+{ [ "$nchanged" = 0 ] || [ "${FF_CACHE_BASE:-}" = 1 ]; } && [ "$head" = "$base" ] && atbase=1
+# a result counts only if nothing changed the tree while the check ran
+ran_on=$tree
+fingerprint
+steady=0
+[ "$tree" = "$ran_on" ] && steady=1
+if [ "$atbase" = 1 ] && [ "$steady" = 1 ]; then
   # the base commit's own result, kept pass or fail: "is this failure pre-existing?" is a lookup
   printf '%s\n' "$status" >"$cache/base-results/$bk"
 fi
 if [ "$status" = 0 ]; then
-  printf '%s\n' "$status" >"$tmp/status.new"
-  printf '%s\n' "$seconds" >"$tmp/seconds"
-  date +%s >"$tmp/when"
-  printf '%s\n%s\n%s\n' "$key" "$rel" "$tree" >"$tmp/key"
-  mv "$tmp/status.new" "$tmp/status"
-  rm -rf "$entry"
-  mv "$tmp" "$entry" 2>/dev/null || rm -rf "$tmp"
-  note "$(printf 'pass\t%s\t%s\t%s' "$key" "$tree" "$seconds")"
+  if [ "$steady" = 1 ] && [ "${FF_CACHE_BASE:-}" != 1 ]; then
+    printf '%s\n' "$status" >"$tmp/status.new"
+    printf '%s\n' "$seconds" >"$tmp/seconds"
+    date +%s >"$tmp/when"
+    printf '%s\n%s\n%s\n' "$key" "$rel" "$ran_on" >"$tmp/key"
+    mv "$tmp/status.new" "$tmp/status"
+    rm -rf "$entry"
+    mv "$tmp" "$entry" 2>/dev/null || rm -rf "$tmp"
+  else
+    rm -rf "$tmp"
+  fi
+  note "$(printf 'pass\t%s\t%s\t%s' "$key" "$ran_on" "$seconds")"
   ledger miss-pass "$seconds" "$waited"
 else
   rm -rf "$tmp"
   bs=
-  [ "$nchanged" = 0 ] && [ "$head" = "$base" ] || bs=$(cat "$cache/base-results/$bk" 2>/dev/null)
+  [ "$atbase" = 1 ] || bs=$(cat "$cache/base-results/$bk" 2>/dev/null)
   note "$(printf 'fail\t%s\t%s\t%s\t%s' "$key" "$status" "${base:0:7}" "$bs")"
   ledger miss-fail "$seconds" "$waited"
 fi
