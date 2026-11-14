@@ -93,6 +93,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("batches", nargs="+", type=pathlib.Path)
     parser.add_argument("-a", "--arms", help="comma-separated arms to audit (default: all)")
+    parser.add_argument("-s", "--scenarios", help="comma-separated scenarios to audit (default: all)")
     parser.add_argument("-j", "--jobs", type=int, default=4)
     parser.add_argument("--budget", type=float, default=4)
     parser.add_argument("--effort", default="medium")
@@ -101,11 +102,12 @@ def main():
 
     scenarios = {s["id"]: s for s in json.loads((HERE / "scenarios.json").read_text())["scenarios"]}
     arms = set(args.arms.split(",")) if args.arms else None
+    only = set(args.scenarios.split(",")) if args.scenarios else None
     jobs = []
     for batch in args.batches:
         for meta_path in sorted(batch.glob("*/*/rep-*/meta.json")):
             meta = json.loads(meta_path.read_text())
-            if arms and meta["arm"] not in arms:
+            if arms and meta["arm"] not in arms or only and meta["scenario"] not in only:
                 continue
             sc = scenarios[meta["scenario"]]
             request = sc.get("prompt") or scenarios[sc["prompt_from"]]["prompt"]
