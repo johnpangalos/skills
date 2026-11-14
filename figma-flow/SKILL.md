@@ -48,6 +48,9 @@ node <this skill's folder>/scripts/print.ts export-node <node id> [<node id>…]
 node <this skill's folder>/scripts/print.ts export-tokens
 ```
 
+To keep the printed code in a file, give it a name of its own (`mktemp`), never a fixed name
+like `$TMPDIR/lint.js`: the temp folder is shared, so other sessions overwrite and read it.
+
 Pass the printed code to `use_figma` with this as its first line, so the mod writes the result
 to the file and nobody retypes it:
 
@@ -55,7 +58,8 @@ to the file and nobody retypes it:
 // figma-flow:save <the project's exports folder>/<name>.json
 ```
 
-Without the mod, save the output exactly as returned. To check a saved file against Figma
+The path is relative to the project, or absolute inside it. The mod refuses any other path and
+says so; save that result yourself. Without the mod, save the output exactly as returned. To check a saved file against Figma
 without reading it back, print the script with `--hash` and compare its `{ length, hash }`
 with `node <this skill's folder>/scripts/print.ts hash <file>`.
 
@@ -72,7 +76,13 @@ with `node <this skill's folder>/scripts/print.ts hash <file>`.
    export or build around an open finding.
 3. **Stop on gaps, before building.** Open lint findings, a component with no code
    counterpart, a font the project doesn't serve: report these to the person now. Don't fill a
-   gap with an arbitrary value.
+   gap with an arbitrary value. For each lint finding, give what the variants it should match
+   have in that layer and field, read from Figma, never guessed. Sort the findings into two
+   groups: those that change what is drawn (a value unlike the one those variants get from
+   their variable or style), and those that only lose a binding (the same value, with nothing
+   bound). The first group are visible mistakes. The second group draw correctly today but
+   won't follow the next change to the variable or style. Say that nothing has been measured
+   or compared with screenshots yet, so a clean lint won't be the last check.
 4. **Export what Figma says**, fresh, every time: run `export-node` on the nodes as above. If
    the task hands you a saved export and no Figma access, use that.
 5. **Build.** Resolve every exported value to the project's own name for it first (which token
@@ -108,7 +118,8 @@ The plugin's mod does two things a skill can't:
   broken.
 
 The mod recognises the measurement as a shell command containing `test:figma`, so name the
-project's script that. `/figma-flow` shows what is being held.
+project's script that, in the `package.json` at its root. A project without that script is never
+held, since nothing in it could pass. `/figma-flow` shows what is being held.
 
 ## Not for
 
