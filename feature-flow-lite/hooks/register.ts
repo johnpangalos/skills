@@ -195,7 +195,11 @@ export const register: Register = on => {
   // A gatekeeper call with `FOCUS: panel` runs three gatekeepers in parallel,
   // one per focus: the call itself becomes the first, and the mod starts the
   // other two and waits for their reports, which come back as context with
-  // their agent ids (for SendMessage).
+  // their agent ids (for SendMessage). Not used by the review-panel variants:
+  // in headless runs the engine moves the call's own seat to the background
+  // after two minutes, a hook can't wait that long, and `claude -p` exits
+  // without waiting for agents a mod started, so the orchestrator spawns the
+  // three itself.
   on('tool.call', { tool: 'Agent' }, async ($, e, next) => {
     if (!gated || !st.extras || !(e.subagent_type ?? '').endsWith('gatekeeper')) return next(e)
     const prompts = panelPrompts(e.prompt)

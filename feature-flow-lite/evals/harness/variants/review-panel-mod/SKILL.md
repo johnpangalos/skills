@@ -123,12 +123,10 @@ right section and name it in the report. Never remove a line the user wrote.
 7. **Simplifier**, on every task once the checks pass. Give it the diff and the acceptance
    criteria. Re-run the full checks after it; if it broke something, revert its edits rather
    than spending a fix round on them.
-8. **Review panel.** Spawn **one** gatekeeper with `FOCUS: panel`. The plugin's mod runs it as
-   three gatekeepers in parallel, one per focus below, and returns all three reports (with each
-   one's agent id, for SendMessage). Make this call in the foreground (`run_in_background:
-   false`): its result carries every report, and nothing of the panel is left running after it. Give it the user's request word for word under `REQUEST:`, the base commit, the acceptance
+8. **Review panel.** Spawn **three** gatekeepers **in one message** so they run in parallel, each
+   with the user's request word for word under `REQUEST:`, the base commit, the acceptance
    criteria and hostile inputs, the CHECKS and their latest result, the project file's Run it
-   line and its Reviewer checklist as `PROJECT CHECKLIST:`. The three foci are:
+   line and its Reviewer checklist as `PROJECT CHECKLIST:`, and its own `FOCUS:`:
    - **request**: every sentence of the request and every criterion, probed in the request's
      own words; wrong or missing criteria.
    - **edges**: what the new code wraps or stands in for and every capability and edge input it
