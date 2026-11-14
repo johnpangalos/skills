@@ -371,7 +371,10 @@ export function projectChecks(markdown: string): string[][] {
     section.push(line)
   }
   const out: string[][] = []
-  for (const [, code] of section.join('\n').matchAll(/`([^`\n]+)`/g)) {
+  // a Run it line is how to start the app, and `<module>` or `...` mark a template, not a command
+  const runnable = section.filter(line => !/^\s*[-*]?\s*\**run it\b/i.test(line)).join('\n')
+  for (const [, code] of runnable.matchAll(/`([^`\n]+)`/g)) {
+    if (/<[^>\s]+>|(?:^|[\s(;,])\.\.\.|…/.test(code ?? '')) continue
     const tokens = tokenize(code ?? '')
     if (!tokens) continue
     for (const seg of segments(tokens)) {

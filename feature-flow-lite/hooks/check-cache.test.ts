@@ -59,6 +59,12 @@ test("keys: the project file's Checks count as checks", () => {
     ['yarn', 'eslint', '.'],
   ])
   expect(keyOf('make test', project)).toBe('make test')
+  // templates and the Run it line are not checks; `./...` is a path, not a template
+  expect(
+    projectChecks(
+      ['## Checks', '- Full: `./check.sh`', '- Targeted: `python3 -m unittest tests.test_<module> -q`', '- Run it: `python3 -c "from shop import x"`', '- `go test ./...`'].join('\n'),
+    ),
+  ).toEqual([['./check.sh'], ['go', 'test', './...']])
   expect(keyOf('make docs', project)).toBeUndefined()
 })
 
