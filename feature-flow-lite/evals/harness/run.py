@@ -104,6 +104,9 @@ def command(scenario, arm, prompt):
     # a plugin-loaded skill is namespaced under its plugin name
     name = arm["source"].name if arm["skill"] else ""
     prefix = {"plugin": f"/{name}:{name} ", "project": f"/{name} "}.get(arm["skill"], "")
+    # a no-skill arm can still steer the run, e.g. "Use a workflow: " opts into the Workflow tool
+    prefix += arm.get("prompt_prefix", "")
+    tools = ",".join([TOOLS, *arm.get("extra_tools", ())])
     plugin = ["--plugin-dir", str(arm["source"])] if arm["skill"] == "plugin" else []
     for other in arm.get("also_sources", ()):  # plugins the arm's skill hands off to
         plugin += ["--plugin-dir", str(other)]
@@ -111,7 +114,7 @@ def command(scenario, arm, prompt):
         "claude", "-p", prefix + prompt, *plugin,
         "--model", arm["model"], "--effort", arm["effort"],
         "--output-format", "stream-json", "--verbose", "--forward-subagent-text",
-        "--permission-mode", "acceptEdits", "--allowedTools", TOOLS, "--permission-prompts", "none",
+        "--permission-mode", "acceptEdits", "--allowedTools", tools, "--permission-prompts", "none",
         "--max-budget-usd", str(scenario.get("budget_usd", 5)),
         "--no-session-persistence",
     ]
