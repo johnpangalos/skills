@@ -245,6 +245,23 @@ The hidden tests were checked against a careful and a naive reference: the caref
 - Haiku raised more blocking findings, and more of them were contrived: int subclasses that override `__gt__`, a spoofed `__class__`, a mutated frozen dataclass. Fix rounds came out about even (1.6 against 1.5 implementor runs per build), so the extra noise didn't cost much.
 - The tasks hit the ceiling, so this can't rule out a gain on a harder risky change. But 30 perfect builds without the rule leaves the rule nothing to prove, and it cost 27% more per build. It was removed. The reviewer stays a Haiku red team everywhere.
 
+### 11. No round cap: loop until the orchestrator is satisfied
+
+The `until-satisfied` variant drops the two-round cap. Every fix is followed by the full checks and a fresh reviewer on the whole diff (not just the changed hunks), and the orchestrator stops only when the checks pass, the latest reviewer reproduced nothing, every criterion and hostile input was exercised, and its own final read is clean. Arm `lite-until-satisfied` against the working tree with its mod (`lite-pc-mod`), 3 builds each on chi-etag, click-duration, click-param-spec and fd-count. Scored on hidden tests and probes, not blind-judged.
+
+| | Capped (shipped) | Until satisfied |
+|---|---|---|
+| Outcome checks passed | 0.91 | 0.93 |
+| Probes passed | **0.89** | 0.86 |
+| Cost per build (mean / max) | **$1.19** / $1.48 | $1.32 / $2.28 |
+| Reviews per build | 1.25 (max 2) | 1.92 (max 5) |
+| Builds with only one review | 9 of 12 | 8 of 12 |
+
+- The cap never bound. No capped build went past one fix after its first review, so removing it changes nothing on most runs: in 8 of 12 uncapped builds the orchestrator was satisfied after the first review.
+- When the loop did run long (5 reviews on one click-duration and one click-param-spec build), it fixed one more hidden case on click-duration and cost up to $2.28, but the probe totals didn't move.
+- chi-etag failed `TestFlushDoesNotBypassTheBuffer` in all 6 builds of both arms: every build streams the response when the handler flushes, and the hidden test expects the buffer to hold. More review didn't change a choice the acceptance criteria made.
+- So "more reviews" doesn't come from removing the stop. It would have to be required, for example "done only when a fresh reviewer returns no blocking findings", and that is v7's pattern, which cost more without a reliable gain.
+
 ### Open questions
 
 - Does v5 plus the screenshot reviewer alone (without v9's verify paragraph) keep the product gain and the tests?
