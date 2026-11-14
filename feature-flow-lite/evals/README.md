@@ -49,6 +49,7 @@ A summary of every eval run on feature-flow-lite and its Figma offshoots so far 
 | Project file | Per-repo `FEATURE_FLOW.md` | 7.98 against 7.37 for v5 + mod, ahead on all three tasks. | Yes (PR #7) |
 | Figma | Pipeline vs plain model on Button and Tabs | Plain Opus and Sonnet passed everything for a quarter of the cost or less. | figma-flow builds directly (PR #10) |
 | Opus reviewer | Does moving the reviewer to Opus on risky paths pay? | No. Both arms passed every hidden case in 30 of 30 builds; Opus cost 27% more. | Removed |
+| Review gate | One Opus agent reviews and decides, criteria checked before building, a check cache | The criteria check fixed chi-etag's Flush criterion in 1 of 2 builds (the first hidden Flush pass). Not faster: 2 to 6 gate rounds, about 35 min. The cache saved 0.5 to 1.2 min. | Not yet (2 builds) |
 
 ### Earlier rounds (1–5)
 
@@ -296,6 +297,46 @@ The `council` variant replaces the gatekeeper with ten Haiku councillors at xhig
 
 **Gatekeeper that audits the criteria (`merge-gate-criteria`, one chi-etag build).** The Opus xhigh gatekeeper's first step checks every acceptance criterion against the request and returns a CRITERIA line per criterion. It took 3 gate rounds, 41 minutes and $6.30. It is the first chi-etag build to pass all 7 probes, and the audit would merge it. It still fails the hidden Flush test: the gatekeeper marked the Flush criterion ok in every round, because streaming on `Flush` is what the sibling (`compress.go`) does, and the skill's own sibling rule makes forwarding every optional interface a criterion. Either that rule needs "unless it contradicts the request" (the request says the middleware buffers the response), or the hidden test is stricter than the request.
 
+### 14. Review gate: one Opus agent reviews and decides, and a check cache
+
+The aim was the merge gate's quality in less time. The `review-gate` variant makes four changes:
+- One `gatekeeper` (Opus at high effort, set in its frontmatter) does the Haiku reviewer's red team and the gatekeeper's merge verdict in one pass. The reviewer's capped loop is gone, and only the uncapped gate loop remains.
+- The investigator starts in the background as the skill starts, so it runs while the orchestrator reads the project file and writes the criteria.
+- Before the implementor runs, a fresh read-only `criteria-checker` (Opus at medium effort) checks every criterion against the request, sentence by sentence, and against the closest sibling. Opus because the job is judgment on a short input, and medium because the input is a page. Every earlier criteria auditor ran on finished code, after the choice was already built.
+- The gatekeeper is told not to rerun a suite the orchestrator just ran on the same tree.
+
+Arm `lite-review-gate`, plus `lite-review-gate-cache` with the mod's check cache on (`FEATURE_FLOW_CHECK_CACHE=1`, set through the new per-arm `env`). One build per task, two builds at a time on an otherwise idle 4-CPU machine.
+
+| | chi-etag, cache off | chi-etag, cache on | rac-shadow-hide, cache off | rac-shadow-hide, cache on |
+|---|---|---|---|---|
+| Wall time | 37.7 min | 37.7 min | 34.7 min | 31.7 min |
+| Cost | $5.89 | $5.63 | $2.73 | $4.14 |
+| Gate rounds | 6 | 5 | 2 | 3 |
+| Criteria check on the Flush criterion | `[wrong]`, rewritten | `[nit]`, "needs user sign-off", kept | – | – |
+| Hidden tests | **all pass, Flush included** | fail `TestFlushDoesNotBypassTheBuffer` | pass | pass |
+| Probes | 5 of 7 | 5 of 7 | nested target passes | nested target passes |
+| Audit would merge | yes | yes | yes | no: shadow roots a target is slotted into are never walked |
+| Cache hits / misses, check time replayed | – | 4 / 23, 0.5 min | – | 5 / 20, 1.2 min |
+
+Against the baselines (3 builds each): the current skill took 16.8 min and $1.35 on chi-etag and 22.3 min and $1.31 on rac-shadow-hide. The Opus xhigh gatekeeper took 33 min and $3.30 on chi-etag, and $2.72 on rac-shadow-hide (73 min on an overloaded machine).
+
+- **The criteria check is the first thing that moved chi-etag's hidden Flush test.** In one of two builds it called "Flush ends buffering" a rule the request never states. It quoted "buffers the response … sets a strong ETag" and noted that `compress.go`'s Flush only forwards. The orchestrator rewrote the criterion, and that is the first build of any arm to pass `TestFlushDoesNotBypassTheBuffer`. In the other build the checker called the same criterion "reasonable, matches compress.go", asked for user sign-off, and the orchestrator kept it to avoid hanging server-sent-event (SSE) handlers. The checker also caught a no-ETag-for-empty-HEAD rule in both builds, and on react-aria a hostile input that would hide content inside a target. One fix, then: when the request's words and the sibling's behavior conflict, the request wins (the gatekeeper in section 13 made the same mistake; see its note).
+- **It is not faster.** The merged agent still loops until it finds nothing, and on chi-etag each fresh Opus round found a smaller real issue: header snapshots, hijack, a doc sentence, trailers leaking, a trailer name net/http won't send. That makes 5 or 6 rounds at about $5.75, against 3 rounds and $6.30 for the one `merge-gate-criteria` build. react-aria took 2 to 3 rounds, about the same as the xhigh gate. Both chi-etag builds fail the same probes (`GarbageMember`, `NonCanonicalKey`), and the `merge-gate-criteria` build passed all 7.
+- **The orchestrator edited code itself once.** A chi-etag build fixed a doc comment in `etag.go` "because it was only a doc change", which the skill doesn't allow.
+
+**The check cache.** The mod's `tool.call` hook on Bash splits each command into sub-commands. It recognizes checks: go test/vet, gofmt -l, golangci-lint, pytest, mypy, ruff, cargo, the yarn/npm/npx jest, eslint, check-types and tsc scripts, and the project file's Checks. It drops flags that don't change the result (`-count=1`, `-timeout`, jest `--no-cache`) and routes each check through `hooks/ffcc.sh`. The wrapper takes the key when the check starts: the normalized check, the directory, HEAD plus the hash of every modified and untracked non-ignored file, and the toolchain (tool versions and install state outside git, such as `node_modules/.yarn-state.yml`). So a `cd`, an edit earlier in the same call, or another agent's edit is always seen. On a hit it prints the stored output and exit status, so pipes and `&&` behave as before. On a miss it runs the check, and stores the result only if it passed.
+- Concurrent runs of the same key wait on one lock, so the second agent replays the first agent's pass.
+- Results on the clean base commit are kept, pass or fail. A later failure of the same check gets a note saying whether the check also failed at the base commit.
+- Commands that write are never cached: `--fix`, `gofmt -w`, `ruff format` without `--check`, `jest -u`, installs, or anything after an edit or install in the same call.
+- The note the model sees after a replay reads: "feature-flow-lite check cache: replayed `go test ./...` from a passing run 60s ago on the same tree (fingerprint …: HEAD 1a2b3c4 + 2 changed files, same toolchain), saving ~30s."
+- The wrapper costs 60 to 90 ms per check, react-spectrum included. Tests are in `hooks/check-cache.test.ts`, and `cache_stats.py` reports hits and time saved per run from each workspace's `.git/ff-check-cache/ledger.tsv`.
+
+Results:
+- **The cache saved 12% and 31% of wrapped check time, 0.5 and 1.2 minutes.** That doesn't show in wall time: the gate loop's rounds swing it by more.
+- **Most misses were real changes to the tree between rounds.** The hits were the repeats the cache was meant for: the orchestrator rerunning a suite, and a second agent rerunning eslint and check-types right after another had.
+- **The cache had less to save in this variant.** Its check commands came to 6 to 8 minutes of Bash time per build, against the ≈20 check-minutes measured for the Opus xhigh gatekeeper arm. With no separate reviewer and the don't-rerun rule, most repeats are gone before the cache sees them.
+- **Subshells weren't cached in this batch.** Agents often write checks inside `( … )` subshells, and the parser skipped those; it now handles them. Measure the cache again on an arm with more repeats (`lite-merge-gate-opus-xhigh`), or make it the default since it costs nothing.
+
 ### Open questions
 
 - Does v5 plus the screenshot reviewer alone (without v9's verify paragraph) keep the product gain and the tests?
@@ -382,8 +423,9 @@ Process checks (`kind: process`) apply only to skill arms. Outcome checks (hidde
 | `skill`, `skill-v2`, `skill-haiku` | The full feature-flow skill at its last commit (`1a69784`), at `2540fb3` (with the direct path), and at `2540fb3` with every agent on Haiku |
 | `skill-v1`, `skill-v0` | feature-flow with named agents (`b6eface`), and as first committed (`0263562`), loaded as a bare project skill with no agents |
 | `lite-opus-reviewer`, `lite-no-opus-reviewer` | The skill with its mod before the Opus-reviewer clause was removed (`f11f50c`; the batch ran it as `lite-pc-mod`), and the working tree |
+| `lite-review-gate`, `lite-review-gate-cache` | The `review-gate` variant (one Opus gatekeeper that reviews and decides, a criteria check before the implementor, the investigator started at once); the second arm sets `FEATURE_FLOW_CHECK_CACHE=1` through its `env` |
 
-The full feature-flow skill isn't in the tree any more, so its arms load it from history: an arm can pin any git `ref` of any skill `folder`, and the harness extracts that version with `git archive`. An arm can also lay a variant's files over the skill (`variant`: `harness/variants/<name>/`, which can replace SKILL.md or add and replace agents), pin every agent's model and effort or a single agent's (`agents`), and tell the grader which model every role should run on (`roster_model`). The skill's value claim is that `lite-v2` matches `baseline` on outcomes for no more money.
+The full feature-flow skill isn't in the tree any more, so its arms load it from history: an arm can pin any git `ref` of any skill `folder`, and the harness extracts that version with `git archive`. An arm can also lay a variant's files over the skill (`variant`: `harness/variants/<name>/`, which can replace SKILL.md or add and replace agents), pin every agent's model and effort or a single agent's (`agents`), set environment variables for its runs (`env`), and tell the grader which model every role should run on (`roster_model`). The skill's value claim is that `lite-v2` matches `baseline` on outcomes for no more money.
 
 ### Gotchas
 
