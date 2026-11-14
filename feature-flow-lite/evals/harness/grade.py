@@ -24,6 +24,7 @@ ROLE_PATTERNS = [
     ("test_writer", r"test[ -]?writer|write (the )?tests|tests? author"),
     ("planner", r"plann"),
     ("looker", r"looker|compare two images"),
+    ("council", r"councill?or|council"),
     ("gate", r"gatekeep|merge gate"),
     ("investigator", r"investigat"),
     ("explorer", r"explor|mapper|locat"),
@@ -53,6 +54,7 @@ ROSTER = {
     "security": {"sonnet"},
     "migration": {"sonnet"},
     "looker": {"opus"},  # figma-flow's fresh pair of eyes: weaker models miss subtle differences
+    "council": {"haiku"},  # the council variant's ten councillors
     "gate": {"opus", "fable"},  # the merge-gate variant's gatekeeper decides whether the change is mergeable
     "other": {"haiku", "sonnet"},
 }
@@ -74,6 +76,7 @@ ROLE_WORDS = {
     "migration": r"migrat",
     "looker": r"looker|looked|screenshot",
     "gate": r"gatekeep|merge gate",
+    "council": r"council",
 }
 
 STAGE_WORDS = r"investigat|explor|implement|verif|simplif|review|test.?writer|debug|docs"
@@ -186,6 +189,7 @@ AGENT_ROLES = {
     "migration": "migration", "planner": "planner",
     "looker": "looker",  # figma-flow's agent
     "gatekeeper": "gate",  # the merge-gate variant's agent
+    "councillor": "council",  # the council variant's agent
 }
 
 
