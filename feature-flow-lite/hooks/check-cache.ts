@@ -9,12 +9,41 @@
 // The wrapper takes the fingerprint when the check starts, so a `cd`, an edit
 // earlier in the same call or another agent's edit is always seen.
 
-export type Token = { kind: 'word' | 'op'; raw: string; value: string; start: number; end: number; dollar: boolean }
+// `subs`: the inner text of each `$( ... )` in the word, as offsets into the command.
+export type Token = { kind: 'word' | 'op'; raw: string; value: string; start: number; end: number; dollar: boolean; subs?: Sub[] }
+export type Sub = { start: number; end: number }
+
+// The index just past the `)` that closes the `$(` at `i`, or -1.
+function substEnd(command: string, i: number): number {
+  let depth = 0
+  for (let j = i; j < command.length; j++) {
+    const c = command[j]
+    if (c === "'") {
+      const close = command.indexOf("'", j + 1)
+      if (close < 0) return -1
+      j = close
+    } else if (c === '"') {
+      let k = j + 1
+      while (k < command.length && command[k] !== '"') k += command[k] === '\\' ? 2 : 1
+      if (k >= command.length) return -1
+      j = k
+    } else if (c === '\\') {
+      j++
+    } else if (c === '(') {
+      depth++
+    } else if (c === ')') {
+      depth--
+      if (depth === 0) return j + 1
+    }
+  }
+  return -1
+}
 
 // Splits a command into words and control operators, with offsets into the
-// original text. Undefined when it holds something this parser won't reason
-// about (subshells, command substitution, heredocs, groups, unbalanced quotes):
-// such a command runs untouched.
+// original text. A `$( ... )` stays inside its word (which is then never a
+// cached check itself), with its inner text noted. Undefined when it holds
+// something this parser won't reason about (backticks, heredocs, process
+// substitution, groups, unbalanced quotes): such a command runs untouched.
 export function tokenize(command: string): Token[] | undefined {
   const tokens: Token[] = []
   let i = 0
@@ -77,6 +106,7 @@ export function tokenize(command: string): Token[] | undefined {
     const start = i
     let value = ''
     let dollar = false
+    const subs: Sub[] = []
     while (i < n) {
       const ch = command[i]
       if (ch === ' ' || ch === '\t' || ch === '\n' || ch === ';' || ch === '(' || ch === ')' || ch === '`') break
@@ -97,8 +127,14 @@ export function tokenize(command: string): Token[] | undefined {
           if (command[j] === '\\') j++
           else if (command[j] === '`') return undefined
           else if (command[j] === '$') {
-            if (command[j + 1] === '(') return undefined
             dollar = true
+            if (command[j + 1] === '(') {
+              const end = substEnd(command, j + 1)
+              if (end < 0) return undefined
+              subs.push({ start: j + 2, end: end - 1 })
+              j = end
+              continue
+            }
           }
           j++
         }
@@ -113,15 +149,22 @@ export function tokenize(command: string): Token[] | undefined {
         continue
       }
       if (ch === '$') {
-        if (command[i + 1] === '(') return undefined
         dollar = true
+        if (command[i + 1] === '(') {
+          const end = substEnd(command, i + 1)
+          if (end < 0) return undefined
+          subs.push({ start: i + 2, end: end - 1 })
+          value += command.slice(i, end)
+          i = end
+          continue
+        }
       }
       value += ch
       i++
     }
     const raw = command.slice(start, i)
     if (raw === '{' || raw === '}') return undefined
-    tokens.push({ kind: 'word', raw, value, start, end: i, dollar })
+    tokens.push({ kind: 'word', raw, value, start, end: i, dollar, ...(subs.length ? { subs } : {}) })
   }
   return depth === 0 ? tokens : undefined
 }
@@ -319,7 +362,7 @@ function readOnly(segment: Segment): boolean {
   return READ_ONLY.has(words[0] ?? '')
 }
 
-export type Wrapped = { key: string; family: Family }
+export type Wrapped = { key: string; family: Family; words: string[] }
 export type Plan = { command: string; wrapped: Wrapped[] }
 
 const quote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`
@@ -336,7 +379,22 @@ export function planRewrite(
   const edits: { start: number; end: number; text: string }[] = []
   const wrapped: Wrapped[] = []
   let clean = true // nothing before this segment can have written
+  // a `$( check )` inside a word: wrap the check inside the substitution
+  const wrapInner = (sub: Sub) => {
+    const inner = tokenize(command.slice(sub.start, sub.end))
+    const innerSegs = inner && segments(inner)
+    if (!innerSegs || innerSegs.length !== 1 || !innerSegs[0]) return
+    const check = checkOf(innerSegs[0], opts.projectChecks)
+    if (!check) return
+    const words = innerSegs[0].words.slice(check.first)
+    if (words.length === 0) return
+    const at = sub.start + words[0]!.start
+    const head = ['bash', opts.script, opts.cacheDir, opts.notes, check.family, check.key].map(quote).join(' ')
+    edits.push({ start: at, end: at, text: `${head} -- ` })
+    wrapped.push({ key: check.key, family: check.family, words: words.map(t => t.value) })
+  }
   for (const seg of segs) {
+    if (clean) for (const t of [...seg.words, ...seg.redirects.flat()]) for (const sub of t.subs ?? []) wrapInner(sub)
     const check = clean && seg.before !== '|' && seg.before !== '|&' ? checkOf(seg, opts.projectChecks) : undefined
     if (check) {
       const words = seg.words.slice(check.first)
@@ -346,7 +404,7 @@ export function planRewrite(
       if (!inside) {
         const head = ['bash', opts.script, opts.cacheDir, opts.notes, check.family, check.key].map(quote).join(' ')
         edits.push({ start: span.start, end: span.start, text: `${head} -- ` })
-        wrapped.push({ key: check.key, family: check.family })
+        wrapped.push({ key: check.key, family: check.family, words: words.map(t => t.value) })
         continue
       }
     }
@@ -372,7 +430,11 @@ export function projectChecks(markdown: string): string[][] {
   }
   const out: string[][] = []
   // a Run it line is how to start the app, and `<module>` or `...` mark a template, not a command
-  const runnable = section.filter(line => !/^\s*[-*]?\s*\**run it\b/i.test(line)).join('\n')
+  // text in brackets is detail (what CI runs underneath), not another check to run
+  const runnable = section
+    .filter(line => !/^\s*[-*]?\s*\**run it\b/i.test(line))
+    .map(line => line.replace(/\([^()]*\)/g, ''))
+    .join('\n')
   for (const [, code] of runnable.matchAll(/`([^`\n]+)`/g)) {
     if (/<[^>\s]+>|(?:^|[\s(;,])\.\.\.|…/.test(code ?? '')) continue
     const tokens = tokenize(code ?? '')

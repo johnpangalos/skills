@@ -165,6 +165,7 @@ export const register: Register = on => {
     runningGates: new Set<string>(),
     inflight: new Set<string>(),
     waiters: new Map<string, (report: string) => void>(),
+    agentChecks: new Map<string, { key: string; family: string; words: string[] }>(),
   }
 
   on('prompt.submit', ($, e, next) => {
@@ -234,6 +235,9 @@ export const register: Register = on => {
     const notes = `${cache.dir}/notes/${crypto.randomUUID()}`
     const plan = planRewrite(e.command, { script: cache.script, cacheDir: cache.dir, notes, projectChecks: checks })
     if (plan === undefined) return next(e)
+    // the orchestrator's own checks are the ones it waits on: those are worth running ahead
+    // (an agent's targeted test or a probe's run is not)
+    if (e.agentId === undefined) for (const w of plan.wrapped) if (!st.agentChecks.has(w.key)) st.agentChecks.set(w.key, w)
     const ran = await next({ ...e, command: plan.command })
     if (e.run_in_background === true || ran.deny !== undefined) return ran
     let note: string | undefined
@@ -384,20 +388,34 @@ type ExtrasState = {
   inflight: Set<string>
   // panel seats the mod started, waiting for their reports
   waiters: Map<string, (report: string) => void>
+  // the checks the orchestrator ran in this session, by key: what the mod runs ahead
+  agentChecks: Map<string, { key: string; family: string; words: string[] }>
 }
 
 // The checks a project file lists, each with its st.cache key, run through the
 // wrapper in the background. Runs of a key already in flight are skipped; an
 // agent asking for the same check meanwhile waits on it and replays it.
+// Ahead of the orchestrator, the checks it has run in this session (each key
+// once); on the base commit, the project file's Checks. Each runs through the
+// wrapper in the background: an agent asking for it meanwhile waits on it.
 async function runChecksAhead($: EngineInterface, st: ExtrasState, opts: { cwd: string; base: boolean }): Promise<void> {
   if (st.cache === undefined) return
   const setup = st.cache
-  const checks = await readProjectChecks($, setup.root)
-  for (const words of checks) {
-    const tokens = tokenize(words.map(w => `'${w.replace(/'/g, `'\\''`)}'`).join(' '))
-    const seg = tokens && segments(tokens)[0]
-    const check = seg && checkOf(seg, checks)
-    if (!check) continue
+  let checks: { key: string; family: string; words: string[] }[]
+  if (opts.base) {
+    const project = await readProjectChecks($, setup.root)
+    checks = []
+    for (const words of project) {
+      const tokens = tokenize(words.map(w => `'${w.replace(/'/g, `'\\''`)}'`).join(' '))
+      const seg = tokens && segments(tokens)[0]
+      const check = seg && checkOf(seg, project)
+      if (check) checks.push({ key: check.key, family: check.family, words })
+    }
+  } else {
+    checks = [...st.agentChecks.values()]
+  }
+  for (const check of checks) {
+    const words = check.words
     const id = `${opts.base ? 'base' : 'tree'}:${check.key}`
     if (st.inflight.has(id)) continue
     st.inflight.add(id)

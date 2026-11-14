@@ -130,14 +130,18 @@ right section and name it in the report. Never remove a line the user wrote.
      own words; wrong or missing criteria.
    - **edges**: what the new code wraps or stands in for and every capability and edge input it
      has (empty, huge, malformed, repeated, concurrent, interrupted, the optional interfaces).
+     Where the new code wraps something, it compares the two: the same inputs run with and
+     without the wrapper, across call orders (state changed before and after the first write
+     or commit, flush, hijack or close, trailers, a second call), with every output diffed.
    - **repo**: conventions, the sibling and the places it appears, docs, changelog and help text
      against the code, tests for every new behavior, unrelated edits, the full checks.
    Each lists every must-fix it can reproduce in its focus, not just the first. Start the panel
    as soon as the simplifier's edits pass the targeted checks; run the full checks in the
    background at the same time, and if they fail, send that to the implementor and discard the
    panel's round. Merge the panel's must-fixes, dropping duplicates.
-9. **Fix and verify.** Send all the must-fixes to the implementor in one handoff, then run the
-   affected checks. Then **continue** each gatekeeper that raised a must-fix (SendMessage to its
+9. **Fix and verify.** Send all the must-fixes to the implementor in one handoff, with this
+   constraint: change only what each must-fix needs; any other change in behavior is a
+   regression, even one that looks like an improvement. Then run the affected checks. Then **continue** each gatekeeper that raised a must-fix (SendMessage to its
    agent, don't spawn a new one) with the fix diff: it reruns the probes behind its must-fixes
    and checks the changed hunks for regressions. Loop fix and verify until every panel member
    says `MERGEABLE: yes`. A verifier raises new must-fixes only for regressions and for what the
@@ -145,7 +149,8 @@ right section and name it in the report. Never remove a line the user wrote.
 10. **Final gate.** Spawn one **fresh** gatekeeper, `FOCUS: all`, on the whole final diff, with the
    full checks running beside it and a `RULED ON:` list of everything the panel raised and how
    it was settled. If it says no, fix its must-fixes, then continue that same gatekeeper to
-   verify. The work is done only when this final gatekeeper says `MERGEABLE: yes`. There is no
+   verify (same constraint: only what its must-fixes need). The work is done only when this
+   final gatekeeper says `MERGEABLE: yes`. There is no
    round cap. Nits are reported, not looped on.
    - **Criteria.** A wrong criterion a gatekeeper confirms means your criteria were wrong:
      rewrite it (and its hostile inputs), and send the corrected list with the fix. Every later

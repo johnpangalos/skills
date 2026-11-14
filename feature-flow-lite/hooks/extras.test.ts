@@ -89,6 +89,7 @@ function world(on: On, env: Record<string, string>) {
     agentCalls.push({ prompt: e.prompt, description: e.description, bg: e.run_in_background })
     return { result: { status: 'completed', agentId: `seat-${agentCalls.length}`, content: [], prompt: '' }, text: `report ${agentCalls.length}` } as never
   })
+  on('tool.call', { tool: 'Bash' }, () => ({ result: { stdout: '', stderr: '', interrupted: false } }) as never)
   on('tool.call', { tool: 'Edit' }, ($, e) => {
     edits.push(e.file_path)
     return { result: {} } as never
@@ -181,17 +182,21 @@ test('extras hook: probe files are removed once no gatekeeper is running', async
   expect(w.runs.filter(r => r[0] === 'rm').map(r => r.slice(3))).toEqual([['/r/middleware/zz_gate_probe_test.go']])
 })
 
-test('extras hook: an implementor finishing starts the project checks through the wrapper', async ($, on) => {
+test('extras hook: an implementor finishing reruns ahead the checks the orchestrator ran, not the project file\'s other lines', async ($, on) => {
   const w = world(on, { FEATURE_FLOW_EXTRAS: '1', FEATURE_FLOW_CHECK_CACHE: '1' })
-  w.files['/r/FEATURE_FLOW.md'] = '## Checks\n- `go test -race ./...`, `go vet ./...`\n'
+  w.files['/r/FEATURE_FLOW.md'] = '## Checks\n- `go test -race ./...` (CI: `make test`), `go vet ./...`\n'
   await start($)
+  // a subagent's targeted run is not run ahead; the orchestrator's full run is
+  await $.tool.call({ tool: 'Bash', agentId: 'agent-x', command: 'go test -race -run ETag ./middleware' } as never)
+  await $.tool.call({ tool: 'Bash', command: 'go test -race -count=1 ./... | tail -3 && go vet ./...' } as never)
   await $.agent.spawn({ prompt: 'GOAL: build', subagentType: 'feature-flow-lite:implementor' } as never)
+  const before = w.runs.length
   await $.turn.complete({ agentId: 'agent-1', answer: 'STATUS: pass', durationMs: 1, isAborted: false, turnId: 't', reason: 'answer' } as never)
   await new Promise(r => setTimeout(r, 0))
-  const wrapped = w.runs.filter(r => r[0] === 'bash' && r[1]?.endsWith('ffcc.sh'))
-  expect(wrapped.map(r => r.slice(4, 6))).toEqual([
+  const ahead = w.runs.slice(before).filter(r => r[0] === 'bash' && r[1]?.endsWith('ffcc.sh'))
+  expect(ahead.map(r => r.slice(4, 6))).toEqual([
     ['go', 'go test -race ./...'],
     ['go', 'go vet ./...'],
   ])
-  expect(wrapped[0]?.slice(6)).toEqual(['--', 'go', 'test', '-race', './...'])
+  expect(ahead[0]?.slice(6)).toEqual(['--', 'go', 'test', '-race', '-count=1', './...'])
 })

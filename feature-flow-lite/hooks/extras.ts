@@ -40,7 +40,7 @@ export function withRuledOn(prompt: string, raised: readonly string[]): string |
 export const PANEL_FOCI = {
   request: 'request: every sentence of the request and every criterion, probed in the request\'s own words; wrong or missing criteria.',
   edges:
-    'edges: what the new code wraps or stands in for, and every capability and edge input it has (empty, huge, malformed, repeated, concurrent, interrupted, the optional interfaces).',
+    'edges: what the new code wraps or stands in for, and every capability and edge input it has (empty, huge, malformed, repeated, concurrent, interrupted, the optional interfaces). Where it wraps something, run the same inputs with and without it across call orders (state changed before and after the first write or commit, flush, hijack or close, trailers, a second call) and diff every output.',
   repo: 'repo: conventions, the sibling and the places it appears, docs, changelog and help text against the code, tests for every new behavior, unrelated edits, the full checks.',
 } as const
 

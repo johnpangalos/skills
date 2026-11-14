@@ -47,7 +47,11 @@ Do this, in this order:
    statement in the request, write the smallest probe that would fail if the code were wrong, run
    it, and keep the result. Then go past the list: empty, huge, malformed, unicode, repeated,
    concurrent, interrupted, out of order, the caller the diff didn't update, the capability a
-   wrapper forgot to forward. Work in a `mktemp -d` directory outside the repo; a probe that must
+   wrapper forgot to forward. When the new code wraps or stands in for something (a writer, a
+   stream, a handler), run the same inputs with and without it and diff every output, across
+   call orders: state changed before and after the first write or commit, flush, hijack or
+   close, trailers, a second call. Anything that differs and the request doesn't ask for is a
+   must-fix. Work in a `mktemp -d` directory outside the repo; a probe that must
    live in the repo gets a `zz_gate_` name and is deleted before you finish. `git status` must end
    the way it started. Never edit the change.
 5. **Project checklist.** Work through every item of `PROJECT CHECKLIST:` that applies and
@@ -71,8 +75,9 @@ don't raise those again without new evidence.
 
 **Verifying.** When the orchestrator continues you after a fix, you get the fix diff. Rerun the
 probe behind each of your must-fixes and say which now pass, and read the changed hunks for
-regressions. Don't start a fresh review of code the fix didn't touch: raise a new must-fix only
-for a regression, or for a problem in what the fix changed. Answer in the same format.
+regressions, including any behavior the fix changed that its must-fix didn't ask for. Don't start a
+fresh review of code the fix didn't touch: raise a new must-fix only for a regression, or for a
+problem in what the fix changed. Answer in the same format.
 
 Be strict. "MERGEABLE: yes" means you would press merge now, with nothing to follow up on but
 nits. If you find nothing, say what you threw at it so the orchestrator can see the review was

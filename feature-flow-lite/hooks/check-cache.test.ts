@@ -65,14 +65,19 @@ test("keys: the project file's Checks count as checks", () => {
       ['## Checks', '- Full: `./check.sh`', '- Targeted: `python3 -m unittest tests.test_<module> -q`', '- Run it: `python3 -c "from shop import x"`', '- `go test ./...`'].join('\n'),
     ),
   ).toEqual([['./check.sh'], ['go', 'test', './...']])
+  // bracketed detail (what CI runs underneath) is not another check
+  expect(projectChecks('## Checks\n- Full: `go test -race ./...` (CI runs `make test`: `go test -race -v .`), `go vet ./...`')).toEqual([
+    ['go', 'test', '-race', './...'],
+    ['go', 'vet', './...'],
+  ])
   expect(keyOf('make docs', project)).toBeUndefined()
 })
 
 test('rewrite: each check in a compound command goes through the wrapper; pipes and redirections stay', () => {
   const plan = planRewrite('cd pkg && go test -race -count=1 ./... 2>&1 | tail -20 && go vet ./...', OPTS)
   expect(plan?.wrapped).toEqual([
-    { key: 'go test -race ./...', family: 'go' },
-    { key: 'go vet ./...', family: 'go' },
+    { key: 'go test -race ./...', family: 'go', words: ['go', 'test', '-race', '-count=1', './...'] },
+    { key: 'go vet ./...', family: 'go', words: ['go', 'vet', './...'] },
   ])
   expect(plan?.command).toBe(
     `cd pkg && ${HEAD} 'go' 'go test -race ./...' -- go test -race -count=1 ./... 2>&1 | tail -20 && ${HEAD} 'go' 'go vet ./...' -- go vet ./...`,
@@ -106,6 +111,17 @@ test('rewrite: checks inside a subshell group are cached; the group and its redi
   )
   // an install inside a group before the check still stops caching
   expect(planRewrite('(yarn install && yarn jest)', OPTS)).toBeUndefined()
+})
+
+test('rewrite: a $( ) no longer blocks the command; a check inside one is cached in place', () => {
+  const plan = planRewrite('go test -race ./... 2>&1 | tail -3 && go vet ./... && test -z "$(gofmt -l .)" && echo FMT OK', OPTS)
+  expect(plan?.wrapped.map(w => w.key)).toEqual(['go test -race ./...', 'go vet ./...', 'gofmt -l .'])
+  expect(plan?.command).toBe(
+    `${HEAD} 'go' 'go test -race ./...' -- go test -race ./... 2>&1 | tail -3 && ${HEAD} 'go' 'go vet ./...' -- go vet ./... && test -z "$(${HEAD} 'go' 'gofmt -l .' -- gofmt -l .)" && echo FMT OK`,
+  )
+  // a word built from a substitution is not itself a cached check
+  expect(planRewrite('go test $(go list ./... | grep -v vendor)', OPTS)).toBeUndefined()
+  expect(planRewrite('echo "$(date)" && go vet ./...', OPTS)?.wrapped.map(w => w.key)).toEqual(['go vet ./...'])
 })
 
 test('rewrite: shapes it does not reason about run untouched', () => {
