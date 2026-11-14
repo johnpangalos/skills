@@ -53,7 +53,7 @@ ROSTER = {
     "security": {"sonnet"},
     "migration": {"sonnet"},
     "looker": {"opus"},  # figma-flow's fresh pair of eyes: weaker models miss subtle differences
-    "gate": {"opus"},  # the merge-gate variant's gatekeeper decides whether the change is mergeable
+    "gate": {"opus", "fable"},  # the merge-gate variant's gatekeeper decides whether the change is mergeable
     "other": {"haiku", "sonnet"},
 }
 

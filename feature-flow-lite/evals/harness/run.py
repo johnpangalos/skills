@@ -112,7 +112,7 @@ def command(scenario, arm, prompt):
         "--model", arm["model"], "--effort", arm["effort"],
         "--output-format", "stream-json", "--verbose", "--forward-subagent-text",
         "--permission-mode", "acceptEdits", "--allowedTools", TOOLS, "--permission-prompts", "none",
-        "--max-budget-usd", str(scenario.get("budget_usd", 5)),
+        "--max-budget-usd", str(arm.get("budget_usd") or scenario.get("budget_usd", 5)),
         "--no-session-persistence",
     ]
 
@@ -133,7 +133,7 @@ def run_one(out, scenario, arm_name, arm, rep, prompt, dry_run):
     started = time.time()
     with open(run_dir / "trace.jsonl", "w") as trace, open(run_dir / "stderr.txt", "w") as err:
         try:
-            subprocess.run(cmd, cwd=workspace, env=env, stdout=trace, stderr=err, timeout=scenario.get("timeout_s", 2400))
+            subprocess.run(cmd, cwd=workspace, env=env, stdout=trace, stderr=err, timeout=arm.get("timeout_s") or scenario.get("timeout_s", 2400))
         except subprocess.TimeoutExpired:
             err.write("\nharness: timed out\n")
     # the skill's per-repo project file is kept with the run, out of the build a judge sees
@@ -227,7 +227,7 @@ def main():
         for arm_name in args.arms.split(","):
             for rep in range(1, args.reps + 1):
                 jobs.append((scenario, arm_name, config["arms"][arm_name], rep, prompt))
-    budget = sum(s.get("budget_usd", 5) for s, *_ in jobs)
+    budget = sum(a.get("budget_usd") or s.get("budget_usd", 5) for s, _, a, *_ in jobs)
     print(f"{len(jobs)} runs, worst-case spend ${budget} (sum of --max-budget-usd caps) -> {args.out}", file=sys.stderr)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
