@@ -148,7 +148,7 @@ test('extras hook: FOCUS: panel sends out three gatekeepers, one per focus', asy
   expect(w.agentCalls.map(c => c.prompt.match(/^FOCUS: (\w+)/m)?.[1])).toEqual(['request'])
   expect(w.agentCalls[0]?.bg).toBe(false)
   const context = (out as { context?: readonly string[] }).context ?? []
-  expect(context[0]).toContain('three gatekeepers in parallel')
+  expect(context[0]).toContain('all three gatekeepers have finished')
   expect(context).toHaveLength(3)
   // FOCUS: all is a single call
   await $.tool.call({ tool: 'Agent', subagent_type: 'feature-flow-lite:gatekeeper', description: 'Final', prompt: 'FOCUS: all' } as never)

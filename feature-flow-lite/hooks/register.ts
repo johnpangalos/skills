@@ -165,6 +165,7 @@ export const register: Register = on => {
     runningGates: new Set<string>(),
     inflight: new Set<string>(),
     waiters: new Map<string, (report: string) => void>(),
+    answers: new Map<string, string>(),
     agentChecks: new Map<string, { key: string; family: string; words: string[] }>(),
   }
 
@@ -212,17 +213,23 @@ export const register: Register = on => {
         const id = (res as { agentId?: string }).agentId
         if (id !== undefined) roleByAgent.set(id, 'gatekeeper')
         if (id === undefined) return { name: names[i], id: 'none', report: Promise.resolve('(the mod could not start this gatekeeper)') }
-        return { name: names[i], id, report: new Promise<string>(resolve => st.waiters.set(id, resolve)) }
+        return { name: names[i], id, report: reportOf(st, id) }
       }),
     )
     const first = await next({ ...e, prompt: prompts[0] ?? e.prompt, description: `${e.description} (${names[0]})`, run_in_background: false })
     if (first.deny !== undefined) return first
+    // the call's own seat may have gone to the background anyway: then wait for its report too, so
+    // the call returns with all three and nothing of the panel is left running
+    const own = first.result as { status?: string; agentId?: string } | undefined
+    const firstId = own?.agentId ?? 'unknown'
+    const ownReport = own?.status !== 'completed' && own?.agentId !== undefined ? await reportOf(st, own.agentId) : undefined
     const reports = await Promise.all(others.map(async o => `FOCUS ${o.name} (agent id ${o.id}):\n${await o.report}`))
-    const firstId = (first.result as { agentId?: string } | undefined)?.agentId ?? 'unknown'
     const note =
-      `${$.plugin.name} review panel: this call ran three gatekeepers in parallel. The result above is FOCUS ${names[0]} ` +
-      `(agent id ${firstId}); the other two follow. Merge their must-fixes, and continue each with SendMessage to verify its fixes.`
-    return { ...first, context: [...(first.context ?? []), note, ...reports] }
+      `${$.plugin.name} review panel: all three gatekeepers have finished; none is still running. ` +
+      (ownReport === undefined ? `The result above is FOCUS ${names[0]} (agent id ${firstId}); the other two follow. ` : 'All three reports follow. ') +
+      'Merge their must-fixes into one fix round now, and continue each gatekeeper with SendMessage to verify its fixes.'
+    const own0 = ownReport === undefined ? [] : [`FOCUS ${names[0]} (agent id ${firstId}):\n${ownReport}`]
+    return { ...first, context: [...(first.context ?? []), note, ...own0, ...reports] }
   }).catch(($, e, next) => next(e))
 
   // The check cache: route each check in a Bash call through the wrapper, then
@@ -386,8 +393,9 @@ type ExtrasState = {
   baseStarted: boolean
   runningGates: Set<string>
   inflight: Set<string>
-  // panel seats the mod started, waiting for their reports
+  // panel seats waiting for their reports, and the reports of seats that finished first
   waiters: Map<string, (report: string) => void>
+  answers: Map<string, string>
   // the checks the orchestrator ran in this session, by key: what the mod runs ahead
   agentChecks: Map<string, { key: string; family: string; words: string[] }>
 }
@@ -466,6 +474,8 @@ async function afterSubagent($: EngineInterface, st: ExtrasState, gated: boolean
   if (waiter !== undefined && e.agentId !== undefined) {
     st.waiters.delete(e.agentId)
     waiter(e.answer)
+  } else if (e.agentId !== undefined && roleByAgent.get(e.agentId) === 'gatekeeper') {
+    st.answers.set(e.agentId, e.answer)
   }
   const role = e.agentId === undefined ? undefined : roleByAgent.get(e.agentId)
   if (gated && st.extras && e.agentId !== undefined && role !== undefined) {
@@ -484,6 +494,13 @@ async function afterSubagent($: EngineInterface, st: ExtrasState, gated: boolean
   }
 }
 
+
+// A gatekeeper's report: now if it already finished, else when its turn ends.
+function reportOf(st: ExtrasState, agentId: string): Promise<string> {
+  const done = st.answers.get(agentId)
+  if (done !== undefined) return Promise.resolve(done)
+  return new Promise<string>(resolve => st.waiters.set(agentId, resolve))
+}
 
 type CacheSetup = { root: string; dir: string; script: string }
 
