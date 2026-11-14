@@ -52,6 +52,7 @@ k=$(printf '%s\n' "$key" "$rel" "$tree" "$tools" | sha256sum | cut -c1-24)
 bk=$(printf '%s\n' "$key" "$rel" "$tools" | sha256sum | cut -c1-24)
 entry=$cache/entries/$k
 mkdir -p "$cache/entries" "$cache/locks" "$cache/base-results"
+[ "$notes" = - ] || mkdir -p "$(dirname "$notes")"
 now() { date +%s.%N; }
 since() { awk -v a="$1" -v b="$(now)" 'BEGIN { printf "%.1f", b - a }'; }
 note() { [ "$notes" = - ] || printf '%s\n' "$1" >>"$notes"; }
