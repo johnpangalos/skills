@@ -262,6 +262,34 @@ The `until-satisfied` variant drops the two-round cap. Every fix is followed by 
 - chi-etag failed `TestFlushDoesNotBypassTheBuffer` in all 6 builds of both arms: every build streams the response when the handler flushes, and the hidden test expects the buffer to hold. More review didn't change a choice the acceptance criteria made.
 - So "more reviews" doesn't come from removing the stop. It would have to be required, for example "done only when a fresh reviewer returns no blocking findings", and that is v7's pattern, which cost more without a reliable gain.
 
+### 12. Merge gate: a fresh maintainer decides when it's done
+
+The goal: when the orchestrator says done, the change should be mergeable. The `merge-gate` variant adds a fifth agent, a gatekeeper. After the reviewer's (still capped) fix loop, a fresh gatekeeper gets the user's request word for word and the base commit, runs the full checks, writes its own probes, and returns `MERGEABLE: yes|no` with tagged must-fixes. Every no goes back to the implementor and a new gatekeeper reads the whole diff. There is no round cap, and the report opens with `Mergeable: yes` or `Not mergeable:`. Scored with hidden tests, probes and `audit.py`: a separate headless Opus that sees only the request and the workspace, read-only, and says whether it would merge (high effort on react-aria, medium elsewhere).
+
+A harder task was added for this: `rac-shadow-hide`, making react-aria's `ariaHideOutside` work across shadow DOM in the react-spectrum monorepo (jest, eslint, tsgo, the yarn lockfile). Its hidden tests are upstream's shadow DOM tests plus five more. The audit found a bug no hidden test covers (a target nested in a shadow root inside another target hides that target's content; upstream's own fix has it), and it became the scenario's probe.
+
+| 3 builds per task | Current skill | Opus medium gate | Opus xhigh gate |
+|---|---|---|---|
+| chi-etag: audit would merge / probes | 3 of 3 / 17 of 21 | 3 of 3 / 17 of 21 | 3 of 3 / 17 of 21 |
+| click-duration: audit would merge / probes | 1 of 3 / 19 of 24 | 3 of 3 / 18 of 24 | 3 of 3 / 18 of 24 |
+| rac-shadow-hide: audit would merge / nested-target probe | 1 of 3 / 2 of 3 | 0 of 3 / 0 of 3 | 1 of 3 / 3 of 3 |
+| Cost per build (chi, click, rac) | $1.35, $1.20, $1.31 | $2.05, $1.63, $1.67 | $3.30, $3.28, $2.72 |
+
+- **Opus at medium approved too easily.** On react-aria it passed all three builds in its first round, and all three had the nested-target bug. Across 4 other tasks it raised 1 must-fix in 12 builds.
+- **Opus at xhigh is the first gate that caught the react-aria bug:** 3 of 3 builds pass the probe. The audit still rejected one finished build for a different bug (light DOM slotted into a target's shadow tree is hidden), and one build hit the 90-minute run limit in its second gate round, leaving its probe files in the repo. That makes 1 of 2 finished builds clean by the audit.
+- On click-duration both gates fixed what the audit flagged on the current skill (the docs example that never succeeds, help text for timedelta defaults).
+- chi-etag fails the hidden `TestFlushDoesNotBypassTheBuffer` in every build of every arm. No gate moved it: the builds stream on `Flush`, a choice the acceptance criteria make.
+- **Fable 5.2 at xhigh as the gatekeeper** rejected 7 of 8 first-round builds with real must-fixes (the react-aria bug, the missing lockfile entry, HEAD losing `Content-Length` in chi), but cost $4 to $11 a build. Its batch is not a result: `claude -p` stops background subagents 10 minutes after the orchestrator's last turn, which cut off 7 of 8 builds mid-gate. The harness now sets `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0` and warns when a run was cut off.
+
+### 13. Council: ten Haiku councillors instead of one gatekeeper
+
+The `council` variant replaces the gatekeeper with ten Haiku councillors at xhigh, run in parallel, each starting from a different angle (the request, edge inputs, callers, docs, tests, conventions, errors, cleanup, other entry points, free). Any no is investigated by the orchestrator: a must-fix it reproduces goes to the implementor and a new council of ten votes; one it disproves is dismissed with evidence. It was stopped partway: 4 of 9 builds finished, costing $5.70 to $11.33; the others were on rounds 3 to 6 at $7 to $10.
+
+- It doesn't converge. Ten strict reviewers almost always produce one no. In one chi-etag build the rounds went 1, 2, 6, 8 and 8 yes out of 10. The first two rounds found real bugs the reviewer missed (Hijack after a buffered write), and the later ones found smaller and smaller edges (a non-canonical header key, trailers).
+- Dismissed objections come back. A fresh council doesn't know what was ruled on, so the orchestrator re-argues it, or gives in: one HEAD objection was dismissed in round 2 and fixed in round 3 "since seats keep citing the request's literal wording".
+- 10 of 10 yes isn't proof. The one chi-etag build that got a unanimous council still fails the hidden Flush test.
+- About 1 in 5 councillors re-ran a repo-wide lint or test suite despite being told not to.
+
 ### Open questions
 
 - Does v5 plus the screenshot reviewer alone (without v9's verify paragraph) keep the product gain and the tests?
