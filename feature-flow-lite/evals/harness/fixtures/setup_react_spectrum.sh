@@ -1,8 +1,10 @@
 #!/bin/bash
 # setup_react_spectrum.sh <commit>: check out adobe/react-spectrum at a pinned commit into the
 # current (empty) dir, installed. The install is cached under ~/.cache/ff-evals/react-spectrum
-# (about 1 GB). Tracked files are real copies, so edits never reach the cache; the ignored install
-# output (node_modules, generated icons) is hardlinked from the cache, so a run costs almost no disk.
+# (about 1 GB). Each run gets real copies of the tracked files and of the ignored install output
+# (node_modules, generated icons). Not hardlinks: the repo's postinstall (patch-package, the icon
+# build) rewrites files in node_modules in place, so a `yarn install` in one run would change the
+# cache and every other run.
 set -euo pipefail
 commit=$1
 cache="${FF_EVALS_CACHE:-$HOME/.cache/ff-evals}/react-spectrum"
@@ -20,7 +22,6 @@ git checkout -q -B main "$commit"
   path=${path%/}
   case "$path" in
     junit.xml) ;;
-    .yarn/install-state.gz) cp -a "$cache/$path" "$path" ;;
-    *) mkdir -p "$(dirname "$path")" && cp -al "$cache/$path" "$path" ;;
+    *) mkdir -p "$(dirname "$path")" && cp -a "$cache/$path" "$path" ;;
   esac
 done
