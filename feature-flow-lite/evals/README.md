@@ -31,6 +31,7 @@ A summary of every eval run on feature-flow-lite and its Figma offshoots so far 
 - **What was removed:** the Opus reviewer on risky paths. On 30 builds of auth, payments and concurrency tasks, a Haiku reviewer matched it on every hidden case for 21% less. Haiku also reproduced the token and refund races itself.
 - **On websites, plain Opus still builds the best-looking product**, but it barely tests it. That pattern holds on every task so far.
 - **For Figma component work the pipeline doesn't pay.** With an exact-value test in the repo, plain Opus or plain Sonnet matched every value at a fraction of the cost. figma-flow now builds directly.
+- **A dynamic workflow doesn't replace it.** Asked to "use a workflow", Opus writes a build, review and fix script that ties the skill on hidden tests. Blind judges still put the skill ahead: 7.92 against 7.22 with Opus agents (at 1.5× the skill's cost) and 5.78 with Haiku agents (at 38% of its cost). The gap is in what nobody wrote down: wrapper interfaces, nested components, a warning's stacklevel.
 - **Noise is large.** About 0.9 points of spread per build means 3 builds per setup can only show gains of roughly half a point or more. Several early leads disappeared on a re-run.
 
 ### Timeline
@@ -49,6 +50,7 @@ A summary of every eval run on feature-flow-lite and its Figma offshoots so far 
 | Project file | Per-repo `FEATURE_FLOW.md` | 7.98 against 7.37 for v5 + mod, ahead on all three tasks. | Yes (PR #7) |
 | Figma | Pipeline vs plain model on Button and Tabs | Plain Opus and Sonnet passed everything for a quarter of the cost or less. | figma-flow builds directly (PR #10) |
 | Opus reviewer | Does moving the reviewer to Opus on risky paths pay? | No. Both arms passed every hidden case in 30 of 30 builds; Opus cost 27% more. | Removed |
+| Workflow | Does "use a workflow" match the skill? | Tied on hidden tests, but judged 7.92 for the skill against 7.22 (Opus agents) and 5.78 (Haiku agents). | Kept the skill |
 
 ### Earlier rounds (1–5)
 
@@ -245,11 +247,42 @@ The hidden tests were checked against a careful and a naive reference: the caref
 - Haiku raised more blocking findings, and more of them were contrived: int subclasses that override `__gt__`, a spoofed `__class__`, a mutated frozen dataclass. Fix rounds came out about even (1.6 against 1.5 implementor runs per build), so the extra noise didn't cost much.
 - The tasks hit the ceiling, so this can't rule out a gain on a harder risky change. But 30 perfect builds without the rule leaves the rule nothing to prove, and it cost 27% more per build. It was removed. The reviewer stays a Haiku red team everywhere.
 
+### 11. Dynamic workflow instead of the skill
+
+Claude Code can now orchestrate subagents itself with a dynamic workflow (the `Workflow` tool), so the question is whether the skill still earns its place. Two arms run with no skill and a prompt that opts into a workflow:
+
+- `workflow`: "Use a workflow: " before the task. Opus writes and runs its own script, and its agents run on Opus.
+- `workflow-haiku`: "Use a workflow, and run every agent in it on Haiku: " before the task.
+
+They ran against the shipped skill with its mod (`lite-no-opus-reviewer`) on `chi-etag`, `click-param-spec` and `ui-lib`, 3 builds each (27 builds). `risky-refunds` was dropped after a pilot because every setup reaches its ceiling. One blind judging pass, with two judges per task, scored all 27.
+
+Every workflow had the same shape: build (one agent, or one per component on ui-lib), then two or three reviewers (one per component on ui-lib), then at most one fix or verify pass. That's 4 to 8 agents. None had a step that reads the repo before building, which is the skill's investigator.
+
+| | Skill | `workflow` | `workflow-haiku` |
+|---|---|---|---|
+| chi-etag (judged) | **8.25** | 6.17 | 4.92 |
+| click-param-spec (judged) | **8.25** | 7.92 | 7.00 |
+| ui-lib (judged) | 7.25 | **7.58** | 5.42 |
+| All three (judged) | **7.92** | 7.22 | 5.78 |
+| Spread (sd per build) | **0.59** | 0.93 | 1.21 |
+| Hidden tests passed | 6/9 | 6/9 | 6/9 |
+| Scripted probes (chi-etag, click) | **33/39** | 26/39 | 24/39 |
+| Cost per build | $1.43 | $2.22 | **$0.54** |
+| Median time per build | 16.6 min | **5.9 min** | 5.5 min |
+
+- On hidden tests the three tie. Each failed chi-etag 3 times out of 3 on one case, and each passed every build of the other two tasks.
+- The judges separated them on things no criterion named. On chi-etag every workflow build dropped `Hijack`, and most also dropped `Unwrap` or `Flush`, so a websocket upgrade behind the middleware returns 500. The skill's builds copied `compress.go`, as their `FEATURE_FLOW.md` told them to. On ui-lib, `workflow-haiku` builds broke when components were composed (nested dialogs, clearing the Combobox, options shrinking while open). On click, the one major defect was a `workflow-haiku` build whose warning stacklevel made the default filters hide it.
+- The best single build was a `workflow` ui-lib build (8.50), and `workflow` led that task. With Opus agents a workflow can match the skill on a greenfield task, but it costs 1.5× as much and it was the weakest setup on the repo-bound chi-etag.
+- `workflow-haiku` is the cheapest setup measured on these tasks, and the worst. Its builds mostly got the happy path right and broke on edges and composition.
+- The two judges agreed closely: 0.24 points apart per build on average.
+- The hidden check and the judges disagree on `Flush`. All three skill builds fail `TestFlushDoesNotBypassTheBuffer`, because they stream once a handler flushes. The judges scored that streaming as correct wrapper behaviour, and the scripted `FlushKeepsBody` probe passes it. The spec says only "buffers the response", so the hidden case may be stricter than the task.
+
 ### Open questions
 
 - Does v5 plus the screenshot reviewer alone (without v9's verify paragraph) keep the product gain and the tests?
 - Does a second run that reads an existing `FEATURE_FLOW.md` do better than the first?
 - Is a pipeline worth it for a page-sized Figma design?
+- Should an ETag middleware stream on `Flush` (what the skill's builds and the judges prefer) or keep buffering (what the hidden check requires)? The answer decides whether `TestFlushDoesNotBypassTheBuffer` stays.
 - Does any gain this size hold at 5+ builds per setup? Most measured effects are within the noise of 3 builds.
 
 ### Raw data
