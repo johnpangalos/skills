@@ -130,6 +130,9 @@ def run_one(out, scenario, arm_name, arm, rep, prompt, dry_run):
     env = {k: v for k, v in os.environ.items() if k not in SCRUB}
     env["CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH"] = str(scenario.get("depth", 3))
     env["FEATURE_FLOW_USAGE_LOG"] = str(run_dir / "usage.jsonl")  # read by the plugin's mod, when loaded
+    # claude -p stops background subagents 10 minutes after the last turn by default, which cut off
+    # slow gatekeepers mid-review. Wait for them; the timeout below still bounds the run.
+    env["CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS"] = "0"
     started = time.time()
     with open(run_dir / "trace.jsonl", "w") as trace, open(run_dir / "stderr.txt", "w") as err:
         try:
@@ -149,6 +152,8 @@ def run_one(out, scenario, arm_name, arm, rep, prompt, dry_run):
         "scenario": scenario["id"], "arm": arm_name, "rep": rep, "command": cmd,
         "wall_s": round(time.time() - started, 1), "workspace": str(workspace),
     }, indent=2))
+    if "Background tasks still running" in (run_dir / "stderr.txt").read_text(errors="replace"):
+        print(f"WARNING {scenario['id']} {arm_name} rep {rep}: background agents were stopped before they finished", flush=True)
     result = grade.grade(run_dir, scenario, arm)
     summary = result["summary"]
     print(f"{scenario['id']:<22} {arm_name:<12} rep {rep}: {summary['passed']}/{summary['total']} checks, ${result['metrics']['cost_usd']}", flush=True)
