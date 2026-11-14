@@ -290,6 +290,8 @@ The `council` variant replaces the gatekeeper with ten Haiku councillors at xhig
 - 10 of 10 yes isn't proof. The one chi-etag build that got a unanimous council still fails the hidden Flush test.
 - About 1 in 5 councillors re-ran a repo-wide lint or test suite despite being told not to.
 
+**With disqualifiers (`council-dq`, one chi-etag build).** Councillors drop an objection that is already ruled on, beyond the request, not reproduced, about wording or style, pre-existing, or needs API misuse, and list what they dropped. The orchestrator passes a `RULED ON:` list to every council and only new evidence reopens a ruling. The build took 2 rounds (7 yes / 3 no, then 10 of 10), 33 minutes and $4.00, against 5 or more rounds and $9 to $11 for the three chi-etag builds without them. Round 1's no-votes were real: a doc comment that overclaimed, and a memory regression the simplifier introduced (the flushed buffer kept until the handler returns). Most drops cited a ruling; some cited misuse or pre-existing behavior. The audit would merge it, and probes and hidden tests match the other arms (5 of 7 probes, and the same hidden Flush failure). One drop counts against it: a handler setting `ETag` under a non-canonical map key was dropped as misuse, though Go allows it and the `NonCanonicalKey` probe fails. One build is a smoke test, not a result.
+
 ### Open questions
 
 - Does v5 plus the screenshot reviewer alone (without v9's verify paragraph) keep the product gain and the tests?
