@@ -317,8 +317,10 @@ def fix_rounds_capped(t, sc, rule):
         return True, "no reviewer spawned (n/a)"
     first = reviews[0]["idx"]
     fixes = [s for s in t.main_spawns if s["role"] in ("implementor", "debugger") and s["idx"] > first]
-    ok = len(fixes) <= 2 and len(reviews) <= 3
-    return ok, f"{len(fixes)} fix spawns after first review, {len(reviews)} reviews"
+    counts = f"{len(fixes)} fix spawns after first review, {len(reviews)} reviews"
+    if sc.get("_uncapped"):
+        return True, f"{counts} (uncapped arm, n/a)"
+    return len(fixes) <= 2 and len(reviews) <= 3, counts
 
 
 def debugger_at_most_once(t, sc, rule):
@@ -472,7 +474,8 @@ def grade(run_dir, scenario, arm):
     loaded = any(re.fullmatch(r"((feature-flow(-lite)?|figma-flow):)?(feature-flow(-lite)?|figma-flow)", name) for name in (t.init or {}).get("skills") or [])
     if bool(arm["skill"]) != loaded:
         checks.append(("setup", "arm loaded the skill as configured", False, f"skill loaded={loaded}, expected {arm['skill']}"))
-    scenario = dict(scenario, _pinned_model=(arm.get("agents") or {}).get("model") or arm.get("roster_model"))
+    scenario = dict(scenario, _pinned_model=(arm.get("agents") or {}).get("model") or arm.get("roster_model"),
+                    _uncapped=arm.get("uncapped", False))
     if not t.result:
         checks.append(("setup", "run reported a result", False, "the trace has no result event, so cost and timing are unknown; re-run it"))
     stats = t.result.get("subagent_stats") or {}
