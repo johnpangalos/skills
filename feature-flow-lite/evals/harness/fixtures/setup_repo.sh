@@ -5,8 +5,11 @@ set -euo pipefail
 url=$1 commit=$2
 name=$(basename "$url" .git)
 cache="${FF_EVALS_CACHE:-$HOME/.cache/ff-evals}/$name"
+mkdir -p "$(dirname "$cache")"
+# parallel runs of the same repo share the cache: hold a lock while it's filled or updated
+exec 9>"$cache.lock"
+flock 9
 if [ ! -d "$cache/.git" ]; then
-  mkdir -p "$(dirname "$cache")"
   git clone -q --depth 50 "$url" "$cache"
 fi
 git -C "$cache" cat-file -e "$commit^{commit}" 2>/dev/null || git -C "$cache" fetch -q --depth 200 origin

@@ -4,8 +4,11 @@
 set -euo pipefail
 commit=fa81d69
 cache="${FF_EVALS_CACHE:-$HOME/.cache/ff-evals}/tailwindcss"
+mkdir -p "$(dirname "$cache")"
+# parallel runs share the cache: hold a lock while it's filled or updated
+exec 9>"$cache.lock"
+flock 9
 if [ ! -d "$cache/.git" ]; then
-  mkdir -p "$(dirname "$cache")"
   git clone -q --depth 50 https://github.com/tailwindlabs/tailwindcss.git "$cache"
 fi
 git -C "$cache" cat-file -e "$commit^{commit}" 2>/dev/null || git -C "$cache" fetch -q --depth 200 origin
