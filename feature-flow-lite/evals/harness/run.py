@@ -111,9 +111,10 @@ def command(scenario, arm, prompt):
         "claude", "-p", prefix + prompt, *plugin,
         "--model", arm["model"], "--effort", arm["effort"],
         "--output-format", "stream-json", "--verbose", "--forward-subagent-text",
-        "--permission-mode", "acceptEdits", "--allowedTools", TOOLS, "--permission-prompts", "none",
+        "--permission-mode", "acceptEdits", "--allowedTools", ",".join([TOOLS, *arm.get("extra_tools", ())]), "--permission-prompts", "none",
         "--max-budget-usd", str(arm.get("budget_usd") or scenario.get("budget_usd", 5)),
-        "--no-session-persistence",
+        # continuing a finished subagent (SendMessage) needs its transcript on disk
+        *(() if arm.get("persist_session") else ("--no-session-persistence",)),
     ]
 
 
