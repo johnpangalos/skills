@@ -24,7 +24,7 @@ for path in sys.argv[1:]:
                     s,cmd=bstart.pop(c['tool_use_id']); main_bash+=ts(e['timestamp'])-s
         if e.get('type')=='system' and e.get('subtype')=='task_notification' and e.get('tool_use_id') in spawns:
             ends[e['tool_use_id']]=ts(e.get('timestamp') or '1970-01-01T00:00:00Z') if e.get('timestamp') else last
-    print('==',path.split('/')[1],path.split('/')[2], f'total {(last-t0)/60:.1f} min, orchestrator foreground bash {main_bash/60:.1f} min')
+    print('==',path.split('/')[-4],path.split('/')[-3], f'total {(last-t0)/60:.1f} min, orchestrator foreground bash {main_bash/60:.1f} min')
     busy=0
     for i in order:
         s,role,d=spawns[i]; en=ends.get(i)
