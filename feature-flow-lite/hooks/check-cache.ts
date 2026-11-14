@@ -18,6 +18,7 @@ export type Token = { kind: 'word' | 'op'; raw: string; value: string; start: nu
 export function tokenize(command: string): Token[] | undefined {
   const tokens: Token[] = []
   let i = 0
+  let depth = 0
   const n = command.length
   while (i < n) {
     const c = command[i]
@@ -53,7 +54,25 @@ export function tokenize(command: string): Token[] | undefined {
         continue
       }
     }
-    if (c === '(' || c === ')' || c === '`') return undefined
+    // A subshell group `( ... )` at a command's start splits commands like `;`
+    // does: each check inside still runs through the wrapper, which reads the
+    // directory at run time, so a `cd` inside the group is seen.
+    if (c === '(') {
+      const prev = tokens[tokens.length - 1]
+      if (prev !== undefined && prev.kind !== 'op') return undefined // `f(`, `=(`: not a group
+      depth++
+      tokens.push({ kind: 'op', raw: c, value: '(', start: i, end: i + 1, dollar: false })
+      i++
+      continue
+    }
+    if (c === ')') {
+      if (depth === 0) return undefined
+      depth--
+      tokens.push({ kind: 'op', raw: c, value: ')', start: i, end: i + 1, dollar: false })
+      i++
+      continue
+    }
+    if (c === '`') return undefined
     // a word, which may mix quoted and unquoted parts
     const start = i
     let value = ''
@@ -104,7 +123,7 @@ export function tokenize(command: string): Token[] | undefined {
     if (raw === '{' || raw === '}') return undefined
     tokens.push({ kind: 'word', raw, value, start, end: i, dollar })
   }
-  return tokens
+  return depth === 0 ? tokens : undefined
 }
 
 const KEYWORDS = new Set(['if', 'then', 'else', 'elif', 'fi', 'for', 'while', 'until', 'do', 'done', 'case', 'esac', 'function', 'select', '[[', ']]', '!'])

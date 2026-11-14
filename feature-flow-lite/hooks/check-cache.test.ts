@@ -92,11 +92,23 @@ test('rewrite: a call that edits or installs before its checks is not cached aft
   expect(planRewrite('git status --short && ls && go test ./... > /dev/null', OPTS)?.wrapped).toHaveLength(1)
 })
 
+test('rewrite: checks inside a subshell group are cached; the group and its redirections stay', () => {
+  const plan = planRewrite('(timeout 900 yarn eslint pkg 2>&1 | tail -30; echo "EXIT=${PIPESTATUS[0]}") ; (cd sub && go vet ./...)', OPTS)
+  expect(plan?.wrapped.map(w => w.key)).toEqual(['yarn eslint pkg', 'go vet ./...'])
+  expect(plan?.command).toBe(
+    `(timeout 900 ${HEAD} 'node' 'yarn eslint pkg' -- yarn eslint pkg 2>&1 | tail -30; echo "EXIT=\${PIPESTATUS[0]}") ; (cd sub && ${HEAD} 'go' 'go vet ./...' -- go vet ./...)`,
+  )
+  // an install inside a group before the check still stops caching
+  expect(planRewrite('(yarn install && yarn jest)', OPTS)).toBeUndefined()
+})
+
 test('rewrite: shapes it does not reason about run untouched', () => {
   for (const command of [
     'go test $(go list ./...)',
+    'go test ./... (x)',
+    '(go test ./...',
+    'go test ./...)',
     'go test `go list ./...`',
-    '(cd pkg && go test ./...)',
     'go test ./... &',
     'cat <<EOF | go test\nx\nEOF',
     'for p in a b; do go test ./$p; done',
