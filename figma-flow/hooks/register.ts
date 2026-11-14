@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { Register } from 'claude-code'
+import type { EngineInterface, Register } from 'claude-code'
 
 import type { Flow } from '../types'
 
@@ -20,7 +20,36 @@ const MEASURE = /\btest:figma\b/
 const COMMIT = /\bgit\s+(commit|push)\b/
 
 const isFigmaTool = (tool: string) => /^mcp__.*figma/i.test(tool) || tool.endsWith('__use_figma')
-const isInside = (path: string) => !path.startsWith('/') && !path.split('/').includes('..')
+// Where a save may go: inside the project, by a relative path or an absolute one. Absolute paths
+// are compared where they really land, so a symbolic link in either (macOS's /tmp is
+// /private/tmp) doesn't matter; the file and its folders may not exist yet, so the nearest one
+// that does is resolved and the rest added back.
+async function isInside($: EngineInterface, path: string) {
+  if (path.split('/').includes('..')) return false
+  if (!path.startsWith('/')) return true
+  const real = async (at: string) => (await $.fs.stat(at, { resolve: true }).catch(() => undefined))?.realPath
+  const cwd = await $.session.cwd()
+  const root = (await real(cwd)) ?? cwd
+  for (let cut = path.length; cut > 0; cut = path.lastIndexOf('/', cut - 1)) {
+    const landed = await real(path.slice(0, cut))
+    if (landed !== undefined) return `${landed}${path.slice(cut)}`.startsWith(`${root}/`)
+  }
+  return false
+}
+
+// Whether the project has a measurement to wait for: a `test:figma` script in the package.json at
+// its root. Without one nothing can pass, so holding a commit would only wait for a release; Figma
+// tools used for anything but a build (reading a file, an eval) shouldn't hold the repository.
+async function hasMeasurement($: EngineInterface) {
+  const text = await $.fs.read(`${await $.session.root()}/package.json`).catch(() => undefined)
+  if (typeof text !== 'string') return false
+  try {
+    const { scripts } = JSON.parse(text) as { scripts?: Record<string, unknown> }
+    return typeof scripts?.['test:figma'] === 'string'
+  } catch {
+    return false
+  }
+}
 
 export const register: Register = on => {
   // Invoking the skill is Figma work, even when the export is already saved and no Figma tool runs.
@@ -58,7 +87,11 @@ export const register: Register = on => {
         now.unmeasured.length === 0
           ? 'Nothing is waiting to be measured.'
           : `Edited since it last passed:\n${now.unmeasured.map(path => `  ${path}`).join('\n')}`,
-        now.isReleased ? 'The hold is released.' : 'Commits are held until `pnpm test:figma` passes.',
+        now.isReleased
+          ? 'The hold is released.'
+          : (await hasMeasurement($))
+            ? 'Commits are held until `pnpm test:figma` passes.'
+            : 'Commits are not held: the project has no `test:figma` script.',
       ].join('\n'),
     }
   })
@@ -72,7 +105,7 @@ export const register: Register = on => {
       const path = typeof input.code === 'string' ? SAVE.exec(input.code)?.[1] : undefined
       const ran = await next(e)
       if (path === undefined || ran.deny !== undefined || ran.isError === true || ran.text === undefined) return ran
-      if (!isInside(path)) {
+      if (!(await isInside($, path))) {
         return { ...ran, context: [...(ran.context ?? []), `figma-flow did not save: ${path} is outside the project.`] }
       }
       await $.fs.write(path, ran.text.endsWith('\n') ? ran.text : `${ran.text}\n`)
@@ -88,7 +121,8 @@ export const register: Register = on => {
 
     if (tool === 'Bash' && typeof input.command === 'string') {
       const now = await read($, flow)
-      if (COMMIT.test(input.command) && now.isActive && !now.isReleased && now.unmeasured.length > 0) {
+      const isHeld = COMMIT.test(input.command) && now.isActive && !now.isReleased && now.unmeasured.length > 0
+      if (isHeld && (await hasMeasurement($))) {
         return {
           deny:
             `figma-flow: ${now.unmeasured.length} file(s) changed since the Figma measurement last passed ` +
