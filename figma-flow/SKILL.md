@@ -39,9 +39,11 @@ They are in this skill's `scripts/` folder, not in the project:
   line.
 - `export-node.ts`: the exact values of one or more nodes, with a hash as its last line. A
   component set gives an entry per variant. A frame that isn't a component (a page, or part of
-  one) gives an entry for every frame and text under it, and one for each instance, which it
-  doesn't open: the design system measures its components. Each entry has the node's `id`, and
-  a repeated key is numbered (`ClaimRow (2)`), so no entry overwrites another.
+  one) gives an entry for every frame and text under it, including under groups, which get no
+  entry of their own. Each library instance gets one entry and isn't opened: the design system
+  measures its components. An instance of a component made in the file is opened, since the app
+  builds it. Each entry has the node's `id`, and a repeated key is numbered (`ClaimRow (2)`), so
+  no entry overwrites another.
 - `export-tokens.ts`: the file's variables, text styles and effect styles.
 - `print.ts`: prints either as plain JavaScript for the Figma MCP's `use_figma`. The scripts
   run inside Figma, so they can't be run in Node directly.

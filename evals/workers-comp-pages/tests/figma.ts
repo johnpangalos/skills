@@ -8,7 +8,8 @@ export type FigmaNode = Region & {
   fill: string | null;
   stroke: string | null;
   strokeWeight: number;
-  radius: number;
+  /** Null when Figma's corners have different radii, which the export can't describe. */
+  radius: number | null;
   rings: [color: string, spread: number][];
   label: {
     x: number;
@@ -120,6 +121,8 @@ export async function expectTextToMatchFigma(element: Locator, figma: FigmaText,
     const channels = (color: string) => [1, 3, 5].map((i) => parseInt(color.slice(i, i + 2), 16));
     const drift = channels(rendered.color).map((c, i) => Math.abs(c - channels(figma.color!)[i]!));
     expect.soft(Math.max(...drift), `text colour is ${rendered.color}, Figma's is ${figma.color}`).toBeLessThanOrEqual(1);
+  } else {
+    test.info().annotations.push({ type: "figma: not measured", description: "text colour: Figma's text colour is mixed or not solid, so it wasn't compared" });
   }
   const { color: _, ...type } = rendered;
   expect.soft(type, "font size, weight and line height").toEqual({
@@ -181,7 +184,10 @@ export async function expectPageToMatchFigma(nodes: Record<string, FigmaPageNode
         y += nodes[parent]!.y;
         parent = nodes[parent]!.parent;
       }
-      if (parent === null) return;
+      if (parent === null) {
+        test.info().annotations.push({ type: "figma: not measured", description: `${key}: position not compared, no ancestor of it is measured` });
+        return;
+      }
       const [box, parentBox] = await Promise.all([element.boundingBox(), elementOf(parent)!.boundingBox()]);
       if (!box || !parentBox) return; // expectToMatchFigma has already failed on a missing box
       expect.soft(Math.abs(box.x - parentBox.x - x), `x in ${parent} is ${box.x - parentBox.x}px, Figma's is ${x}px`).toBeLessThan(1);
@@ -290,7 +296,11 @@ export async function expectToMatchFigma(element: Locator, figma: FigmaNode, { w
   // A radius past half the box is drawn as half the box: rounded-full computes to a huge value
   // where Figma says 9999. Both sides are clamped to the box each is drawn in, which is exact.
   const drawn = (radius: number, { width, height }: Region) => Math.min(radius, Math.min(width, height) / 2);
-  expect.soft(drawn(rendered.radius, box!), "radius").toBe(drawn(figma.radius, figma));
+  if (figma.radius === null) {
+    expect.soft(figma.radius, "Figma's corners have different radii; the export can't describe them").not.toBeNull();
+  } else {
+    expect.soft(drawn(rendered.radius, box!), "radius").toBe(drawn(figma.radius, figma));
+  }
   // Figma can draw a ring another way (the ghost Button uses a rectangle), which this can't read.
   if (figma.rings.length > 0) {
     expect.soft(rendered.rings.map(([, spread]) => spread), "ring widths").toEqual(figma.rings.map(([, spread]) => spread));

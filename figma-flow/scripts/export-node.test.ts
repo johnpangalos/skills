@@ -1,4 +1,4 @@
-// Runs export-node against a fake Figma document: `node --test figma-flow/scripts/`.
+// Runs export-node against a fake Figma document: `node --test "figma-flow/scripts/*.test.ts"`, from the repo root.
 // The script runs inside Figma, so here it gets a stand-in `figma` global with just the nodes
 // and fields it reads.
 import assert from "node:assert/strict";
@@ -141,4 +141,45 @@ test("the last line is a hash of everything above it", async () => {
   let hash = 5381;
   for (let i = 0; i < at; i++) hash = ((hash * 33) ^ out.charCodeAt(i)) >>> 0;
   assert.equal(JSON.parse(out).hash, hash.toString(16));
+});
+
+// A group has no entry of its own; its children take the entry above it as parent.
+const group = (id: string, name: string, children: Fake[], extra: Partial<Fake> = {}): Fake =>
+  ({ id, type: "GROUP", name, visible: true, x: 0, y: 0, children, ...extra });
+
+test("a group is walked through: its text takes the frame as parent", async () => {
+  const page = box("7:1", "FRAME", "Report", { children: [group("7:2", "Row", [text("7:3", "Hello", { x: 12, y: 8 })], { x: 30, y: 50 })] });
+  const nodes = parse(await run([page], "7:1"));
+  assert.deepEqual(Object.keys(nodes), ["Report", "Report > Hello"]);
+  assert.equal(nodes["Report > Hello"]!.parent, "Report");
+  assert.equal(nodes["Report > Hello"]!.type, "TEXT");
+  assert.equal(nodes["Report > Hello"]!.x, 12);
+  assert.equal(nodes["Report > Hello"]!.y, 8);
+});
+
+test("nested groups and frames under groups are walked; a hidden group's subtree is skipped", async () => {
+  const card = box("8:4", "FRAME", "Card", { children: [text("8:5", "Hello", { x: 4 })] });
+  const page = box("8:1", "FRAME", "Report", {
+    children: [
+      group("8:2", "Outer", [group("8:3", "Inner", [card])]),
+      group("8:6", "Hidden", [text("8:7", "Secret")], { visible: false }),
+    ],
+  });
+  const nodes = parse(await run([page], "8:1"));
+  assert.deepEqual(Object.keys(nodes), ["Report", "Report > Card", "Report > Card > Hello"]);
+  assert.equal(nodes["Report > Card"]!.parent, "Report");
+  assert.equal(nodes["Report > Card > Hello"]!.parent, "Report > Card");
+  assert.equal(nodes["Report > Card > Hello"]!.x, 4);
+});
+
+test("a group inside a local instance is walked too", async () => {
+  const row = box("9:2", "INSTANCE", "ClaimRow", {
+    componentProperties: { "title#1:0": { type: "TEXT", value: "WC-2038" } },
+    getMainComponentAsync: async () => ({ name: "ClaimRow", remote: false, parent: { type: "PAGE" } }),
+    children: [group("9:3", "Details", [text("9:4", "Open", { x: 10 })])],
+  });
+  const nodes = parse(await run([box("9:1", "FRAME", "Inbox", { children: [row] })], "9:1"));
+  assert.deepEqual(Object.keys(nodes), ["Inbox", "Inbox > WC-2038", "Inbox > WC-2038 > Open"]);
+  assert.equal(nodes["Inbox > WC-2038 > Open"]!.parent, "Inbox > WC-2038");
+  assert.equal(nodes["Inbox > WC-2038 > Open"]!.x, 10);
 });

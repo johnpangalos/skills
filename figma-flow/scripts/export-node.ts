@@ -11,10 +11,14 @@
 //
 // Pages. An id that is a frame (not a component) is a page, or part of one, built from
 // instances: every frame under it gets an entry, all the way down, and so does every text node,
-// with its type. An instance of a library component gets one entry, its box, and nothing inside
+// with its type. A group gets no entry of its own: its children are walked as children of the
+// entry above it, and Figma reports a group's children's x and y relative to the nearest frame,
+// which is that entry, so they hold. Any other container with children is walked the same way
+// (a section can't sit inside a frame, so a page has none). An instance of a library component gets one entry, its box, and nothing inside
 // it: the component is the design system's to measure. An instance of a component made in this
-// file (`local: true`) is opened like a frame, since the app builds it. Each entry names its `parent` entry, and its x and y are inside
-// that parent. A frame's `label` is null here, because its text has entries of its own.
+// file (`local: true`) is opened like a frame, since the app builds it. Each entry names its
+// `parent` entry, and its x and y are inside that parent. A frame's `label` is null here, because
+// its text has entries of its own.
 //
 // Every entry has the node's `id`. Keys are unique: a repeated key is numbered (`Row`,
 // `Row (2)`), since a JSON object keeps only the last of two equal keys and the first would go
@@ -143,8 +147,9 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
     }
   }
 
-  // Pages: every frame and text node under the root, stopping at instances.
-  async function walk(parent: string, node: Box) {
+  // Pages: every frame and text node under the root, stopping at instances, and walking through
+  // groups and other containers without an entry for them.
+  async function walk(parent: string, node: { children: readonly SceneNode[] }) {
     for (const child of node.children) {
       if (!child.visible) continue;
       if (child.type === "TEXT") {
@@ -164,6 +169,8 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
           entries.push([key, { ...describe(child, false), type: "FRAME", parent }]);
           await walk(key, child);
         }
+      } else if ("children" in child) {
+        await walk(parent, child);
       }
     }
   }

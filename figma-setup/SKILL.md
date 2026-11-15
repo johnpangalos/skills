@@ -75,7 +75,9 @@ disagree, it reports the difference and leaves both alone.
      returned (it ends in a hash).
    - If the component exists in code, add a page that renders every variant where a test can
      find it, and a spec from `templates/tests/example.figma.spec.ts`. The page doesn't have
-     to look like the Figma file.
+     to look like the Figma file. If the export is a page (a frame, not a component), measure it
+     with `expectPageToMatchFigma` from the template's `figma.ts`, with an element or
+     `skip("why")` for every key, not with the component spec.
    - Run `test:figma`. A failure here is a finding about the existing component: report each
      one with Figma's value and the rendered value. The comparisons are soft, so one run
      lists every value that differs. Don't change the component to make it

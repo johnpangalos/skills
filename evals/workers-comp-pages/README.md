@@ -41,6 +41,9 @@ than single components?
   variables for its own layout.
 - Inter has to be 3.19, the version Figma uses.
 
+These were the expectations before round 1. In round 2 the one-level export and the skipped text
+are fixed; the rest are in "Still open" or the results below.
+
 ## Results
 
 ### 1. Designing the pages
