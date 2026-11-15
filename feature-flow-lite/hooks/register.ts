@@ -456,7 +456,7 @@ async function ensureBaseChecks($: EngineInterface, st: ExtrasState): Promise<vo
     const base = (await $.fs.read(`${st.cache.dir}/base`)).trim()
     const tmp = (await $.env.get('TMPDIR')) || '/tmp'
     const tree = `${tmp}/ff-base${st.cache.root.replace(/[^A-Za-z0-9]/g, '_')}`
-    const made = await $.process.run(['bash', '-c', BASE_TREE, 'ff-base', st.cache.root, tree, base], { timeoutMs: 300_000 })
+    const made = await $.process.run(['bash', st.cache.script.replace(/ffcc\.sh$/, 'ffcc-base.sh'), st.cache.root, tree, base], { timeoutMs: 300_000 })
     if (made.exitCode !== 0) {
       $.ui.log(`${$.plugin.name}: no base-commit checks: ${made.stderr.trim().slice(0, 200)}`)
       return
@@ -549,18 +549,6 @@ async function readProjectChecks($: EngineInterface, root: string): Promise<stri
   }
 }
 
-// Makes (or reuses) a worktree of the base commit and links the main tree's
-// ignored paths into it (node_modules, generated files, .venv), so checks run
-// there without an install. $1 root, $2 worktree, $3 base commit.
-const BASE_TREE = `set -e
-root=$1 wt=$2 base=$3
-[ -d "$wt" ] || git -C "$root" worktree add -q --detach "$wt" "$base"
-cd "$root"
-git ls-files --others --ignored --exclude-standard --directory | while IFS= read -r p; do
-  p=\${p%/}
-  case "$p" in .claude|.claude/*|.git|.git/*) continue ;; esac
-  [ -e "$wt/$p" ] || [ -L "$wt/$p" ] || { mkdir -p "$wt/$(dirname "$p")"; ln -s "$root/$p" "$wt/$p"; }
-done`
 
 async function repoRoot($: EngineInterface): Promise<string | undefined> {
   try {
