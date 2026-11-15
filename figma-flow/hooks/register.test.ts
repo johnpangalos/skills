@@ -4,8 +4,17 @@ import { expect, test } from 'claude-code/testing'
 const FIGMA = 'mcp__figma__use_figma'
 const EXPORT = '{\n  "variants": {}\n}'
 
-// The tools beneath the mod: every call succeeds unless its command says "fails".
-function tools(on: On, written: Record<string, string>) {
+const MEASURED = JSON.stringify({ scripts: { 'test:figma': 'playwright test' } })
+
+// The tools beneath the mod: every call succeeds unless its command says "fails". The project at
+// /work has `pkg` as its package.json (by default one with a `test:figma` script), or none (null).
+function tools(on: On, written: Record<string, string>, pkg: string | null = MEASURED) {
+  on('session.root', () => ({ value: '/work' }) as never)
+  on('fs.read', (_$, e) => {
+    if (e.path !== '/work/package.json' || pkg === null) throw new Error(`ENOENT: ${e.path}`)
+
+    return { value: pkg } as never
+  })
   on('tool.call', (_$, e) => {
     const command = String((e as { command?: unknown }).command ?? '')
     if (command.includes('fails')) return { isError: true, result: 'failed', text: 'failed' }
@@ -45,6 +54,23 @@ test('a commit is held after a design edit until the measurement passes', async 
   expect(free.deny).toBe(undefined)
 })
 
+// Figma tools used for something other than a build, in a project with nothing to measure.
+const UNMEASURED = {
+  'no test:figma script': JSON.stringify({ scripts: { test: 'vitest' } }),
+  'no package.json': null,
+  'a package.json that is not JSON': 'not json',
+}
+for (const [name, pkg] of Object.entries(UNMEASURED)) {
+  test(`a commit goes through after Figma work in a project with ${name}`, async ($, on) => {
+    tools(on, {}, pkg)
+    await $.tool.call({ tool: FIGMA, code: 'return 1' })
+    await $.tool.call({ tool: 'Edit', file_path: 'src/button.tsx', old_string: 'a', new_string: 'b' })
+    const ran = await $.tool.call({ tool: 'Bash', command: 'git commit -m "feat: x"' })
+
+    expect(ran.deny).toBe(undefined)
+  })
+}
+
 test('tests and Figma exports do not need measuring', async ($, on) => {
   tools(on, {})
   await $.tool.call({ tool: FIGMA, code: 'return 1' })
@@ -78,6 +104,49 @@ test('a save outside the project is refused and the result still returned', asyn
   expect(Object.keys(written)).toEqual([])
   expect(ran.text).toBe(EXPORT)
   expect(ran.context?.join(' ')).toContain('outside the project')
+})
+
+// A project at /tmp/work, which is really /private/tmp/work, as on macOS. Only the folders
+// listed exist; stat rejects anything else, as for a file not written yet.
+function project(on: On) {
+  const real: Record<string, string> = {
+    '/tmp': '/private/tmp',
+    '/tmp/work': '/private/tmp/work',
+    '/private': '/private',
+    '/private/tmp': '/private/tmp',
+    '/private/tmp/work': '/private/tmp/work',
+  }
+  on('session.cwd', () => ({ value: '/tmp/work' }) as never)
+  on('fs.stat', (_$, e) => {
+    const realPath = real[e.path]
+    if (realPath === undefined) throw new Error(`ENOENT: ${e.path}`)
+
+    return { value: { kind: 'dir', size: 0, mtimeMs: 0, isLink: e.path !== realPath, realPath } } as never
+  })
+}
+
+test('an absolute save inside the project is saved, through a symbolic link', async ($, on) => {
+  const written: Record<string, string> = {}
+  tools(on, written)
+  project(on)
+  const ran = await $.tool.call({
+    tool: FIGMA,
+    code: '// figma-flow:save /private/tmp/work/figma/button.json\nreturn await exportNode("1:91");',
+  })
+
+  expect(Object.keys(written)).toEqual(['/private/tmp/work/figma/button.json'])
+  expect(ran.context?.join(' ')).toContain('saved this result')
+})
+
+test('an absolute save outside the project is refused', async ($, on) => {
+  const written: Record<string, string> = {}
+  tools(on, written)
+  project(on)
+  for (const path of ['/private/tmp/workshop/x.json', '/private/tmp/x.json', '/etc/x.json', '/tmp/work/../x.json']) {
+    const ran = await $.tool.call({ tool: FIGMA, code: `// figma-flow:save ${path}\nreturn 1` })
+    expect(ran.context?.join(' ')).toContain('outside the project')
+  }
+  expect(Object.keys(written)).toEqual([])
 })
 
 test('/figma-flow release lets a commit through', async ($, on) => {

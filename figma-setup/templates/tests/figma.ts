@@ -19,8 +19,17 @@ export type FigmaNode = Region & {
     fontWeight: number;
     lineHeight: number;
   } | null;
-  /** Present when the node lays out two or more children. Padding is top, right, bottom, left. */
-  layout?: { direction: "row" | "column"; gap: number; padding: [number, number, number, number] };
+  /**
+   * Present when the node lays out two or more children. Padding is top, right, bottom, left.
+   * `strokesIncludedInLayout`, recorded for a node with a stroke, says whether the padding starts
+   * inside the stroke (true, as inside a CSS border) or at the node's edge (false or absent).
+   */
+  layout?: {
+    direction: "row" | "column";
+    gap: number;
+    padding: [number, number, number, number];
+    strokesIncludedInLayout?: boolean;
+  };
 };
 
 /**
@@ -83,15 +92,14 @@ export async function expectToMatchFigma(element: Locator, figma: FigmaNode, { w
       .flatMap((match) => (match && Number(match[2]) > 0 && hex(match[1]!) ? [[hex(match[1]!), Number(match[2])]] : []))
       .sort((a, b) => (b[1] as number) - (a[1] as number));
     const px = (value: string) => parseFloat(value) || 0;
+    const sides = ["Top", "Right", "Bottom", "Left"] as const;
     return {
       layout: {
         direction: style.flexDirection.startsWith("column") ? "column" : "row",
         gap: px(style.flexDirection.startsWith("column") ? style.rowGap : style.columnGap),
-        // Figma's padding is measured from the node's edge, so a border counts towards it.
-        padding: (["Top", "Right", "Bottom", "Left"] as const).map(
-          (side) => px(style[`padding${side}`]) + px(style[`border${side}Width`]),
-        ),
+        padding: sides.map((side) => px(style[`padding${side}`])),
       },
+      borders: sides.map((side) => px(style[`border${side}Width`])),
       fill: hex(style.backgroundColor),
       stroke: border > 0 ? hex(style.borderTopColor) : null,
       strokeWeight: border,
@@ -125,7 +133,14 @@ export async function expectToMatchFigma(element: Locator, figma: FigmaNode, { w
     expect.soft(rendered.rings.map(([, spread]) => spread), "ring widths").toEqual(figma.rings.map(([, spread]) => spread));
     figma.rings.forEach(([color], i) => sameColor(rendered.rings[i]![0], color, `ring ${i + 1}`));
   }
-  if (figma.layout) expect.soft(rendered.layout, "direction, gap and padding").toEqual(figma.layout);
+  if (figma.layout) {
+    const { strokesIncludedInLayout, ...layout } = figma.layout;
+    let padding = rendered.layout.padding;
+    // With the stroke out of the layout (Figma's default), Figma's padding is measured from the
+    // node's edge, so the CSS border counts towards it. With it in, both start inside the border.
+    if (!strokesIncludedInLayout) padding = padding.map((side, i) => side + rendered.borders[i]!);
+    expect.soft({ ...rendered.layout, padding }, "direction, gap and padding").toEqual(layout);
+  }
   if (figma.label) {
     const { color, ...label } = figma.label;
     const { color: renderedColor, ...renderedLabel } = rendered.label;

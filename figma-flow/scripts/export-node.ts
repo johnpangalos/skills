@@ -6,8 +6,8 @@
 // One id that is a component set gives one entry per variant, keyed by the variant's name.
 // Several ids (`export-node 18:13 18:14 18:23`) give entries keyed `<node name>/<variant>` for
 // sets and `<node name>` for the rest. A node that lays out two or more children also gets
-// `layout` (direction, gap, padding) and an entry per child, keyed `<parent> > <label or name>`
-// with its position inside the parent.
+// `layout` (direction, gap, padding and, with a stroke, whether the stroke is in the layout) and
+// an entry per child, keyed `<parent> > <label or name>` with its position inside the parent.
 //
 // The last line is a hash of everything above it, which the tests check, so a copy that lost
 // or changed a character fails instead of quietly testing against the wrong numbers.
@@ -67,6 +67,11 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
           direction: node.layoutMode === "VERTICAL" ? "column" : "row",
           gap: node.itemSpacing,
           padding: [node.paddingTop, node.paddingRight, node.paddingBottom, node.paddingLeft],
+          // Where a stroke sits relative to the padding. Off (Figma's default), the stroke is drawn
+          // over the padding, which is measured from the node's edge. On, the stroke takes room of
+          // its own and the padding starts inside it, as padding does inside a CSS border. Only
+          // recorded for a node with a stroke, where it changes where the children start.
+          ...(solid(node.strokes) !== null && { strokesIncludedInLayout: node.strokesIncludedInLayout }),
         },
       }),
     };
