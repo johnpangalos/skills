@@ -429,14 +429,14 @@ export function projectChecks(markdown: string): string[][] {
     section.push(line)
   }
   const out: string[][] = []
-  // a Run it line is how to start the app, and `<module>` or `...` mark a template, not a command
+  // a Run it line is how to start the app, and `<module>`, `<changed files>` or `...` mark a template, not a command
   // text in brackets is detail (what CI runs underneath), not another check to run
   const runnable = section
     .filter(line => !/^\s*[-*]?\s*\**run it\b/i.test(line))
     .map(line => line.replace(/\([^()]*\)/g, ''))
     .join('\n')
   for (const [, code] of runnable.matchAll(/`([^`\n]+)`/g)) {
-    if (/<[^>\s]+>|(?:^|[\s(;,])\.\.\.|…/.test(code ?? '')) continue
+    if (/<[A-Za-z][^<>]*>|(?:^|[\s(;,])\.\.\.|…/.test(code ?? '')) continue
     const tokens = tokenize(code ?? '')
     if (!tokens) continue
     for (const seg of segments(tokens)) {

@@ -262,3 +262,11 @@ test('lowThreadWords: one worker for go test/vet and jest/vitest, other checks u
   expect(lowThreadWords(['yarn', 'check-types'])).toEqual(['yarn', 'check-types'])
   expect(lowThreadWords(['gofmt', '-l', '.'])).toEqual(['gofmt', '-l', '.'])
 })
+
+test('projectChecks: a placeholder with spaces is a template, not a check', () => {
+  expect(
+    projectChecks(
+      '## Checks\n- Full: `yarn jest <changed package test dirs>` (CI runs `yarn test`); `yarn eslint <changed files>`; `yarn check-types`\n- Targeted: `yarn jest packages/@react-aria/<pkg>/test/<file>`\n- Quiet: `go vet ./... 2>/dev/null`\n',
+    ),
+  ).toEqual([['yarn', 'check-types'], ['go', 'vet', './...']])
+})
