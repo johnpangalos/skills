@@ -53,6 +53,7 @@ A summary of every eval run on feature-flow-lite and its Figma offshoots so far 
 | Review panel | Three Opus gatekeepers at once (request, edges, repo), one fix round each, a fresh final gate; plus a mod that runs base checks and checks ahead | Panel alone: 18.8 min on chi-etag and 22.9 min on react-aria, every hidden test passing on both, matching the current skill's time on react-aria. The mod made react-aria 2–3× slower. | Panel promising (1 build per task); mod's check-ahead no |
 | Check queue | Background checks queued for one low-priority, one-thread worker that agents can preempt | On react-aria, same load: panel + queued mod 25.2 min, panel alone 27.9 min; both pass everything and the audit would merge both (against 51–64 min for the unqueued mod). Also fixed two base-check bugs. | Keep (1 build per arm) |
 | Heavy limiter | The queued mod with heavy-limiter (one machine-wide pool of cores and memory), on the final code, the macOS port included | One react-aria build alone: 30.2 min, every outcome check and the probe pass; the audit wanted two new eslint nesting warnings fixed. Base checks, agents' checks and queued checks all ran through the pool; nothing waited. | Works end to end (1 build) |
+| Panel repeats | Do the panel's time and quality hold over more builds? | Quality held: all 4 new builds pass every outcome check, and the audit would merge all 4. Time didn't: chi-etag took 25.4 and 37.0 min against 18.8, because fix rounds vary from 1 to 4. | Panel kept; time is 19–37 min, not 20 |
 
 ### Earlier rounds (1–5)
 
@@ -414,6 +415,31 @@ Arm `lite-review-panel-mod-heavy` is the queued mod with heavy-limiter loaded (`
 - **The base commit's type check passed in 18 s in a full build**, which confirms the hard-link fix from section 16.
 - **The agents' checks and the queued background check all went through the pool.** The pool measured react-spectrum's type check at 6.8–6.9 GB, and from then on weighs it by that instead of its 3 GB default. Agents' cache hits saved 3.1 min.
 - **What this build doesn't show:** whether the pool helps under contention, since nothing competed with it. That needs several sessions at once, such as two builds with heavy-limiter against two without.
+
+### 18. More review-panel builds
+
+Four more builds of the plain panel (`lite-review-panel`, no mod), two at a time, to see whether section 15's single builds were typical. With them, chi-etag has 3 panel builds and react-aria 4 (section 16's build without the mod counts).
+
+| | chi-etag (3 builds) | rac-shadow-hide (4 builds) |
+|---|---|---|
+| Wall time | 18.8, **25.4, 37.0** min | 22.9, 27.9, **24.3, 24.1** min |
+| Cost | $4.85, **$6.05, $8.83** | $5.30, $5.98, **$5.15, $4.88** |
+| Outcome checks | all pass | all pass |
+| Probes | 5/7, **7/7, 5/7** | nested target passes in all 4 |
+| Audit would merge | yes, **yes, yes** (no must-fix) | no, yes, **yes, yes** (no must-fix) |
+
+New builds in bold.
+
+- **Quality held.** Every new build passes every outcome check, and the audit found no must-fix in any of the four. One chi-etag build missed the same two probes as section 15's (a garbage member in `If-None-Match`, a non-canonical `ETag` key).
+- **React-aria's time is stable: 22.9–27.9 min.** Each build had one panel round, one fix round and a final gate. The implementor's first pass (6.6–7.0 min) is the largest step.
+- **Chi-etag's time is not: 18.8–37.0 min.** The panel always finishes by minute 11. After that, the number of fix rounds decides the time:
+  - The 25-min build had three fix rounds before its final gate. Each time it verified a fix, the request gatekeeper found a new difference from `net/http` in the fix itself, such as how `Write` rejects bytes past a declared `Content-Length`.
+  - The 37-min build had three fix rounds before its final gate, and a fourth after it. The verifiers found regressions in the fixes: a failed `Hijack` sent the body twice, and late trailers were lost. In round 3 the orchestrator replaced the header-clone design with a simpler one. Then the fresh final gate found two more issues: a false 304 for HEAD behind `Compress`, and `Last-Modified` dropped from a 304.
+  - Both are real bugs, and the build that took longest caught the most of them. The cost is time that can't be predicted.
+- **The check cache barely matters on Go.** Agents' hits saved 0.5–2.9 min per chi-etag build and 0.2–1.3 min per react-aria build. The checks are fast, and the panel's checks mostly ran on trees no earlier run had seen.
+- **Process checks still flag the same things.** Handoffs to the criteria-checker, simplifier and gatekeepers lack the `GOAL:` line, no stages are announced before the first spawn, and the orchestrator edits its own `criteria.md` in the scratchpad. The last is by design (criteria are the orchestrator's), so the check should allow scratchpad files. None of these affected the outcome.
+
+What to take from it: expect 20–30 min on a typical task, longer when the change wraps something with many edge cases (`http.ResponseWriter`), because each fix round on such code tends to uncover the next edge case. A cap on fix rounds before the final gate (two, say, then let the final gate decide) would bound the time, at the risk of shipping something the third round would have caught.
 
 ### Open questions
 
