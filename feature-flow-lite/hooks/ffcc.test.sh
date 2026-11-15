@@ -195,5 +195,43 @@ else
 fi
 git worktree remove --force "$wt" 2>/dev/null
 
+# --- with heavy-limiter: a queued check waits in the machine's pool, whichever mod rewrote first
+heavy=$here/../../heavy-limiter/hooks/heavy.pl
+if [ -f "$heavy" ] && command -v perl >/dev/null 2>&1; then
+  pool=$work/pool && mkdir -p "$pool/p" "$pool/notes"
+  lim() { printf '%s\n' perl "$heavy" --dir "$pool" --kind test --key "$1" --cores 1 --mem 64 --notes "$pool/notes/agent"; }
+  # the command a check runs: says whether it held a pool slot and ran as background work
+  probe() { printf '%s\n' sh -c "echo \"slot=\${CLAUDE_HEAVY_SLOT:-} bg=\${FF_CACHE_BG:-}\" >>'$1'"; }
+  # cache first: the agent's call is `ffcc.sh -- perl heavy.pl ... -- <check>`, and the
+  # mod queued the plain check
+  out=$work/h1.out
+  IFS=$'\n' read -r -d '' -a a < <(lim h1; echo --; probe "$out"; printf '\0')
+  run h1 "${a[@]}" >/dev/null
+  check "limited: the agent's run held a slot" 'grep -q "slot=1 bg=$" "$out"' "got: $(cat "$out")"
+  check "limited: its command line is kept, without the notes file" '[ -f "$cache/limited/$(printf %s h1 | (. "$here/ffcc-portable.sh"; ff_sha) | cut -c1-24)" ] && ! tr "\0" "\n" <"$cache/limited/"* | grep -q -- --notes'
+  printf 'h1 tree\n' >h1.txt
+  IFS=$'\n' read -r -d '' -a p < <(probe "$out"; printf '\0')
+  enqueue 1 "$repo" node h1 mod -- "${p[@]}"
+  until_true '[ "$(count "$out")" = 2 ]' 20
+  check "cache first: the queued run went through the pool, as background work" '[ "$(sed -n 2p "$out")" = "slot=1 bg=1" ]' "got: $(cat "$out")"
+  # limiter first: the queued job already carries the agent's wrapper and notes file
+  out=$work/h2.out
+  rm -f "$pool/notes/agent"
+  IFS=$'\n' read -r -d '' -a a < <(lim h2; echo --; probe "$out"; printf '\0')
+  enqueue 1 "$repo" node h2 mod -- "${a[@]}"
+  until_true '[ "$(count "$out")" = 1 ]' 20
+  check "limiter first: the queued run went through the pool, as background work" '[ "$(cat "$out")" = "slot=1 bg=1" ]' "got: $(cat "$out")"
+  check "limiter first: the agent's notes file is left alone" '[ ! -e "$pool/notes/agent" ]'
+  # without the limiter's record, a queued check runs as before
+  out=$work/h3.out
+  IFS=$'\n' read -r -d '' -a p < <(probe "$out"; printf '\0')
+  enqueue 1 "$repo" node h3 mod -- "${p[@]}"
+  until_true '[ "$(count "$out")" = 1 ]' 20
+  check "no record: the queued run runs directly" '[ "$(cat "$out")" = "slot= bg=1" ]' "got: $(cat "$out")"
+  rm -f h1.txt
+else
+  echo "# heavy-limiter not found next to feature-flow-lite: its tests skipped"
+fi
+
 echo "# $passed passed, $failed failed"
 [ "$failed" = 0 ]

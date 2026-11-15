@@ -54,6 +54,24 @@ run_job() {
   local w
   while IFS= read -r -d '' w; do words+=("$w"); done < <(tail -n +6 "$f")
   [ -d "$cwd" ] && [ ${#words[@]} -gt 0 ] || return 0
+  # Through heavy-limiter's pool when an agent's run of this check went through it
+  # (ffcc.sh keeps that command line): heavy.pl weighs it and, seeing FF_CACHE_BG,
+  # queues it behind agents' commands. A job that already carries the wrapper (the
+  # limiter rewrote the agent's call before this cache) only loses the notes file.
+  local lk limited=()
+  lk=$(printf '%s' "$key" | ff_sha | cut -c1-24)
+  if [ "${words[0]}" = perl ] && [ "${words[1]##*/}" = heavy.pl ]; then
+    local skip=0
+    for w in "${words[@]}"; do
+      if [ $skip = 1 ]; then skip=0; continue; fi
+      [ "$w" = --notes ] && { skip=1; continue; }
+      limited+=("$w")
+    done
+    words=("${limited[@]}")
+  elif [ -f "$cache/limited/$lk" ]; then
+    while IFS= read -r -d '' w; do limited+=("$w"); done <"$cache/limited/$lk"
+    [ -f "${limited[1]:-}" ] && words=("${limited[@]}")
+  fi
   local base=
   [ "$origin" = mod-base ] && base=1
   (cd "$cwd" && FF_CACHE_ORIGIN=$origin FF_CACHE_BG=1 FF_CACHE_BASE=$base CARGO_BUILD_JOBS=1 \

@@ -60,6 +60,19 @@ k=$(printf '%s\n' "$key" "$rel" "$tree" "$tools" | ff_sha | cut -c1-24)
 bk=$(printf '%s\n' "$key" "$rel" "$tools" | ff_sha | cut -c1-24)
 entry=$cache/entries/$k
 mkdir -p "$cache/entries" "$cache/locks" "$cache/base-results"
+# With heavy-limiter's wrapper inside this one (perl .../heavy.pl <weights> -- <check>),
+# keep the agent's limited command line for this check, without its notes file: a
+# queued run of the check reuses it (ffcc-queue.sh), so it waits in the machine's
+# pool, as low-priority work, whichever mod rewrote the call first.
+if [ "${FF_CACHE_BG:-}" != 1 ] && [ "${1:-}" = perl ] && [ "${2##*/}" = heavy.pl ]; then
+  mkdir -p "$cache/limited"
+  lk=$(printf '%s' "$key" | ff_sha | cut -c1-24)
+  { skip=0; for w in "$@"; do
+      if [ $skip = 1 ]; then skip=0; continue; fi
+      [ "$w" = --notes ] && { skip=1; continue; }
+      printf '%s\0' "$w"
+    done; } >"$cache/limited/$lk.tmp" && mv "$cache/limited/$lk.tmp" "$cache/limited/$lk"
+fi
 [ "$notes" = - ] || mkdir -p "$(dirname "$notes")"
 since() { awk -v a="$1" -v b="$(ff_now)" 'BEGIN { printf "%.1f", b - a }'; }
 note() { [ "$notes" = - ] || printf '%s\n' "$1" >>"$notes"; }

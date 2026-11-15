@@ -41,7 +41,9 @@ which starts it once the pool has room:
 It never wraps servers, watch modes or interactive runs: `cargo run`,
 `vitest` without `run`, `--watch`, Playwright's `--ui`, `next dev`. With
 feature-flow-lite's check cache on, the limiter goes inside the cache's
-wrapper, so a replayed pass takes no slot.
+wrapper, so a replayed pass takes no slot. feature-flow-lite's queued background checks reuse
+the limited command line of the agent's last run of the same check, so they also
+wait in the pool, as low-priority work, whichever mod rewrote the call first.
 
 ## Settings
 
