@@ -3,11 +3,21 @@
 // with the Figma MCP (`node scripts/print.ts export-node 1:91` prints the code for `use_figma`)
 // and save the result exactly as returned.
 //
-// One id that is a component set gives one entry per variant, keyed by the variant's name.
-// Several ids (`export-node 18:13 18:14 18:23`) give entries keyed `<node name>/<variant>` for
-// sets and `<node name>` for the rest. A node that lays out two or more children also gets
+// Components. One id that is a component set gives one entry per variant, keyed by the variant's
+// name. Several ids (`export-node 18:13 18:14 18:23`) give entries keyed `<node name>/<variant>`
+// for sets and `<node name>` for the rest. A node that lays out two or more children also gets
 // `layout` (direction, gap, padding and, with a stroke, whether the stroke is in the layout) and
 // an entry per child, keyed `<parent> > <label or name>` with its position inside the parent.
+//
+// Pages. An id that is a frame (not a component) is a page, or part of one, built from
+// instances: every frame under it gets an entry, all the way down, and so does every text node,
+// with its type. An instance gets one entry, its box, and nothing inside it: the component is
+// the design system's to measure. Each entry names its `parent` entry, and its x and y are inside
+// that parent. A frame's `label` is null here, because its text has entries of its own.
+//
+// Every entry has the node's `id`. Keys are unique: a repeated key is numbered (`Row`,
+// `Row (2)`), since a JSON object keeps only the last of two equal keys and the first would go
+// unmeasured.
 //
 // The last line is a hash of everything above it, which the tests check, so a copy that lost
 // or changed a character fails instead of quietly testing against the wrong numbers.
@@ -22,6 +32,10 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
   };
   // Figma reports `figma.mixed` (a symbol) when a value differs within the node.
   const single = <T>(value: T | typeof figma.mixed) => (typeof value === "symbol" ? null : (value as T));
+  const pixels = (lineHeight: LineHeight | typeof figma.mixed) => {
+    const value = single(lineHeight);
+    return value?.unit === "PIXELS" ? value.value : null;
+  };
 
   type Box = FrameNode | ComponentNode | InstanceNode;
   const isBox = (node: BaseNode): node is Box =>
@@ -31,12 +45,26 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
     node.layoutMode === "NONE"
       ? []
       : node.children.filter((child) => child.visible && !("layoutPositioning" in child && child.layoutPositioning === "ABSOLUTE"));
+  const firstText = (node: Box) => node.children.find((child): child is TextNode => child.type === "TEXT" && child.visible);
+  // A long text makes a long key; its first 40 characters are enough to find it.
+  const short = (text: string) => (text.length > 40 ? text.slice(0, 39) + "…" : text);
+  // What a box on a page is called in a key. A frame: its layer name ("Header"). An instance: its
+  // text property named label or title ("Date of injury" for a TextField, whose first text child
+  // is its description), else its own text ("Save draft"), else its first text property, else
+  // its name. Properties come in no set order, so the named ones go first.
+  const labelOf = (node: Box) => {
+    if (node.type !== "INSTANCE") return node.name;
+    const texts = Object.entries(node.componentProperties).filter(([, p]) => p.type === "TEXT");
+    const named = texts.find(([name]) => /^(label|title)$/i.test(name.split("#")[0]!));
+    const text = named?.[1].value ?? firstText(node)?.characters ?? texts[0]?.[1].value;
+    return typeof text === "string" ? short(text) : node.name;
+  };
 
-  function describe(node: Box) {
-    const label = node.children.find((child): child is TextNode => child.type === "TEXT" && child.visible);
-    const lineHeight = label ? single(label.lineHeight) : null;
+  function describe(node: Box, withLabel: boolean) {
+    const label = withLabel ? firstText(node) : undefined;
     const laidOut = flow(node);
     return {
+      id: node.id,
       x: node.x,
       y: node.y,
       width: node.width,
@@ -59,7 +87,7 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
             color: solid(label.fills),
             fontSize: single(label.fontSize),
             fontWeight: single(label.fontWeight),
-            lineHeight: lineHeight?.unit === "PIXELS" ? lineHeight.value : null,
+            lineHeight: pixels(label.lineHeight),
           }
         : null,
       ...(laidOut.length >= 2 && {
@@ -77,15 +105,61 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
     };
   }
 
-  const entries: [string, ReturnType<typeof describe>][] = [];
+  // A text node on a page: where it sits, its size, and its type. `wraps` is true when its width
+  // is set (the text wraps to it) rather than hugging the text.
+  const describeText = (node: TextNode) => ({
+    id: node.id,
+    type: "TEXT",
+    x: node.x,
+    y: node.y,
+    width: node.width,
+    height: node.height,
+    color: solid(node.fills),
+    fontSize: single(node.fontSize),
+    fontWeight: single(node.fontWeight),
+    lineHeight: pixels(node.lineHeight),
+    wraps: node.textAutoResize !== "WIDTH_AND_HEIGHT",
+  });
+
+  const entries: [string, object][] = [];
+  const keys = new Set<string>();
+  const unique = (key: string) => {
+    let candidate = key;
+    for (let n = 2; keys.has(candidate); n++) candidate = `${key} (${n})`;
+    keys.add(candidate);
+    return candidate;
+  };
+
+  // Components: the node, and its laid-out children one level down.
   function add(key: string, node: Box, isRoot = false) {
-    entries.push([key, isRoot ? { ...describe(node), x: 0, y: 0 } : describe(node)]);
+    const own = unique(key);
+    entries.push([own, isRoot ? { ...describe(node, true), x: 0, y: 0 } : describe(node, true)]);
     const laidOut = flow(node);
     if (laidOut.length < 2) return;
     for (const child of laidOut) {
       if (!isBox(child)) continue;
-      const text = child.children.find((c): c is TextNode => c.type === "TEXT" && c.visible);
-      entries.push([`${key} > ${text?.characters ?? child.name}`, describe(child)]);
+      entries.push([unique(`${own} > ${firstText(child)?.characters ?? child.name}`), describe(child, true)]);
+    }
+  }
+
+  // Pages: every frame and text node under the root, stopping at instances.
+  async function walk(parent: string, node: Box) {
+    for (const child of node.children) {
+      if (!child.visible) continue;
+      if (child.type === "TEXT") {
+        entries.push([unique(`${parent} > ${short(child.characters)}`), { ...describeText(child), parent }]);
+      } else if (isBox(child)) {
+        const key = unique(`${parent} > ${labelOf(child)}`);
+        if (child.type === "INSTANCE") {
+          const main = await child.getMainComponentAsync();
+          const component = main?.parent?.type === "COMPONENT_SET" ? main.parent.name : (main?.name ?? null);
+          const variant = main?.parent?.type === "COMPONENT_SET" ? main.name : null;
+          entries.push([key, { ...describe(child, true), type: "INSTANCE", component, variant, parent }]);
+        } else {
+          entries.push([key, { ...describe(child, false), type: "FRAME", parent }]);
+          await walk(key, child);
+        }
+      }
     }
   }
 
@@ -94,6 +168,10 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
     const prefix = nodeIds.length > 1 && node ? `${node.name}/` : "";
     if (node?.type === "COMPONENT_SET") {
       for (const variant of node.children) if (isBox(variant)) add(prefix + variant.name, variant);
+    } else if (node?.type === "FRAME") {
+      const key = unique(node.name);
+      entries.push([key, { ...describe(node, false), x: 0, y: 0, type: "FRAME", parent: null }]);
+      await walk(key, node);
     } else if (node && isBox(node)) {
       add(node.name, node, true);
     } else {

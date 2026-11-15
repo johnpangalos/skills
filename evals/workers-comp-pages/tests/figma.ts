@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { expect, type Locator } from "@playwright/test";
+import { expect, test, type Locator } from "@playwright/test";
 
 export type Region = { x: number; y: number; width: number; height: number };
 
@@ -45,7 +45,144 @@ export function loadFigmaNodes(url: URL): Record<string, FigmaNode> {
   if (hash.toString(16) !== expected) {
     throw new Error(`${url.pathname} doesn't match its hash: export it from Figma again`);
   }
+  // JSON keeps only the last of two equal keys, so a repeated key would leave a node unmeasured
+  // without a word. Exports from the current export-node number repeats; older ones may not.
+  const written = [...body.matchAll(/^ {4}("(?:[^"\\]|\\.)*"):/gm)].map((match) => JSON.parse(match[1]!) as string);
+  const repeated = written.filter((key, i) => written.indexOf(key) !== i);
+  if (repeated.length > 0) {
+    throw new Error(`${url.pathname} repeats ${[...new Set(repeated)].join(", ")}: export it again with the current figma-flow`);
+  }
   return variants;
+}
+
+/** A text node on a page, as export-node describes it. */
+export type FigmaText = Region & {
+  id: string;
+  type: "TEXT";
+  parent: string;
+  color: string | null;
+  fontSize: number;
+  fontWeight: number;
+  lineHeight: number | null;
+  /** True when the text wraps to a set width; false when its box hugs the text. */
+  wraps: boolean;
+};
+
+/** A frame or an instance on a page, as export-node describes it. */
+export type FigmaPageBox = FigmaNode & {
+  id: string;
+  type: "FRAME" | "INSTANCE";
+  parent: string | null;
+  component?: string | null;
+  variant?: string | null;
+};
+
+export type FigmaPageNode = FigmaPageBox | FigmaText;
+
+/** Reads the export of a page: a frame exported with export-node, every frame and text under it. */
+export function loadFigmaPage(url: URL): Record<string, FigmaPageNode> {
+  const nodes = loadFigmaNodes(url) as unknown as Record<string, FigmaPageNode>;
+  const notPage = Object.keys(nodes).filter((key) => !("parent" in nodes[key]!));
+  if (notPage.length > 0) throw new Error(`${url.pathname} is not a page export (no parent on ${notPage[0]})`);
+  return nodes;
+}
+
+/**
+ * Compares a text element with its Figma text node: its size, colour and type. The element is
+ * the one that holds the text itself (a heading, a paragraph, a span), not a box around it.
+ *
+ * Text that hugs its content may be under a pixel off in width, as with expectToMatchFigma; for
+ * it to hug at all, its parent has to stop it stretching (`align-items: flex-start` in a column,
+ * Figma's default). Pass `width: false` where the rendered text differs from Figma's.
+ */
+export async function expectTextToMatchFigma(element: Locator, figma: FigmaText, { width = true } = {}) {
+  const box = await element.boundingBox();
+  expect(box, "text is not rendered").not.toBeNull();
+  for (const side of width ? (["width", "height"] as const) : (["height"] as const)) {
+    expect.soft(Math.abs(box![side] - figma[side]), `${side} is ${box![side]}px, Figma's is ${figma[side]}px`).toBeLessThan(1);
+  }
+  const rendered = await element.evaluate((el) => {
+    const context = document.createElement("canvas").getContext("2d", { willReadFrequently: true })!;
+    context.fillStyle = getComputedStyle(el).color;
+    context.fillRect(0, 0, 1, 1);
+    const [r, g, b] = context.getImageData(0, 0, 1, 1).data;
+    const style = getComputedStyle(el);
+    return {
+      color: "#" + [r!, g!, b!].map((c) => c.toString(16).padStart(2, "0")).join(""),
+      fontSize: parseFloat(style.fontSize),
+      fontWeight: Number(style.fontWeight),
+      lineHeight: parseFloat(style.lineHeight),
+    };
+  });
+  if (figma.color !== null) {
+    const channels = (color: string) => [1, 3, 5].map((i) => parseInt(color.slice(i, i + 2), 16));
+    const drift = channels(rendered.color).map((c, i) => Math.abs(c - channels(figma.color!)[i]!));
+    expect.soft(Math.max(...drift), `text colour is ${rendered.color}, Figma's is ${figma.color}`).toBeLessThanOrEqual(1);
+  }
+  const { color: _, ...type } = rendered;
+  expect.soft(type, "font size, weight and line height").toEqual({
+    fontSize: figma.fontSize,
+    fontWeight: figma.fontWeight,
+    lineHeight: figma.lineHeight ?? type.lineHeight,
+  });
+}
+
+/** Leaves an entry of a page export unmeasured, with the reason; the report lists it. */
+export const skip = (reason: string) => ({ skip: reason });
+
+type Located = Locator | { skip: string } | { element: Locator; width?: false; position?: false };
+
+/**
+ * Measures a whole page export. `locate` maps every key of the export to its element, or to
+ * `skip("why")`; a key missing from it fails the test, so nothing goes unmeasured by accident.
+ *
+ * Each frame and instance is compared with expectToMatchFigma, each text with
+ * expectTextToMatchFigma, and each one's position with its parent's: the offset of its box from
+ * its parent's box against Figma's x and y, under a pixel, as sizes are. A parent that is
+ * skipped passes the offset on to its own parent. Pass `{ element, position: false }` where an
+ * offset can't be compared, such as after several text-hugging siblings in a row, whose
+ * fractions of a pixel add up.
+ */
+export async function expectPageToMatchFigma(nodes: Record<string, FigmaPageNode>, locate: Record<string, Located>) {
+  const missing = Object.keys(nodes).filter((key) => !(key in locate));
+  const extra = Object.keys(locate).filter((key) => !(key in nodes));
+  expect(missing, "entries of the export with no element and no skip()").toEqual([]);
+  expect(extra, "keys that aren't in the export").toEqual([]);
+
+  const elementOf = (key: string) => {
+    const where = locate[key]!;
+    if ("skip" in where) return null;
+    if ("element" in where) return where.element;
+    return where;
+  };
+  for (const [key, node] of Object.entries(nodes)) {
+    const where = locate[key]!;
+    if ("skip" in where) {
+      test.info().annotations.push({ type: "figma: not measured", description: `${key}: ${where.skip}` });
+      continue;
+    }
+    const element = elementOf(key)!;
+    const options: { width?: false; position?: false } = "element" in where ? where : {};
+    await test.step(key, async () => {
+      if (node.type === "TEXT") await expectTextToMatchFigma(element, node, { width: options.width ?? true });
+      else await expectToMatchFigma(element, node, { width: options.width ?? true });
+      if (node.parent === null || options.position === false) return;
+      // The nearest measured ancestor, and this node's offset from it in Figma.
+      let parent: string | null = node.parent;
+      let x = node.x;
+      let y = node.y;
+      while (parent !== null && elementOf(parent) === null) {
+        x += nodes[parent]!.x;
+        y += nodes[parent]!.y;
+        parent = nodes[parent]!.parent;
+      }
+      if (parent === null) return;
+      const [box, parentBox] = await Promise.all([element.boundingBox(), elementOf(parent)!.boundingBox()]);
+      if (!box || !parentBox) return; // expectToMatchFigma has already failed on a missing box
+      expect.soft(Math.abs(box.x - parentBox.x - x), `x in ${parent} is ${box.x - parentBox.x}px, Figma's is ${x}px`).toBeLessThan(1);
+      expect.soft(Math.abs(box.y - parentBox.y - y), `y in ${parent} is ${box.y - parentBox.y}px, Figma's is ${y}px`).toBeLessThan(1);
+    });
+  }
 }
 
 /**

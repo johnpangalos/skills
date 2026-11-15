@@ -35,8 +35,9 @@ Rules:
    The page doesn't have to look like the Figma file; it has to show every variant, with each
    state reachable the way a person reaches it.
 4. **Measure it.** Add a spec in `<TESTS DIR>` that calls `expectToMatchFigma` for each entry
-   in the export (copy `<an existing spec>`), then run `<TEST COMMAND>` and fix the code until
-   it passes. Never loosen the comparison, delete a case, or edit an export by hand.
+   in the export (copy `<an existing spec>`); for a page export, `expectPageToMatchFigma` with an
+   element for every key. Then run `<TEST COMMAND>` and fix the code until it passes. Never
+   loosen the comparison, delete a case, or edit an export by hand.
 
 What the measurement can't read here: <e.g. shadows with blur, a ring drawn as a separate
 shape, positions across text-hugging siblings; or "nothing known yet">.

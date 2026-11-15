@@ -67,10 +67,9 @@ Rules:
    `http://localhost:5174/<name>`. The page doesn't have to look like the Figma file; it has to
    show every variant, with each state reachable the way a person reaches it.
 4. **Measure it.** Add `tests/<name>.figma.spec.ts` that calls `expectToMatchFigma` for each entry
-   in the export (copy `tests/example.figma.spec.ts` once it exists), then run `pnpm test:figma`
-   and fix the code until it passes. Never loosen the comparison, delete a case, or edit an
-   export by hand.
+   in the export (copy `tests/example.figma.spec.ts` once it exists); for a page export,
+   `expectPageToMatchFigma` with an element for every key. Then run `pnpm test:figma` and fix
+   the code until it passes. Never loosen the comparison, delete a case, or edit an export by
+   hand.
 
-What the measurement can't read here: the export covers a node and its direct children only (a
-page nests deeper, so the page frame alone exports as one entry), and skips text children, so
-headings and paragraphs go unmeasured; shadows with blur; a ring drawn as a separate shape.
+What the measurement can't read here: shadows with blur; a ring drawn as a separate shape.

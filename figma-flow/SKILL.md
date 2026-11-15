@@ -37,7 +37,11 @@ They are in this skill's `scripts/` folder, not in the project:
 - `lint-node.ts`: what code would have to guess at in those same nodes (values not bound to a
   variable or style, text not linked to its property, detached frames), with a hash as its last
   line.
-- `export-node.ts`: the exact values of one or more nodes, with a hash as its last line.
+- `export-node.ts`: the exact values of one or more nodes, with a hash as its last line. A
+  component set gives an entry per variant. A frame that isn't a component (a page, or part of
+  one) gives an entry for every frame and text under it, and one for each instance, which it
+  doesn't open: the design system measures its components. Each entry has the node's `id`, and
+  a repeated key is numbered (`ClaimRow (2)`), so no entry overwrites another.
 - `export-tokens.ts`: the file's variables, text styles and effect styles.
 - `print.ts`: prints either as plain JavaScript for the Figma MCP's `use_figma`. The scripts
   run inside Figma, so they can't be run in Node directly.
@@ -90,7 +94,10 @@ with `node <this skill's folder>/scripts/print.ts hash <file>`.
    components and theme utilities only. Render the result on a page the measurement can open.
    The page doesn't have to look like the Figma file: it has to show every variant, with each
    state reachable the way a person reaches it.
-6. **Measure.** Add a spec that calls `expectToMatchFigma` for each entry in the export, then
+6. **Measure.** Add a spec that calls `expectToMatchFigma` for each entry in the export (for a
+   page, `expectPageToMatchFigma` with an element for every key, which also checks text and
+   each element's position in its parent, and fails on a key with no element; `skip("why")` is
+   for an entry that can't be measured, and the report lists it), then
    run the project's measurement and its other checks. Fix the code until they pass. Never
    loosen the comparison, delete a case, or edit an export to make it pass.
 7. **Look**, once the measurement passes. Take a screenshot of the Figma node and one of the
