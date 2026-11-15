@@ -181,7 +181,13 @@ did after:
   instance). The export now opens local components; Claims inbox's export predates that, so its
   rows' text and Badges are still unmeasured until it is exported again.
 
-Final state: `test:figma` 6 of 7 pass, the failure being the ghost Button above. Relaxations left,
+Final state: `test:figma` 6 of 7 pass, the failure being the ghost Button above.
+
+**Update, `@workers-comp/ui@0.1.1`:** workers_comp#46 gave each component's outermost element a
+scoped `preflight` class that resets the browser's defaults for it and everything inside it
+(native checkboxes, radios and selects excepted), with a lint rule and a Playwright project that
+measures the playground without Tailwind's preflight. With 0.1.1 installed here, and no CSS of
+the app's covering the ghost Button, `test:figma` passes 7 of 7. Relaxations left,
 all in Claims inbox and all text rounding across a row of text-hugging siblings, the documented
 case: the filter row's width, the last Chip's x, the TabList's width.
 
