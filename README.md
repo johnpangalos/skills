@@ -4,7 +4,7 @@ Agent skills by [@johnpangalos](https://github.com/johnpangalos).
 
 | Skill | What it does |
 |---|---|
-| [feature-flow-lite](feature-flow-lite/SKILL.md) | Runs a feature or fix through a capped subagent pipeline: Opus writes the acceptance criteria and orchestrates four Haiku roles (investigator, implementor, simplifier, reviewer). |
+| [feature-flow-lite](feature-flow-lite/SKILL.md) | Runs a feature or fix through a subagent pipeline: Opus writes the acceptance criteria and orchestrates four Haiku roles (investigator, implementor, simplifier, reviewer), and a fresh Opus gatekeeper decides when the change is mergeable. |
 | [figma-flow](figma-flow/SKILL.md) | Turns a Figma frame into React that matches it: export Figma's exact values with the scripts it carries, build with the project's own components and tokens, measure the result against those values, then have a fresh agent compare screenshots. |
 | [figma-setup](figma-setup/SKILL.md) | Sets a React repo up, once, to build from Figma and check the result against Figma's exact values: export scripts, a measuring test, the mapping rules in CLAUDE.md and one worked example. After it, "build X from Figma" works with figma-flow, or with no skill once the values are exported. |
 
@@ -25,7 +25,7 @@ A plugin install loads each skill's subagents, hooks and mod with no workspace t
 npx skills add johnpangalos/skills@feature-flow-lite -g
 ```
 
-feature-flow-lite ships four named subagents (`feature-flow-lite:implementor` and so on) with their model, effort and tools pinned. They load when the skill is installed at user level (`-g`, into `~/.claude/skills/`), where its `.claude-plugin/plugin.json` makes it a skills-directory plugin. A project-level install loads them only after you accept Claude Code's workspace trust prompt. Without the agents, the skill falls back to general-purpose subagents.
+feature-flow-lite ships five named subagents (`feature-flow-lite:implementor` and so on) with their model, effort and tools pinned. They load when the skill is installed at user level (`-g`, into `~/.claude/skills/`), where its `.claude-plugin/plugin.json` makes it a skills-directory plugin. A project-level install loads them only after you accept Claude Code's workspace trust prompt. Without the agents, the skill falls back to general-purpose subagents.
 
 feature-flow-lite keeps what's true of one repo (check commands, conventions, standing criteria, the reviewer's checklist) in that repo's `FEATURE_FLOW.md`. The first run writes it from [`templates/project-criteria.md`](feature-flow-lite/templates/project-criteria.md); edit and commit it like a CLAUDE.md.
 

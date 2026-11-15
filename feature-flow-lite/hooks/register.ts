@@ -2,14 +2,14 @@ import type { EngineInterface, Register } from 'claude-code'
 
 // feature-flow-lite's mod. Silent until the skill is invoked (a skill.prompt
 // for feature-flow-lite); after that it keeps the ACCEPTANCE CRITERIA block in
-// implementor and reviewer handoffs, flags implementor runs that changed no
+// implementor, reviewer and gatekeeper handoffs, flags implementor runs that changed no
 // test file, and records per-role tokens and time for /ff-usage. Every hook
 // passes the event through unless its condition holds, and none of them can
 // deny a spawn or a tool call.
 
-type Role = 'investigator' | 'implementor' | 'simplifier' | 'reviewer'
+type Role = 'investigator' | 'implementor' | 'simplifier' | 'reviewer' | 'gatekeeper'
 
-const ROLES: readonly Role[] = ['investigator', 'implementor', 'simplifier', 'reviewer']
+const ROLES: readonly Role[] = ['investigator', 'implementor', 'simplifier', 'reviewer', 'gatekeeper']
 const ROLE_ORDER = ['orchestrator', ...ROLES, 'other']
 const AGENT_PREFIX = 'feature-flow-lite:'
 
@@ -46,7 +46,7 @@ function roleOf(subagentType: string | undefined, prompt: string | undefined): R
 
 // The handoff headers that can follow the criteria. A criterion that merely
 // starts in capitals ("UI: ...") is not one.
-const HANDOFF_HEADER = /^(?:GOAL|FILES|CONSTRAINTS|HOSTILE INPUTS|CHECKS|PROJECT CHECKLIST|FOCUS|STATUS|SUMMARY|FILES TOUCHED|FINDINGS|OPEN QUESTIONS):/
+const HANDOFF_HEADER = /^(?:GOAL|FILES|CONSTRAINTS|HOSTILE INPUTS|CHECKS|PROJECT CHECKLIST|REQUEST|BASE|FOCUS|STATUS|SUMMARY|FILES TOUCHED|FINDINGS|OPEN QUESTIONS):/
 
 // The ACCEPTANCE CRITERIA block: from its header line through the line before
 // the next handoff header (CHECKS:, HOSTILE INPUTS:, ...), or the end.
@@ -148,7 +148,7 @@ export const register: Register = on => {
     const role = roleOf(e.subagentType, e.prompt)
     let prompt = e.prompt
 
-    if (role === 'implementor' || role === 'reviewer') {
+    if (role === 'implementor' || role === 'reviewer' || role === 'gatekeeper') {
       const block = criteriaBlock(prompt)
       if (block !== undefined) {
         savedCriteria = block

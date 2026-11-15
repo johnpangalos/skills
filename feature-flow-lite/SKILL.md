@@ -1,14 +1,18 @@
 ---
 name: feature-flow-lite
-description: Use when implementing a feature, building a small project, or tracking down and fixing a bug across files, with a four-role subagent pipeline (investigator, implementor, simplifier, reviewer) and a capped fix loop. The main Opus conversation orchestrates; Haiku subagents do the work.
+description: Use when implementing a feature, building a small project, or tracking down and fixing a bug across files, with a subagent pipeline (investigator, implementor, simplifier, reviewer) and an independent merge gate that decides when the change is done. The main Opus conversation orchestrates; Haiku subagents do the work.
 ---
 
 # Feature Flow Lite
 
-Four named agents and one loop. The main conversation (Opus) writes the acceptance criteria,
-hands the work to Haiku, runs the checks itself, and stops after two fix rounds. In
-blind-judged benchmarks on features and bug fixes in real repos, this scored above plain Opus
-at about the same cost, and took about two and a half times as long. Every role runs on every
+Five named agents and two loops. The main conversation (Opus) writes the acceptance criteria,
+hands the work to Haiku and runs the checks itself. It never decides on its own that the work is
+done: a fresh gatekeeper, a maintainer who didn't build it, decides whether the change is
+mergeable, and the work goes back until it says yes. The gate is what the run costs most: in
+the evals (`evals/README.md`, section 12) an Opus gatekeeper at xhigh took a build from about
+$1.30 to about $3.10 and two to three times as long, and it was the only setup that caught a
+react-aria shadow DOM bug the Haiku reviewer and an Opus gatekeeper at medium approved every
+time. Every role runs on every
 task in an existing codebase: left to judgment, the investigator and simplifier were skipped in
 every benchmarked run, and running them costs a few cents. The acceptance criteria and the
 reviewer's checklist matter more than the subagents' model.
@@ -27,11 +31,12 @@ prompt with `ROLE: <role>`, and end it with the result template.
 | `implementor` | haiku / medium | Read, Edit, Write, Bash, Grep, Glob | Every run: builds the change, running targeted tests as it goes and the full checks once at the end. |
 | `simplifier` | haiku / medium | Read, Edit, Write, Bash, Grep, Glob | Every task, after the checks pass. Makes the change simpler without changing behavior: splits or inlines helpers it gave a flag or mode parameter, rewrites over-engineered parts the plainer way, removes dead code. |
 | `reviewer` | haiku / medium | Read, Grep, Glob, Bash | Every run, after the checks pass. Red team: writes and runs probes to break the change. |
+| `gatekeeper` | opus / xhigh | Read, Grep, Glob, Bash | Every run, last, and again after every fix it asks for. A maintainer who didn't build the change decides whether it is mergeable. |
 
 No agent can spawn another; the main conversation spawns all of them.
 
 The plugin also ships a mod in `hooks/` that starts once this skill is invoked. It puts the
-latest `ACCEPTANCE CRITERIA:` block back into any implementor or reviewer handoff that drops it,
+latest `ACCEPTANCE CRITERIA:` block back into any implementor, reviewer or gatekeeper handoff that drops it,
 adds a note to the result when an implementor run leaves no changed test file in the repo, and
 records per-role tokens and time, which `/ff-usage` prints. It never blocks a spawn or a tool call.
 
@@ -102,13 +107,29 @@ right section and name it in the report. Never remove a line the user wrote.
    (the project file's Run it line) and its Reviewer checklist as `PROJECT CHECKLIST:`.
 7. **Fix loop.** Blocking findings go back to the implementor, then checks, then an
    incremental review of only the changed hunks plus the reviewer's earlier findings. Stop
-   after two rounds and report what passed, what still fails, and the open findings. Style
-   nits are reported, not looped on.
-8. **Final read.** Before reporting, read the whole diff yourself against the sibling and the
-   hostile inputs, as a maintainer reviewing it would. Anything they'd send back (a missing
-   capability, a wrong edge case, a docs sentence the code doesn't back, an edit to an
-   unrelated line) goes back to the implementor if a fix round is left; otherwise report it.
-9. **Report** the outcome and which agents ran.
+   after two rounds and move on to the gate, carrying any open findings. Style nits are
+   reported, not looped on.
+8. **Merge gate.** Note the base commit before the implementor first runs (`git rev-parse
+   HEAD`). Spawn a **fresh** gatekeeper with the user's request word for word under
+   `REQUEST:`, the base commit, the acceptance criteria, the full CHECKS and the project file's
+   Run it line. It decides whether the change is mergeable; you don't. If it says no, send its
+   must-fixes to the implementor (with any open reviewer findings), run the full checks, and
+   spawn a **new** gatekeeper on the whole diff. There is no round cap: the work is done only
+   when the latest gatekeeper, run on the final diff, says `MERGEABLE: yes`.
+   - **Overruling.** If a must-fix is wrong (it contradicts the request, or the gatekeeper
+     misread the code), you may overrule it, but only by showing why (quote the request or
+     run the command that disproves it) and listing it under "Overruled" in the report.
+     Re-run the gate if anything else changed.
+   - **Thrashing.** If a fix breaks the checks, or a must-fix comes back after it was fixed,
+     revert that round's edits and send the implementor a narrower handoff instead of stacking
+     fixes.
+   - **Only the user can decide.** If a must-fix needs the user (the request contradicts itself,
+     or the fix needs a file that's off-limits), stop and report the change as not mergeable,
+     with the question.
+9. **Report.** The first line is `Mergeable: yes` (the latest gatekeeper said so on the final
+   diff) or `Not mergeable:` and why. Then what changed, which agents ran, how many gate rounds
+   it took, the gatekeeper's DECISIONS, anything overruled, and every open nit. Never call the
+   work done, finished or ready while anything you know of is open; list it instead.
 
 ## Handoff
 
@@ -120,9 +141,11 @@ ACCEPTANCE CRITERIA:
 - <the list from step 1, word for word>
 CHECKS: <targeted test command while working; full test and lint commands for the end>
 PROJECT CHECKLIST: <reviewer only: the project file's Reviewer checklist, word for word>
+REQUEST: <gatekeeper only: the user's request, word for word>
+BASE: <gatekeeper only: the commit the change is diffed against>
 ```
 
-Every implementor and reviewer handoff carries the `ACCEPTANCE CRITERIA:` block unchanged. The
+Every implementor, reviewer and gatekeeper handoff carries the `ACCEPTANCE CRITERIA:` block unchanged. The
 agents already return this result format, so don't restate it:
 
 ```

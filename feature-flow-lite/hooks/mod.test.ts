@@ -4,6 +4,7 @@ import type { On } from 'claude-code'
 const BLOCK = ['ACCEPTANCE CRITERIA:', '- Adds the flag.', '- Rejects an empty name.'].join('\n')
 const IMPLEMENTOR = 'feature-flow-lite:implementor'
 const REVIEWER = 'feature-flow-lite:reviewer'
+const GATEKEEPER = 'feature-flow-lite:gatekeeper'
 const AGENT_CALL = { tool: 'Agent', description: 'Build', prompt: 'GOAL: x' } as const
 
 type GitStub = { exitCode: number; stdout: string } | 'reject'
@@ -140,6 +141,15 @@ test('handoff: a reviewer\'s PROJECT CHECKLIST ends the saved block', async ($, 
   await $.agent.spawn({ prompt: 'GOAL: b', subagentType: IMPLEMENTOR })
 
   expect(w.spawned[1]).toBe(`GOAL: b\n\n${BLOCK}`)
+})
+
+test('handoff: a gatekeeper missing the block gets it, and its REQUEST and BASE end a saved block', async ($, on) => {
+  const w = world(on)
+  await $.skill.prompt({ skill: 'feature-flow-lite', text: '' })
+  await $.agent.spawn({ prompt: `GOAL: a\n${BLOCK}\nREQUEST: add the flag\nBASE: abc1234`, subagentType: GATEKEEPER })
+  await $.agent.spawn({ prompt: 'GOAL: b\nREQUEST: add the flag\nBASE: abc1234', subagentType: GATEKEEPER })
+
+  expect(w.spawned[1]).toBe(`GOAL: b\nREQUEST: add the flag\nBASE: abc1234\n\n${BLOCK}`)
 })
 
 test('handoff: a prompt with the header is left alone, even when its block differs', async ($, on) => {
