@@ -80,11 +80,16 @@ my $mine = "$pdir/$id";
 sysopen(my $me, "$pdir/.$id", O_RDWR | O_CREAT) or run_now();
 flock($me, LOCK_EX) or run_now();
 rename("$pdir/.$id", $mine) or run_now();
-my $arrival = time;
+my $joined = time;
+# Stored as written, so every participant orders the waiters the same way; ties
+# (commands started together) go by id, which is unique. CLAUDE_HEAVY_TEST_ARRIVAL
+# forces a tie in the tests.
+my $arrival = $ENV{CLAUDE_HEAVY_TEST_ARRIVAL} // sprintf('%.6f', $joined);
 my %self = (
   state => 'wait', prio => $low ? 1 : 0, arrival => $arrival, want => $want, min => $min, mem => $mem,
   kind => $o{kind}, key => $o{key}, cwd => cwd_short(), pid => $$, est => $last_secs // '', started => '', alloc => 0,
 );
+$self{id} = $id;
 my $done = 0;
 sub leave { return if $done++; unlink $mine; close $me }
 for my $sig (qw(INT TERM HUP)) { $SIG{$sig} = sub { leave(); exit 128 + ($sig eq 'INT' ? 2 : $sig eq 'HUP' ? 1 : 15) } }
@@ -107,7 +112,7 @@ while (1) {
   }
   sleep 0.5;
 }
-my $waited = time - $arrival;
+my $waited = time - $joined;
 
 # --- run it
 $ENV{CLAUDE_HEAVY_SLOT} = 1;
@@ -190,7 +195,7 @@ sub others {
 sub try {
   my @all = others();
   my @running = grep { $_->{state} eq 'run' } @all;
-  my @waiting = sort { $a->{prio} <=> $b->{prio} || $a->{arrival} <=> $b->{arrival} } (grep({ $_->{state} eq 'wait' } @all), \%self);
+  my @waiting = sort { $a->{prio} <=> $b->{prio} || $a->{arrival} <=> $b->{arrival} || $a->{id} cmp $b->{id} } (grep({ $_->{state} eq 'wait' } @all), \%self);
   my ($free_c, $free_m) = ($bcores, $bmem);
   for (@running) { $free_c -= $_->{alloc}; $free_m -= $_->{mem} }
   my $busy = @running > 0;

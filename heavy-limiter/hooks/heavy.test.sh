@@ -41,6 +41,24 @@ wait
 check "budget of one: the second starts after the first ends" 'after "$(started b)" "$(ended a)"' "a ended $(ended a), b started $(started b)"
 check "budget of one: the waiter says what it waits on" 'grep -q "waiting for a slot: 1 ahead (test in " "$work/b.err"' "stderr: $(cat "$work/b.err")"
 
+# --- two waiters that joined at the same instant: one starts, then the other (no deadlock)
+eval "heavy 1 1000 1 100 -- $(span t0 1)" &
+until_true '[ -f "$work/t0" ]' 10
+eval "CLAUDE_HEAVY_TEST_ARRIVAL=5.000000 heavy 1 1000 1 100 -- $(span t1 0.3)" 2>/dev/null &
+t1=$!
+eval "CLAUDE_HEAVY_TEST_ARRIVAL=5.000000 heavy 1 1000 1 100 -- $(span t2 0.3)" 2>/dev/null &
+t2=$!
+if until_true '[ -n "$(ended t1)" ] && [ -n "$(ended t2)" ]' 15; then
+  ok "a tie in arrival: both waiters run"
+  check "a tie in arrival: one after the other" 'after "$(started t2)" "$(ended t1)" || after "$(started t1)" "$(ended t2)"'
+else
+  bad "a tie in arrival: both waiters run" "deadlocked: t1 $(cat "$work/t1" 2>/dev/null | tr '\n' ' '), t2 $(cat "$work/t2" 2>/dev/null | tr '\n' ' ')"
+  # the stuck waiters' pids are in their pool files
+  for f in "$pool"/p/*; do [ -f "$f" ] && kill "$(cut -f10 "$f")" 2>/dev/null; done
+  kill $t1 $t2 2>/dev/null
+fi
+wait
+
 # --- room for both: they run together
 eval "heavy 4 1000 1 100 -- $(span c 1)" &
 until_true '[ -f "$work/c" ]' 10
