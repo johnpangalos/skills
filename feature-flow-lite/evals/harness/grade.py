@@ -56,7 +56,7 @@ ROSTER = {
     "migration": {"sonnet"},
     "looker": {"opus"},  # figma-flow's fresh pair of eyes: weaker models miss subtle differences
     "council": {"haiku"},  # the council variant's ten councillors
-    "gate": {"opus", "fable"},  # the merge-gate variant's gatekeeper decides whether the change is mergeable
+    "gate": {"opus", "fable", "sonnet", "haiku"},  # haiku and sonnet: the panel-model arms  # the merge-gate variant's gatekeeper decides whether the change is mergeable
     "criteria_check": {"opus"},  # the review-gate variant's check of the criteria before the implementor runs
     "other": {"haiku", "sonnet"},
 }
