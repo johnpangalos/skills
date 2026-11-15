@@ -187,7 +187,12 @@ Final state: `test:figma` 6 of 7 pass, the failure being the ghost Button above.
 scoped `preflight` class that resets the browser's defaults for it and everything inside it
 (native checkboxes, radios and selects excepted), with a lint rule and a Playwright project that
 measures the playground without Tailwind's preflight. With 0.1.1 installed here, and no CSS of
-the app's covering the ghost Button, `test:figma` passes 7 of 7. Relaxations left,
+the app's covering the ghost Button, `test:figma` passes 7 of 7.
+
+**Update, Claims inbox exported again** with the current export-node: 33 entries, up from 17. Each
+ClaimRow (a component made in the pages file, so the app builds it) is opened: its Info column,
+both lines of text and its Badge. All 33 are measured and pass; with the title's weight broken on
+purpose, all four titles fail on it. Relaxations left,
 all in Claims inbox and all text rounding across a row of text-hugging siblings, the documented
 case: the filter row's width, the last Chip's x, the TabList's width.
 

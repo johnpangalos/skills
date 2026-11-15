@@ -18,9 +18,13 @@ test("Claims inbox matches Figma", async ({ page }) => {
   const header = `${content} > Header`;
   const filterKey = `${content} > Filters`;
   const claimsKey = `${content} > Claims`;
+  const claims = [
+    ["WC-2041 · Lower back strain", "Reported 12 Nov 2026 · Warehouse", "In review"],
+    ["WC-2038 · Wrist sprain", "Reported 3 Nov 2026 · Loading dock", "Approved"],
+    ["WC-2033 · Knee contusion", "Reported 28 Oct 2026 · Yard", "Needs info"],
+    ["WC-2027 · Shoulder strain", "Reported 19 Oct 2026 · Warehouse", "Denied"],
+  ];
 
-  // The Chip's radius is `calc(infinity * 1px)`, which Chromium reports as 33554400px; Figma's export says 9999.
-  // Both draw a pill, but expectToMatchFigma compares the number exactly, and the Chip is the design system's.
   await expectPageToMatchFigma(figma, {
     [root]: page.getByTestId("page"),
     [content]: page.getByTestId("content"),
@@ -40,10 +44,20 @@ test("Claims inbox matches Figma", async ({ page }) => {
     [`${filterKey} > Knee`]: page.getByRole("link", { name: "Knee", exact: true }),
     [`${filterKey} > Archived`]: { element: page.getByRole("link", { name: "Archived", exact: true }), position: false },
     [claimsKey]: page.getByTestId("claims"),
-    [`${claimsKey} > WC-2041 · Lower back strain`]: rows.nth(0),
-    [`${claimsKey} > WC-2038 · Wrist sprain`]: rows.nth(1),
-    [`${claimsKey} > WC-2033 · Knee contusion`]: rows.nth(2),
-    [`${claimsKey} > WC-2027 · Shoulder strain`]: rows.nth(3),
+    // Each ClaimRow, which the app builds, with what's inside it: its Info column, both lines of
+    // text and its Badge.
+    ...Object.fromEntries(
+      claims.flatMap(([title, meta, status], i) => {
+        const key = `${claimsKey} > ${title}`;
+        const row = rows.nth(i);
+        return [
+          [key, row],
+          [`${key} > Info`, row.locator(".claim-row-info")],
+          [`${key} > Info > ${title}`, row.getByText(title, { exact: true })],
+          [`${key} > Info > ${meta}`, row.getByText(meta, { exact: true })],
+          [`${key} > ${status}`, row.getByText(status, { exact: true })],
+        ];
+      }),
+    ),
   });
-
 });
