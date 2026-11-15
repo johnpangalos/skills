@@ -29,7 +29,8 @@ def ledger(workspace):
     for line in path.read_text().splitlines():
         f = line.split("\t")
         if len(f) >= 7:
-            rows.append({"event": f[1], "key": f[2], "seconds": float(f[5] or 0), "waited": float(f[6] or 0)})
+            rows.append({"event": f[1], "key": f[2], "seconds": float(f[5] or 0), "waited": float(f[6] or 0),
+                         "origin": f[7] if len(f) > 7 else ""})
     return rows
 
 
@@ -52,7 +53,8 @@ def main(batches):
             gates = len(t.of_role("gate"))
             crit = criteria_flags(t)
             rows = ledger(meta["workspace"])
-            hits = [r for r in rows or [] if r["event"] == "hit"]
+            # A hit by the mod's own check-ahead run saved nobody time: count agents' hits only.
+            hits = [r for r in rows or [] if r["event"] == "hit" and not r["origin"].startswith("mod")]
             misses = [r for r in rows or [] if r["event"] != "hit"]
             saved = sum(r["seconds"] for r in hits)
             waited = sum(r["waited"] for r in rows or [])
