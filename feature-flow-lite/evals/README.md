@@ -52,6 +52,7 @@ A summary of every eval run on feature-flow-lite and its Figma offshoots so far 
 | Review gate | One Opus agent reviews and decides, criteria checked before building, a check cache | The criteria check fixed chi-etag's Flush criterion in 1 of 2 builds (the first hidden Flush pass). Not faster: 2 to 6 gate rounds, about 35 min. The cache saved 0.5 to 1.2 min. | Not yet (2 builds) |
 | Review panel | Three Opus gatekeepers at once (request, edges, repo), one fix round each, a fresh final gate; plus a mod that runs base checks and checks ahead | Panel alone: 18.8 min on chi-etag and 22.9 min on react-aria, every hidden test passing on both, matching the current skill's time on react-aria. The mod made react-aria 2–3× slower. | Panel promising (1 build per task); mod's check-ahead no |
 | Check queue | Background checks queued for one low-priority, one-thread worker that agents can preempt | On react-aria, same load: panel + queued mod 25.2 min, panel alone 27.9 min; both pass everything and the audit would merge both (against 51–64 min for the unqueued mod). Also fixed two base-check bugs. | Keep (1 build per arm) |
+| Heavy limiter | The queued mod with heavy-limiter (one machine-wide pool of cores and memory), on the final code, the macOS port included | One react-aria build alone: 30.2 min, every outcome check and the probe pass; the audit wanted two new eslint nesting warnings fixed. Base checks, agents' checks and queued checks all ran through the pool; nothing waited. | Works end to end (1 build) |
 
 ### Earlier rounds (1–5)
 
@@ -400,6 +401,19 @@ Two builds at once on react-aria, one with the queued mod and one without:
 Two bugs found along the way:
 - **Placeholders with spaces in the project file ran as checks.** `yarn jest <changed package test dirs>` was read as a command, with its `<` as a redirect, so the mod ran jest over much of the repo on the base commit. A placeholder is now any `<…>` that starts with a letter.
 - **The base commit's type check failed falsely in a monorepo.** The base worktree symlinked the main tree's ignored paths. TypeScript followed the real paths of `node_modules` and of generated files (the icon type definitions) back into the main tree, and saw the edited packages there as a second copy. That false base failure would make a new type error look pre-existing. The base worktree now hard-links its ignored paths (`hooks/ffcc-base.sh`): no disk cost, workspace links resolve inside the worktree, and files tools rewrite in place (`*.tsbuildinfo`, lint caches) are left out. React-spectrum's base `check-types` now passes in 18 s.
+
+### 17. With heavy-limiter, on the final code
+
+`heavy-limiter` (its own plugin, built on macOS on the `claude/machine-limiter` branch) is one machine-wide pool of cores and memory. Every Claude session on the machine shares it, and each heavy command waits for room in it. The cache scripts were ported to macOS at the same time (`hooks/ffcc-portable.sh`), and `hooks/ffcc.test.sh` tests them. On Linux, the 38 shell tests pass with the Linux tools, and again with `flock`, `setsid`, `timeout` and `sha256sum` hidden, so that the macOS stand-ins run.
+
+One gap between the two mods was fixed before the run. When the cache rewrote an agent's call first, the queue ran its jobs as plain checks, outside the pool, so a 6 GB background type check went uncounted. Now `ffcc.sh` keeps the limited command line of each check that went through `heavy.pl`, minus the agent's notes file. A queued job runs through it, and `heavy.pl` sees `FF_CACHE_BG` and queues it behind agents' commands. Shell tests cover both rewrite orders with the real `heavy.pl`.
+
+Arm `lite-review-panel-mod-heavy` is the queued mod with heavy-limiter loaded (`also`). One react-aria build ran alone:
+- **30.2 min and $7.18.** Every outcome check and the nested-target probe pass. The audit would not merge it: the change adds two eslint `max-depth` warnings in `ariaHideOutside.ts`, a finding about the build's code.
+- **The time went to the review loop, not the infrastructure.** The fix round took 4.6 min and the final gate 4.5 min. The orchestrator spent 0.7 min in foreground Bash, and nothing waited for a slot. The earlier builds took 25.2 and 27.9 min, within the spread between builds of one arm.
+- **The base commit's type check passed in 18 s in a full build**, which confirms the hard-link fix from section 16.
+- **The agents' checks and the queued background check all went through the pool.** The pool measured react-spectrum's type check at 6.8–6.9 GB, and from then on weighs it by that instead of its 3 GB default. Agents' cache hits saved 3.1 min.
+- **What this build doesn't show:** whether the pool helps under contention, since nothing competed with it. That needs several sessions at once, such as two builds with heavy-limiter against two without.
 
 ### Open questions
 
