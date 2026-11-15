@@ -7,6 +7,7 @@ Agent skills by [@johnpangalos](https://github.com/johnpangalos).
 | [feature-flow-lite](feature-flow-lite/SKILL.md) | Runs a feature or fix through a capped subagent pipeline: Opus writes the acceptance criteria and orchestrates four Haiku roles (investigator, implementor, simplifier, reviewer). |
 | [figma-flow](figma-flow/SKILL.md) | Turns a Figma frame into React that matches it: export Figma's exact values with the scripts it carries, build with the project's own components and tokens, measure the result against those values, then have a fresh agent compare screenshots. |
 | [figma-setup](figma-setup/SKILL.md) | Sets a React repo up, once, to build from Figma and check the result against Figma's exact values: export scripts, a measuring test, the mapping rules in CLAUDE.md and one worked example. After it, "build X from Figma" works with figma-flow, or with no skill once the values are exported. |
+| [heavy-limiter](heavy-limiter/README.md) | A mod that makes parallel sessions on one machine take turns with heavy commands (cargo, go test, Playwright, jest, vitest, tsc, builds): one pool of cores and memory shared by every session, with fewer workers per command when it's contended. |
 
 ## Install
 
@@ -17,6 +18,7 @@ As Claude Code plugins, from this repo's marketplace:
 /plugin install feature-flow-lite@johnpangalos-skills
 /plugin install figma-flow@johnpangalos-skills
 /plugin install figma-setup@johnpangalos-skills
+/plugin install heavy-limiter@johnpangalos-skills
 ```
 
 A plugin install loads each skill's subagents, hooks and mod with no workspace trust prompt. Or install the skills directly:

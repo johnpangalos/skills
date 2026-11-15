@@ -25,6 +25,14 @@ test('keys: flags that do not change the result are dropped, ones that do are ke
   expect(keyOf('cargo clippy --all-targets')).toBe('cargo clippy --all-targets')
 })
 
+test("heavy-limiter's wrapper: the check is the command inside, and the cache goes around the wrapper", () => {
+  const limited = `perl /h/hooks/heavy.pl --dir /tmp/claude-heavy-501 --kind 'cargo test' --key 'cargo test' --cores 9 -- cargo test`
+  expect(keyOf(limited)).toBe('cargo test')
+  const plan = planRewrite(`cd x && ${limited}`, OPTS)
+  expect(plan?.command).toBe(`cd x && ${HEAD} 'rust' 'cargo test' -- ${limited}`)
+  expect(keyOf('perl /h/hooks/heavy.pl --dir /tmp/p cargo test')).toBe(undefined)
+})
+
 test('keys: commands that write, watch or are not checks are never cached', () => {
   for (const command of [
     'gofmt -w .',

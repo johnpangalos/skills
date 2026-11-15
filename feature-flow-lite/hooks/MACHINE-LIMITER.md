@@ -3,6 +3,43 @@
 Branch `claude/machine-limiter`, started from `claude/review-gate-cache`. This
 file is the brief for continuing on a Mac. Delete it once the work lands.
 
+## Status
+
+Steps 1 to 3 of "Order of work" are done on this branch. Step 4, trying it on
+real workloads, is still open.
+
+- **The port.** `ffcc-portable.sh` picks each tool at startup, and
+  `ffcc.test.sh` covers the cases below. It passes 32 of 32 on macOS (bash 3.2,
+  stock `PATH`); it hasn't been run on Linux since the port. The missing-tool
+  guard is gone. Two macOS bugs it found are fixed: `rel` is taken from the
+  real path, since `$TMPDIR` is a symlink there; and `taskpolicy` is used only
+  where it works, since the sandbox refuses setpriority.
+- **The limiter** is the `heavy-limiter` plugin. `hooks/heavy.pl` holds the
+  pool, `hooks/heavy.ts` decides which commands are heavy, and
+  `hooks/register.ts` is the mod. Tests: `claude plugin test heavy-limiter`
+  and `bash heavy-limiter/hooks/heavy.test.sh`. Where it differs from the
+  design below:
+  - Liveness is a `flock` each participant holds on its own pool file, not a
+    pid and start time. macOS's sandbox hides other commands' processes and
+    refuses `ps`, so pids can't be checked from there. A lock can't be reused
+    the way a pid can.
+  - The pool is `/tmp/claude-heavy-<uid>`, not `~/Library/Caches`, because
+    sandboxed commands can't write the latter.
+  - The mod passes the budget in, because the sandbox refuses `sysctl`.
+  - Peak memory is sampled with `ps` over the command's process tree.
+    `/usr/bin/time -l` fails in the sandbox, and in any case it only gives the
+    largest single process. Inside the sandbox nothing is sampled, so weights
+    come from unsandboxed runs or the defaults.
+  - `cargo run` isn't wrapped: it is often a server, which would hold its slot
+    for as long as it runs.
+  - Speculative work only goes behind agents' commands; it isn't preempted
+    machine-wide. Whether feature-flow-lite's queued checks go through the
+    limiter at all depends on hook order: they do when the limiter's rewrite
+    ran first, since the queued words then include its wrapper.
+  - feature-flow-lite's `checkOf` reads through the limiter's wrapper, so in
+    either hook order the cache wraps the limiter and a replayed pass takes no
+    slot.
+
 ## Why
 
 Running several Claude Code sessions in parallel on one machine slows them all

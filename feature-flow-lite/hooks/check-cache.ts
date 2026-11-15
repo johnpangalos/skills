@@ -319,7 +319,16 @@ export function checkOf(segment: Segment, projectChecks: readonly string[][] = [
     while (words[i]?.value.startsWith('-')) i++
     i++ // the duration
   }
-  const rest = words.slice(i)
+  // heavy-limiter's wrapper (`perl <...>/heavy.pl <options> -- <command>`): the
+  // check is the command after it, and the cache wraps the limiter, so a replayed
+  // pass takes no slot
+  let from = i
+  if (words[i]?.value === 'perl' && basename(words[i + 1]?.value ?? '') === 'heavy.pl') {
+    const dash = words.findIndex((t, k) => k > i + 1 && t.value === '--')
+    if (dash < 0) return undefined
+    from = dash + 1
+  }
+  const rest = words.slice(from)
   if (rest.length === 0 || rest.some(t => t.dollar)) return undefined
   const values = rest.map(t => t.value)
   const head = values[0] ?? ''
