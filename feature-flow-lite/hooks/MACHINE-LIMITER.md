@@ -5,6 +5,13 @@ file is the brief for continuing on a Mac. Delete it once the work lands.
 
 ## Status
 
+**Update (feature-flow-lite 0.3.0):** the mod's extras were removed, and with them
+`ffcc-queue.sh`, `ffcc-base.sh` and the queue's paths in `ffcc.sh` (background
+runs, preemption, the limited command line). They showed no gain in the evals
+(`evals/README.md`, sections 15 and 16). The check cache itself and its
+heavy-limiter integration for agents' own checks remain. Read the queue and
+base-worktree parts below as history.
+
 Steps 1 to 3 of "Order of work" are done on this branch. Step 4, trying it on
 real workloads, is still open.
 

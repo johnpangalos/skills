@@ -441,6 +441,18 @@ New builds in bold.
 
 What to take from it: expect 20–30 min on a typical task, longer when the change wraps something with many edge cases (`http.ResponseWriter`), because each fix round on such code tends to uncover the next edge case. A cap on fix rounds before the final gate (two, say, then let the final gate decide) would bound the time, at the risk of shipping something the third round would have caught.
 
+### 19. Shipped in 0.3.0, without the extras
+
+feature-flow-lite 0.3.0 ships the review panel (section 15) as the skill's flow, with the check cache opt-in (`FEATURE_FLOW_CHECK_CACHE=1`). The mod's extras (`FEATURE_FLOW_EXTRAS=1`) were removed:
+- checks run ahead of the orchestrator, queued for a low-priority worker;
+- base-commit checks in a worktree;
+- the request and earlier must-fixes appended to gatekeeper handoffs;
+- the `FOCUS: panel` fan-out;
+- denying the orchestrator's edits to repo files;
+- probe-file cleanup.
+
+None showed a gain. Run eagerly they made react-aria 2–3× slower (section 15), and queued they only broke even (section 16). The handoff additions duplicated what the orchestrator already does: in 37 gatekeeper spawns before them, every handoff had the request word for word and the base commit. The `lite-review-panel-mod*` arms still set `FEATURE_FLOW_EXTRAS=1`; on 0.3.0 that does nothing, so rerunning them needs the code at `d8ea7b6` or earlier.
+
 ### Open questions
 
 - Does v5 plus the screenshot reviewer alone (without v9's verify paragraph) keep the product gain and the tests?

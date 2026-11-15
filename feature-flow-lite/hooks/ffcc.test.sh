@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Tests for the check cache's shell scripts (ffcc.sh, ffcc-queue.sh,
-# ffcc-base.sh) on a throwaway git repo. Plain bash, Linux and macOS:
+# Tests for the check cache's wrapper (ffcc.sh) on a throwaway git repo.
+# Plain bash, Linux and macOS:
 #   bash hooks/ffcc.test.sh
 here=$(cd "$(dirname "$0")" && pwd)
-ffcc=$here/ffcc.sh queue=$here/ffcc-queue.sh basesh=$here/ffcc-base.sh
+ffcc=$here/ffcc.sh
 work=$(mktemp -d "${TMPDIR:-/tmp}/ffcc-test.XXXXXX") || exit 1
 work=$(cd "$work" && pwd -P)
 trap 'kill $(jobs -p) 2>/dev/null; rm -rf "$work"' EXIT
@@ -25,10 +25,6 @@ notes=$work/notes.tsv
 # run <key> <command...>: one check through the wrapper, as the mod runs it
 run() { local key=$1; shift; bash "$ffcc" "$cache" "$notes" node "$key" -- "$@"; }
 ledger_has() { awk -F'\t' -v k="$1" -v w="$2" '$3 == k && $2 == w { f = 1 } END { exit !f }' "$cache/ledger.tsv" 2>/dev/null; }
-# enqueue with the worker held off, so a test sees the queue as enqueue left it
-hold() { exec 7>"$cache/queue.lock"; ( . "$here/ffcc-portable.sh"; ff_lock 7 nb ); }
-release() { exec 7>&-; }
-enqueue() { bash "$queue" enqueue "$cache" "$@"; }
 
 echo "# platform: $(uname -s), bash $BASH_VERSION"
 
@@ -83,152 +79,28 @@ check "concurrent runs: the command ran once" '[ "$(count "$c")" = 1 ]' "ran $(c
 check "concurrent runs: the second replays the first's output" '[ "$(cat "$work/conc2")" = first ]' "got: $(cat "$work/conc2")"
 check "concurrent runs: the second is a hit after a wait" 'awk -F"\t" '"'"'$1 == "hit" && $2 == "conc" && $8 > 0.5 { f = 1 } END { exit !f }'"'"' "$notes"'
 
-# --- queue order: lower prio first, then the shortest past run; base (prio 2) last
-seed() { printf '%s\tmiss-pass\t%s\t\tseed\t%s\t0\tagent\n' "$(date +%s)" "$1" "$2" >>"$cache/ledger.tsv"; }
-seed q-long 100
-seed q-short 1
-seed q-base 0.5
-order=$work/order
-hold
-enqueue 1 "$repo" node q-long mod -- sh -c "echo long >>'$order'"
-enqueue 2 "$repo" node q-base mod-base -- sh -c "echo base >>'$order'"
-enqueue 1 "$repo" node q-short mod -- sh -c "echo short >>'$order'"
-check "enqueue with the worker lock held starts no worker" '[ "$(ls "$cache/queue" | wc -l | tr -d " ")" = 3 ] && [ ! -f "$order" ]'
-release
-bash "$queue" work "$cache"
-check "queue order: short, then long, then base" '[ "$(tr "\n" " " <"$order")" = "short long base " ]' "got: $(tr '\n' ' ' <"$order" 2>/dev/null)"
-check "the queue is empty after the worker" '[ -z "$(ls -A "$cache/queue")" ]'
-check "queued runs are in the ledger as the mod's" 'awk -F"\t" '"'"'$3 == "q-short" && $2 == "miss-pass" && $8 == "mod" { f = 1 } END { exit !f }'"'"' "$cache/ledger.tsv"'
+# --- the base commit's result is kept, pass or fail, and a later failure says which
+rm -f "$notes"
+run basefail sh -c 'exit 2' >/dev/null 2>&1
+check "base commit: a failure on the clean base tree is recorded" '[ -n "$(ls "$cache/base-results")" ]'
+printf 'later\n' >later.txt
+run basefail sh -c 'exit 2' >/dev/null 2>&1
+check "base commit: a later failure notes it failed at the base too" 'awk -F"\t" '"'"'$1 == "fail" && $2 == "basefail" && $5 == "2" { f = 1 } END { exit !f }'"'"' "$notes"' "notes: $(cat "$notes")"
+rm -f later.txt
 
-# --- --replace drops the older jobs of its origin, and only those
-hold
-enqueue 1 "$repo" node r-old1 mod -- true
-enqueue 1 "$repo" node r-old2 mod -- true
-enqueue 2 "$repo" node r-base mod-base -- true
-enqueue 1 "$repo" node r-new mod --replace -- true
-keys=$(for f in "$cache"/queue/*; do sed -n 4p "$f"; done | sort | tr '\n' ' ')
-check "--replace drops older jobs of the same origin" '[ "$keys" = "r-base r-new " ]' "queued: $keys"
-rm -f "$cache"/queue/*
-release
-
-# --- a job whose result is cached is skipped
-c=$work/count.skip
-run skip sh -c "echo ran >>'$c'" >/dev/null
-hold
-enqueue 1 "$repo" node skip mod -- sh -c "echo ran >>'$c'"
-release
-bash "$queue" work "$cache"
-check "a cached job is skipped" '[ "$(count "$c")" = 1 ]' "ran $(count "$c") times"
-
-# --- arguments with spaces, quotes and newlines survive the queue
-argsout=$work/args
-hold
-enqueue 1 "$repo" node args mod -- sh -c 'printf "[%s]" "$@" >"$0"' "$argsout" 'a b' "it's" 'x
-y'
-release
-bash "$queue" work "$cache"
-check "queued arguments survive intact" '[ "$(cat "$argsout")" = "[a b][it'"'"'s][x
-y]" ]' "got: $(cat "$argsout" 2>/dev/null)"
-
-# --- queued runs get the lowest priority, where this machine allows it
-if [ "$(nice -n 19 perl -e 'print getpriority(0, 0)' 2>/dev/null)" = 19 ]; then
-  niceout=$work/nice
-  hold
-  enqueue 1 "$repo" node nice mod -- perl -e "open(my \$f, '>', '$niceout'); print \$f getpriority(0, 0)"
-  release
-  bash "$queue" work "$cache"
-  check "a queued run is at nice 19" '[ "$(tr -d " " <"$niceout")" = 19 ]' "nice: $(cat "$niceout" 2>/dev/null)"
-else
-  echo "skip  a queued run is at nice 19 (setpriority refused here)"
-fi
-
-# --- preemption: an agent asking for a long queued run stops its whole group
-seed pre 100
-pids=$work/pre.pids
-enqueue 1 "$repo" node pre mod -- sh -c "sleep 60 & echo \$! >'$pids'; echo \$\$ >>'$pids'; wait"
-if until_true '[ "$(count "$pids")" = 2 ] && [ -f "$cache/locks/"*.bg ]' 20 2>/dev/null; then
-  child=$(sed -n 1p "$pids") parent=$(sed -n 2p "$pids")
-  t0=$(date +%s)
-  o=$(run pre echo agent)
-  took=$(($(date +%s) - t0))
-  check "preemption: the agent runs its own check at once" '[ "$o" = agent ] && [ $took -lt 15 ]' "output $o after ${took}s"
-  until_true '! kill -0 "$child" 2>/dev/null && ! kill -0 "$parent" 2>/dev/null' 10
-  check "preemption: the whole process group is gone" '! kill -0 "$child" 2>/dev/null && ! kill -0 "$parent" 2>/dev/null' "alive: $(kill -0 "$parent" 2>/dev/null && echo parent) $(kill -0 "$child" 2>/dev/null && echo child)"
-  until_true 'ledger_has pre preempted' 10
-  check "preemption: the ledger records preempted" 'ledger_has pre preempted'
-  check "preemption: the agent's run is the one stored" '[ "$(run pre echo again)" = agent ]'
-else
-  bad "preemption: the queued job never started"
-fi
-until_true '[ ! -f "$cache/queue.running" ]' 20
-
-# --- a queued run that should be done within 30s is waited for
-seed near 2
-c=$work/count.near
-enqueue 1 "$repo" node near mod -- sh -c "echo ran >>'$c'; sleep 2; echo from-queue"
-if until_true '[ -s "$c" ]' 20; then
-  o=$(run near sh -c "echo ran >>'$c'; echo from-agent")
-  check "near-done: the agent waits and replays the queued run" '[ "$o" = from-queue ] && [ "$(count "$c")" = 1 ]' "output $o, ran $(count "$c") times"
-  check "near-done: not preempted" '! ledger_has near preempted'
-else
-  bad "near-done: the queued job never started"
-fi
-until_true '[ ! -f "$cache/queue.running" ]' 20
-
-# --- ffcc-base.sh: a worktree of the base commit with the ignored paths copied in
-mkdir -p out/pkg node_modules/dep
-printf 'built\n' >out/pkg/x.js
-printf 'node_modules/\n*.tsbuildinfo\n' >>.gitignore && git add .gitignore && git commit -qm ignore
-printf 'dep\n' >node_modules/dep/index.js
-ln -s dep node_modules/alias
-printf 'info\n' >node_modules/dep/app.tsbuildinfo
-wt=$work/base-wt
-if bash "$basesh" "$repo" "$wt" "$(git rev-parse HEAD)" 2>"$work/base.err"; then
-  check "base worktree: ignored files are copied in" '[ "$(cat "$wt/node_modules/dep/index.js")" = dep ] && [ "$(cat "$wt/out/pkg/x.js")" = built ]'
-  check "base worktree: copies, not symlinks to the main tree" '[ ! -L "$wt/node_modules" ] && [ ! -L "$wt/out" ]'
-  check "base worktree: relative links stay relative" '[ "$(readlink "$wt/node_modules/alias")" = dep ]'
-  check "base worktree: files tools rewrite in place are left out" '[ ! -e "$wt/node_modules/dep/app.tsbuildinfo" ]'
-  printf 'edited\n' >"$wt/out/pkg/x.js.new" && mv "$wt/out/pkg/x.js.new" "$wt/out/pkg/x.js"
-  check "base worktree: replacing a file there leaves the main tree's" '[ "$(cat out/pkg/x.js)" = built ]'
-else
-  bad "ffcc-base.sh failed" "$(cat "$work/base.err")"
-fi
-git worktree remove --force "$wt" 2>/dev/null
-
-# --- with heavy-limiter: a queued check waits in the machine's pool, whichever mod rewrote first
+# --- with heavy-limiter's wrapper inside this one, the agent's check holds a pool slot
 heavy=$here/../../heavy-limiter/hooks/heavy.pl
 if [ -f "$heavy" ] && command -v perl >/dev/null 2>&1; then
   pool=$work/pool && mkdir -p "$pool/p" "$pool/notes"
-  lim() { printf '%s\n' perl "$heavy" --dir "$pool" --kind test --key "$1" --cores 1 --mem 64 --notes "$pool/notes/agent"; }
-  # the command a check runs: says whether it held a pool slot and ran as background work
-  probe() { printf '%s\n' sh -c "echo \"slot=\${CLAUDE_HEAVY_SLOT:-} bg=\${FF_CACHE_BG:-}\" >>'$1'"; }
-  # cache first: the agent's call is `ffcc.sh -- perl heavy.pl ... -- <check>`, and the
-  # mod queued the plain check
   out=$work/h1.out
-  IFS=$'\n' read -r -d '' -a a < <(lim h1; echo --; probe "$out"; printf '\0')
+  IFS=$'\n' read -r -d '' -a a < <(
+    printf '%s\n' perl "$heavy" --dir "$pool" --kind test --key h1 --cores 1 --mem 64 --notes "$pool/notes/agent" --
+    printf '%s\n' sh -c "echo \"slot=\${CLAUDE_HEAVY_SLOT:-}\" >>'$out'"
+    printf '\0')
   run h1 "${a[@]}" >/dev/null
-  check "limited: the agent's run held a slot" 'grep -q "slot=1 bg=$" "$out"' "got: $(cat "$out")"
-  check "limited: its command line is kept, without the notes file" '[ -f "$cache/limited/$(printf %s h1 | (. "$here/ffcc-portable.sh"; ff_sha) | cut -c1-24)" ] && ! tr "\0" "\n" <"$cache/limited/"* | grep -q -- --notes'
-  printf 'h1 tree\n' >h1.txt
-  IFS=$'\n' read -r -d '' -a p < <(probe "$out"; printf '\0')
-  enqueue 1 "$repo" node h1 mod -- "${p[@]}"
-  until_true '[ "$(count "$out")" = 2 ]' 20
-  check "cache first: the queued run went through the pool, as background work" '[ "$(sed -n 2p "$out")" = "slot=1 bg=1" ]' "got: $(cat "$out")"
-  # limiter first: the queued job already carries the agent's wrapper and notes file
-  out=$work/h2.out
-  rm -f "$pool/notes/agent"
-  IFS=$'\n' read -r -d '' -a a < <(lim h2; echo --; probe "$out"; printf '\0')
-  enqueue 1 "$repo" node h2 mod -- "${a[@]}"
-  until_true '[ "$(count "$out")" = 1 ]' 20
-  check "limiter first: the queued run went through the pool, as background work" '[ "$(cat "$out")" = "slot=1 bg=1" ]' "got: $(cat "$out")"
-  check "limiter first: the agent's notes file is left alone" '[ ! -e "$pool/notes/agent" ]'
-  # without the limiter's record, a queued check runs as before
-  out=$work/h3.out
-  IFS=$'\n' read -r -d '' -a p < <(probe "$out"; printf '\0')
-  enqueue 1 "$repo" node h3 mod -- "${p[@]}"
-  until_true '[ "$(count "$out")" = 1 ]' 20
-  check "no record: the queued run runs directly" '[ "$(cat "$out")" = "slot= bg=1" ]' "got: $(cat "$out")"
-  rm -f h1.txt
+  check "limited: the agent's run held a slot" 'grep -q "slot=1" "$out"' "got: $(cat "$out")"
+  run h1 "${a[@]}" >/dev/null
+  check "limited: a replayed pass takes no slot" '[ "$(count "$out")" = 1 ]' "ran $(count "$out") times"
 else
   echo "# heavy-limiter not found next to feature-flow-lite: its tests skipped"
 fi

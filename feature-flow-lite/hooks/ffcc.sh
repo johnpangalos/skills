@@ -60,50 +60,16 @@ k=$(printf '%s\n' "$key" "$rel" "$tree" "$tools" | ff_sha | cut -c1-24)
 bk=$(printf '%s\n' "$key" "$rel" "$tools" | ff_sha | cut -c1-24)
 entry=$cache/entries/$k
 mkdir -p "$cache/entries" "$cache/locks" "$cache/base-results"
-# With heavy-limiter's wrapper inside this one (perl .../heavy.pl <weights> -- <check>),
-# keep the agent's limited command line for this check, without its notes file: a
-# queued run of the check reuses it (ffcc-queue.sh), so it waits in the machine's
-# pool, as low-priority work, whichever mod rewrote the call first.
-if [ "${FF_CACHE_BG:-}" != 1 ] && [ "${1:-}" = perl ] && [ "${2##*/}" = heavy.pl ]; then
-  mkdir -p "$cache/limited"
-  lk=$(printf '%s' "$key" | ff_sha | cut -c1-24)
-  { skip=0; for w in "$@"; do
-      if [ $skip = 1 ]; then skip=0; continue; fi
-      [ "$w" = --notes ] && { skip=1; continue; }
-      printf '%s\0' "$w"
-    done; } >"$cache/limited/$lk.tmp" && mv "$cache/limited/$lk.tmp" "$cache/limited/$lk"
-fi
 [ "$notes" = - ] || mkdir -p "$(dirname "$notes")"
 since() { awk -v a="$1" -v b="$(ff_now)" 'BEGIN { printf "%.1f", b - a }'; }
 note() { [ "$notes" = - ] || printf '%s\n' "$1" >>"$notes"; }
-# FF_CACHE_ORIGIN says who started the run (an agent, or the mod ahead of time); FF_CACHE_BASE=1
-# marks a run on a clean copy of the base commit, whose result is the base commit's.
-origin=${FF_CACHE_ORIGIN:-agent}
+# the ledger's last column: who ran the check (always an agent now)
+origin=agent
 ledger() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date +%s)" "$1" "$key" "$rel" "$tree" "$2" "$3" "$origin" >>"$cache/ledger.tsv"; }
 exec 9>"$cache/locks/$k"
-bgmark=$cache/locks/$k.bg
-preempt=$cache/locks/$k.preempt
 asked=$(ff_now)
-if [ "${FF_CACHE_BG:-}" = 1 ]; then
-  # A queued run ahead of time: skip it if its result is already stored, or if
-  # anyone is running the same key now.
-  [ -f "$entry/status" ] && exit 0
-  [ "${FF_CACHE_BASE:-}" = 1 ] && [ -f "$cache/base-results/$bk" ] && exit 0
-  ff_lock 9 nb || exit 0
-  [ -f "$entry/status" ] && exit 0
-  rm -f "$preempt"
-elif ! ff_lock 9 nb; then
-  # Someone holds the key. If it is a background run, wait only when it should be
-  # done within 30s (from its last run's time); otherwise stop it and run now.
-  if read -r bpid bstart best 2>/dev/null <"$bgmark"; then
-    left=$(awk -v s="$bstart" -v e="$best" -v n="$(date +%s)" 'BEGIN { print (e == "" ? 999 : e - (n - s)) }')
-    if awk -v l="$left" 'BEGIN { exit !(l > 30) }'; then
-      : >"$preempt"
-      kill -TERM -- "-$bpid" 2>/dev/null || kill -TERM "$bpid" 2>/dev/null
-    fi
-  fi
-  ff_lock 9 wait 3600 || true
-fi
+# Someone else running the same key: wait for them, then replay their pass.
+ff_lock 9 nb || ff_lock 9 wait 3600 || true
 waited=$(since "$asked")
 if [ -f "$entry/status" ]; then
   cat "$entry/out"
@@ -116,34 +82,17 @@ if [ -f "$entry/status" ]; then
 fi
 tmp=$(mktemp -d "$cache/run.XXXXXX")
 started=$(ff_now)
-if [ "${FF_CACHE_BG:-}" = 1 ]; then
-  # its own process group, so an agent can stop the whole check (yarn, node and workers)
-  "${ff_setsid[@]}" "$@" >"$tmp/out" 2>"$tmp/err" 9>&- &
-  pid=$!
-  est=$(awk -F'\t' -v k="$key" -v r="$rel" '$3 == k && $4 == r && $2 != "hit" { s = $6 } END { print s }' "$cache/ledger.tsv" 2>/dev/null)
-  printf '%s %s %s\n' "$pid" "$(date +%s)" "$est" >"$bgmark"
-else
-  "$@" >"$tmp/out" 2>"$tmp/err" 9>&- &
-  pid=$!
-fi
-trap 'kill -TERM -- "-$pid" 2>/dev/null || kill -TERM $pid 2>/dev/null; cat "$tmp/out"; cat "$tmp/err" >&2; rm -rf "$tmp" "$bgmark"; exit 143' TERM INT HUP
+"$@" >"$tmp/out" 2>"$tmp/err" 9>&- &
+pid=$!
+trap 'kill -TERM -- "-$pid" 2>/dev/null || kill -TERM $pid 2>/dev/null; cat "$tmp/out"; cat "$tmp/err" >&2; rm -rf "$tmp"; exit 143' TERM INT HUP
 wait $pid
 status=$?
 trap - TERM INT HUP
-if [ "${FF_CACHE_BG:-}" = 1 ]; then
-  rm -f "$bgmark"
-  if [ -f "$preempt" ]; then
-    # an agent stopped this run to run the check itself: no result, pass or fail
-    rm -rf "$tmp" "$preempt"
-    ledger preempted "$(since "$started")" 0
-    exit 0
-  fi
-fi
 seconds=$(since "$started")
 cat "$tmp/out"
 cat "$tmp/err" >&2
 atbase=0
-{ [ "$nchanged" = 0 ] || [ "${FF_CACHE_BASE:-}" = 1 ]; } && [ "$head" = "$base" ] && atbase=1
+[ "$nchanged" = 0 ] && [ "$head" = "$base" ] && atbase=1
 # a result counts only if nothing changed the tree while the check ran
 ran_on=$tree
 fingerprint
@@ -154,7 +103,7 @@ if [ "$atbase" = 1 ] && [ "$steady" = 1 ]; then
   printf '%s\n' "$status" >"$cache/base-results/$bk"
 fi
 if [ "$status" = 0 ]; then
-  if [ "$steady" = 1 ] && [ "${FF_CACHE_BASE:-}" != 1 ]; then
+  if [ "$steady" = 1 ]; then
     printf '%s\n' "$status" >"$tmp/status.new"
     printf '%s\n' "$seconds" >"$tmp/seconds"
     date +%s >"$tmp/when"

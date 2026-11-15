@@ -26,8 +26,7 @@
 # command in the same repo is weighed by that record.
 #
 # CLAUDE_HEAVY_SLOT=1 marks a command already holding a slot: one nested under it
-# runs at once. FF_CACHE_BG=1 (feature-flow-lite's queued checks) or
-# CLAUDE_HEAVY_LOW=1 marks speculative work: it waits behind agents' commands and
+# runs at once. CLAUDE_HEAVY_LOW=1 marks speculative work: it waits behind agents' commands and
 # runs at the lowest priority.
 use strict;
 use warnings;
@@ -57,7 +56,7 @@ unless ($pdir ne '' && -d $pdir && -w $pdir) {
   run_now();
 }
 
-my $low = ($ENV{FF_CACHE_BG} // '') eq '1' || ($ENV{CLAUDE_HEAVY_LOW} // '') eq '1';
+my $low = ($ENV{CLAUDE_HEAVY_LOW} // '') eq '1';
 my ($bcores, $bmem) = budget();
 my $repo = repo();
 my ($last_secs, $last_peak) = last_record($repo, $o{key});

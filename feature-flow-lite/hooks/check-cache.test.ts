@@ -1,6 +1,6 @@
 import { test, expect, mock } from 'claude-code/testing'
 import type { On } from 'claude-code'
-import { checkOf, lowThreadWords, noteFor, parseNotes, planRewrite, projectChecks, segments, tokenize } from './check-cache'
+import { checkOf, noteFor, parseNotes, planRewrite, projectChecks, segments, tokenize } from './check-cache'
 
 const OPTS = { script: '/p/hooks/ffcc.sh', cacheDir: '/r/.git/ff-check-cache', notes: '/r/.git/ff-check-cache/notes/n1' }
 const HEAD = `'bash' '/p/hooks/ffcc.sh' '/r/.git/ff-check-cache' '/r/.git/ff-check-cache/notes/n1'`
@@ -259,16 +259,6 @@ test("hook: the project file's checks are cached too", async ($, on) => {
   w.files['/r/FEATURE_FLOW.md'] = '## Checks\n- `make check`\n'
   await bash($, 'make check')
   expect(w.ran[1]).toContain(`'make check' -- make check`)
-})
-
-test('lowThreadWords: one worker for go test/vet and jest/vitest, other checks unchanged', () => {
-  expect(lowThreadWords(['go', 'test', '-race', './...'])).toEqual(['go', 'test', '-p=1', '-race', './...'])
-  expect(lowThreadWords(['go', 'test', '-p', '2', './...'])).toEqual(['go', 'test', '-p', '2', './...'])
-  expect(lowThreadWords(['yarn', 'jest', 'packages/a'])).toEqual(['yarn', 'jest', 'packages/a', '--maxWorkers=1'])
-  expect(lowThreadWords(['npx', 'vitest', 'run'])).toEqual(['npx', 'vitest', 'run', '--maxWorkers=1'])
-  expect(lowThreadWords(['yarn', 'jest', '--runInBand'])).toEqual(['yarn', 'jest', '--runInBand'])
-  expect(lowThreadWords(['yarn', 'check-types'])).toEqual(['yarn', 'check-types'])
-  expect(lowThreadWords(['gofmt', '-l', '.'])).toEqual(['gofmt', '-l', '.'])
 })
 
 test('projectChecks: a placeholder with spaces is a template, not a check', () => {

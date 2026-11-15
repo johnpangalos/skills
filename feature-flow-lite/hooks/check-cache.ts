@@ -504,21 +504,3 @@ export function noteFor(lines: readonly NoteLine[], plugin: string): string | un
   }
   return parts.length ? `${plugin} check cache: ${parts.join('; ')}.` : undefined
 }
-
-// The same check with one worker, for a run the mod queues ahead of time: it
-// shares the machine with the agents, and these flags change how a check is
-// scheduled, not what it finds (the key stays the full check's).
-export function lowThreadWords(words: readonly string[]): string[] {
-  const base = (w: string) => w.slice(w.lastIndexOf('/') + 1)
-  // go test / go vet: one package at a time
-  if (words[0] !== undefined && base(words[0]) === 'go' && (words[1] === 'test' || words[1] === 'vet')) {
-    if (words.some(w => /^-p(=|$)/.test(w))) return [...words]
-    return [words[0], words[1], '-p=1', ...words.slice(2)]
-  }
-  // jest / vitest, direct or through yarn/npx/pnpm: one worker
-  const runner = words.findIndex(w => base(w) === 'jest' || base(w) === 'vitest')
-  if (runner >= 0 && runner <= 2 && !words.some(w => /^--(maxWorkers|runInBand)\b|^-[wi]$/.test(w))) {
-    return [...words, '--maxWorkers=1']
-  }
-  return [...words]
-}
