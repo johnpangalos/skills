@@ -471,6 +471,23 @@ None showed a gain. Run eagerly they made react-aria 2–3× slower (section 15)
 - Against the panel's earlier 6 of 7 clean audits, 0 of 2 is within the noise of single builds, but neither gate is perfect.
 - The check cache saved about 2.5 minutes on react-aria, mostly replayed `yarn check-types` runs.
 
+### 20. The review panel on Haiku and on Sonnet (chi-etag, one build each)
+
+These are the shipped 0.3 skill with every gatekeeper (the panel of three and the final gate) pinned to Haiku or Sonnet at high effort. The criteria-checker stays on Opus.
+
+| | Haiku panel | Sonnet panel | Opus panel (section 18, plus the shipped build) |
+|---|---|---|---|
+| Wall time | 39 min | **15 min** | 19–42 min |
+| Cost | $4.86 (orchestrator $4.02) | **$2.97** (orchestrator $1.97) | $4.85–8.83 |
+| Gatekeeper verdicts | 12 (4 yes), 26 must-fixes, 4 fix rounds | 7 (4 yes), 4 must-fixes, 1 fix round | – |
+| Outcome checks | all pass, Flush included | all pass, Flush included | all pass |
+| Probes | 6 of 7 | 4 of 7 (`HeadServeContent`, `GarbageMember`, `NonCanonicalKey`) | 5–7 of 7 |
+| Audit would merge | no: `If-None-Match: *` gets no 304 on a HEAD with no body | no: a HEAD gets an ETag of the empty body, which doesn't match GET's | 3 of 4 |
+
+- **Haiku isn't cheaper.** Its gatekeepers raised 26 must-fixes over 12 verdicts, and the Opus orchestrator spent $4 handling them. The Haiku agents themselves cost $0.62.
+- **Sonnet is the fastest and cheapest panel so far** (15 min, $2.97), but it caught the least: 4 must-fixes, the lowest probe score of any panel build, and a HEAD bug the audit found.
+- **Both cheaper panels missed a HEAD case.** The Opus panel's chi-etag builds passed the audit in 3 of 4. One build each, so this is direction, not a result.
+
 ### Open questions
 
 - Does v5 plus the screenshot reviewer alone (without v9's verify paragraph) keep the product gain and the tests?
