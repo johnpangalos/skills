@@ -453,6 +453,24 @@ feature-flow-lite 0.3.0 ships the review panel (section 15) as the skill's flow,
 
 None showed a gain. Run eagerly they made react-aria 2–3× slower (section 15), and queued they only broke even (section 16). The handoff additions duplicated what the orchestrator already does: in 37 gatekeeper spawns before them, every handoff had the request word for word and the base commit. The `lite-review-panel-mod*` arms still set `FEATURE_FLOW_EXTRAS=1`; on 0.3.0 that does nothing, so rerunning them needs the code at `d8ea7b6` or earlier.
 
+**The shipped skill, one build per task** (arm `lite-shipped-0.3`: the working-tree skill, the check cache on, heavy-limiter loaded):
+
+| | chi-etag | rac-shadow-hide |
+|---|---|---|
+| Wall time, cost | 42 min, $6.99 | 35 min, $6.21 |
+| Agents | investigator, criteria-checker, implementor, simplifier, 3 panel gatekeepers, final gatekeeper | the same |
+| Report | `Mergeable: yes` | `Mergeable: yes` |
+| Outcome checks (hidden tests, suites, lint, types) | all pass, Flush included | all pass |
+| Probes | 6 of 7 | nested target passes |
+| Audit would merge | no | no |
+
+- **The flow loads and runs as written from the shipped files:** named agents, one panel round plus a final gate, and outcome checks all green on both tasks.
+- **The audit found one must-fix in each, and both reports said `Mergeable: yes`.**
+  - **chi-etag:** the doc comment says to put `ETag` outside `NoCache`. But `ETag` reads `If-None-Match` after the handler runs, and `NoCache` has deleted it from the request by then, so that order never returns 304. That is a docs-versus-code contradiction no gatekeeper probed.
+  - **react-aria:** content in a shadow root created later around a kept-visible element (a non-modal popover inside a modal) is never hidden or watched.
+- Against the panel's earlier 6 of 7 clean audits, 0 of 2 is within the noise of single builds, but neither gate is perfect.
+- The check cache saved about 2.5 minutes on react-aria, mostly replayed `yarn check-types` runs.
+
 ### Open questions
 
 - Does v5 plus the screenshot reviewer alone (without v9's verify paragraph) keep the product gain and the tests?
