@@ -51,6 +51,7 @@ A summary of every eval run on feature-flow-lite and its Figma offshoots so far 
 | Opus reviewer | Does moving the reviewer to Opus on risky paths pay? | No. Both arms passed every hidden case in 30 of 30 builds; Opus cost 27% more. | Removed |
 | Review gate | One Opus agent reviews and decides, criteria checked before building, a check cache | The criteria check fixed chi-etag's Flush criterion in 1 of 2 builds (the first hidden Flush pass). Not faster: 2 to 6 gate rounds, about 35 min. The cache saved 0.5 to 1.2 min. | Not yet (2 builds) |
 | Review panel | Three Opus gatekeepers at once (request, edges, repo), one fix round each, a fresh final gate; plus a mod that runs base checks and checks ahead | Panel alone: 18.8 min on chi-etag and 22.9 min on react-aria, every hidden test passing on both, matching the current skill's time on react-aria. The mod made react-aria 2–3× slower. | Panel promising (1 build per task); mod's check-ahead no |
+| Check queue | Background checks queued for one low-priority, one-thread worker that agents can preempt | On react-aria, same load: panel + queued mod 25.2 min, panel alone 27.9 min; both pass everything and the audit would merge both (against 51–64 min for the unqueued mod). Also fixed two base-check bugs. | Keep (1 build per arm) |
 
 ### Earlier rounds (1–5)
 
@@ -371,6 +372,34 @@ Results:
 - **Keep:** the panel and the check cache (agent replays saved 10–15 min of check time per react-aria build).
 - **Drop or gate:** checks-ahead and base checks. Run them only when the machine is idle, or only for checks under a minute.
 - `cache_stats.py` now counts only agents' hits as time saved. Before, the mod's own repeat hits were counted, which reported 55 min "saved" for one build.
+
+### 16. A queue for the mod's background checks
+
+Section 15's mod started its checks ahead and its base checks as soon as they were asked for, all at once and at full parallelism, so on react-aria they took CPU and memory from the agents. Now they are queued (`hooks/ffcc-queue.sh`):
+- One worker per repo runs one job at a time under `nice -n 19` and `ionice -c3`.
+- Each check runs with one worker thread: `go test`/`go vet -p=1`, jest and vitest `--maxWorkers=1`, `CARGO_BUILD_JOBS=1`. The cache key stays the full check's.
+- Jobs run cheapest first, by their last run time in the ledger, and base-commit jobs run last.
+- A newer tree's batch drops the jobs still queued for an older tree, and a job whose result is already cached is skipped.
+- An agent that asks for a queued check runs it itself, and the queued job then finds the result cached. If the worker is already running that check, the agent waits only if the run should finish within 30 s. Otherwise it stops the run's whole process group and runs the check itself, and the stopped run records nothing (`preempted` in the ledger).
+
+Two builds at once on react-aria, one with the queued mod and one without:
+
+| | Panel + queued mod | Panel without the mod |
+|---|---|---|
+| Wall time | **25.2 min** | 27.9 min |
+| Cost | $5.84 | $5.98 |
+| Outcome checks, nested-target probe | all pass | all pass |
+| Audit would merge | yes, no must-fix | yes, no must-fix |
+| Orchestrator foreground Bash | 0.3 min | 4.2 min |
+| Agents' cache hits, time saved, time waited | 6, 1.2 min, 0.6 min | 1, 0.2 min, 0 |
+
+- **The queue removed the mod's slowdown.** It used to cost 51–64 min against 23; now it is level with, or slightly ahead of, the panel alone. That is one build per arm, so read it as "no longer harmful", not as a measured gain.
+- **The load came from the build without the mod.** At minute 14 the load average was 15.7 on 4 CPUs, from that build's orchestrator running the whole repo's `yarn jest --maxWorkers=4` in the foreground.
+- **Memory is the limit on this machine.** React-spectrum's type check (`tsgo`) peaks at about 5–6 GB. Two audits running it at once with a third check got one process killed for lack of memory.
+
+Two bugs found along the way:
+- **Placeholders with spaces in the project file ran as checks.** `yarn jest <changed package test dirs>` was read as a command, with its `<` as a redirect, so the mod ran jest over much of the repo on the base commit. A placeholder is now any `<…>` that starts with a letter.
+- **The base commit's type check failed falsely in a monorepo.** The base worktree symlinked the main tree's ignored paths. TypeScript followed the real paths of `node_modules` and of generated files (the icon type definitions) back into the main tree, and saw the edited packages there as a second copy. That false base failure would make a new type error look pre-existing. The base worktree now hard-links its ignored paths (`hooks/ffcc-base.sh`): no disk cost, workspace links resolve inside the worktree, and files tools rewrite in place (`*.tsbuildinfo`, lint caches) are left out. React-spectrum's base `check-types` now passes in 18 s.
 
 ### Open questions
 
