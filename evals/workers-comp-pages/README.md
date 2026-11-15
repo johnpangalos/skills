@@ -53,3 +53,23 @@ than single components?
   app. Neither skill says so: figma-setup reads the design system file, and figma-flow reads
   whichever file it's handed, so nothing checks that a consumer's file links to the library
   instead of copying from it.
+
+- **Unblocked by publishing the library** (by hand, in the Figma app; the plugin API has no
+  publish call and the iOS app can't publish either). After that, components, text and effect
+  styles and all variable collections imported by key, and `search_design_system` found them.
+  `figma.teamLibrary.getAvailableLibraryVariableCollectionsAsync()` still returned nothing, so
+  variables were reached through `search_design_system` and `importVariableByKeyAsync`.
+- **Pages designed** (file `0Uld8qYjwyl7HJLEMwqxNv`), all from library instances, variables bound
+  for every fill, padding, gap, radius and fixed width (`breakpoint/xl` for the page,
+  `container/*` for the column), text styles and `shadow-sm`:
+  - Report an injury, page `0:1`, root `3:311`: TextField, an invalid Select, TextArea, a
+    disabled TextField, outline and default Buttons.
+  - Claims inbox, page `4:186`, root `4:194`: header with a Button, the TabList, five Chips (one
+    current, one muted), and a list of four instances of a local `ClaimRow` component (`4:187`,
+    text properties `title` and `meta`, a Badge whose colour varies per row). Dividers are a
+    `spacing/px` gap over a `gray/200` fill. ClaimRow has no counterpart in `@workers-comp/ui`:
+    the app builds it, which figma-flow's "a component with no code counterpart: stop" has to
+    allow for.
+  - Claim summary, page `5:40`, root `5:41`: header with a Badge, a details list, a paragraph
+    that wraps, a ghost Button pushed left by a spacer, outline and default Buttons.
+- Still to do: the trap page, then figma-setup and figma-flow.
