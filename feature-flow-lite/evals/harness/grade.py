@@ -192,6 +192,7 @@ AGENT_ROLES = {
     "migration": "migration", "planner": "planner",
     "looker": "looker",  # figma-flow's agent
     "gatekeeper": "gate",  # the merge-gate variant's agent
+    "panelist": "gate",  # the review-panel-split variant's panel agent
     "councillor": "council",  # the council variant's agent
     "criteria-checker": "criteria_check",  # the review-gate variant's agent
 }
