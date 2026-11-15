@@ -11,8 +11,11 @@
 # tool rewrites in place (incremental build info, lint caches) are left out, so a
 # base run never writes into the main tree's copy. Across filesystems, where hard
 # links are impossible, it falls back to a symlink.
+# On macOS, without GNU cp, the copy is an APFS clone (cp -cR): copy-on-write,
+# no disk cost, and symlinks stay symlinks.
 set -e
 root=$1 wt=$2 base=$3
+if cp --version >/dev/null 2>&1; then linkcopy=(cp -al); else linkcopy=(cp -cR); fi
 [ -d "$wt" ] || git -C "$root" worktree add -q --detach "$wt" "$base"
 
 # rewritten in place by the tools that use them
@@ -29,7 +32,7 @@ git ls-files --others --ignored --exclude-standard --directory | while IFS= read
   [ -e "$wt/$p" ] || [ -L "$wt/$p" ] && continue
   case "${p##*/}" in *.tsbuildinfo|.eslintcache|.stylelintcache|.cache|.turbo|.pytest_cache|.mypy_cache|.ruff_cache) continue ;; esac
   mkdir -p "$wt/$(dirname "$p")"
-  if cp -al "$root/$p" "$wt/$p" 2>/dev/null; then
+  if "${linkcopy[@]}" "$root/$p" "$wt/$p" 2>/dev/null; then
     [ -d "$wt/$p" ] && [ ! -L "$wt/$p" ] && inplace "$wt/$p" | while IFS= read -r f; do rm -rf "$f"; done
   else
     rm -rf "$wt/$p"

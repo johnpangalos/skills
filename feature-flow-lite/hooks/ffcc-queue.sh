@@ -10,13 +10,14 @@
 # already cached, or that an agent is already running, is skipped, and an agent
 # that asks for a check the worker is running can preempt it (see ffcc.sh).
 here=$(cd "$(dirname "$0")" && pwd)
+. "$here/ffcc-portable.sh"
 mode=$1 cache=$2
 q=$cache/queue
 mkdir -p "$q"
 
 work() {
   exec 8>"$cache/queue.lock"
-  while flock -n 8; do
+  while ff_lock 8 nb; do
     while :; do
       [ -d "$cache" ] || exit 0
       job=$(pick) || break
@@ -24,7 +25,7 @@ work() {
       run_job "$cache/queue.running"
       rm -f "$cache/queue.running"
     done
-    flock -u 8
+    ff_lock 8 un
     # a job enqueued after the last pick but before the unlock starts its own worker only if
     # this one had let go; look once more so it isn't stranded
     [ -n "$(ls -A "$q" 2>/dev/null)" ] || exit 0
@@ -50,14 +51,13 @@ run_job() {
   cwd=$(sed -n 2p "$f") family=$(sed -n 3p "$f") key=$(sed -n 4p "$f") origin=$(sed -n 5p "$f")
   local words=()
   # the arguments are stored one per NUL-separated record from line 6 on
-  mapfile -d '' -t words < <(tail -n +6 "$f")
+  local w
+  while IFS= read -r -d '' w; do words+=("$w"); done < <(tail -n +6 "$f")
   [ -d "$cwd" ] && [ ${#words[@]} -gt 0 ] || return 0
   local base=
   [ "$origin" = mod-base ] && base=1
-  local prio=(nice -n 19)
-  command -v ionice >/dev/null 2>&1 && ionice -c3 true 2>/dev/null && prio+=(ionice -c3)
   (cd "$cwd" && FF_CACHE_ORIGIN=$origin FF_CACHE_BG=1 FF_CACHE_BASE=$base CARGO_BUILD_JOBS=1 \
-    timeout 900 "${prio[@]}" bash "$here/ffcc.sh" "$cache" - "$family" "$key" -- "${words[@]}" >/dev/null 2>&1)
+    ff_timeout 900 "${ff_lowprio[@]}" bash "$here/ffcc.sh" "$cache" - "$family" "$key" -- "${words[@]}" >/dev/null 2>&1)
   return 0
 }
 
@@ -72,10 +72,10 @@ case $mode in
     [ "$1" = -- ] && shift
     tmp=$(mktemp "$cache/job.XXXXXX")
     { printf 'ffcc-job 1\n%s\n%s\n%s\n%s\n' "$cwd" "$family" "$key" "$origin"; printf '%s\0' "$@"; } >"$tmp"
-    mv "$tmp" "$q/$prio-$(date +%s%N)-$$"
+    mv "$tmp" "$q/$prio-$(ff_nanos)-$$"
     # start the worker, detached, unless one is running
-    if (exec 8>"$cache/queue.lock" && flock -n 8); then
-      setsid bash "$0" work "$cache" </dev/null >/dev/null 2>&1 &
+    if (exec 8>"$cache/queue.lock" && ff_lock 8 nb); then
+      "${ff_setsid[@]}" bash "$0" work "$cache" </dev/null >/dev/null 2>&1 &
     fi
     ;;
   work) work ;;

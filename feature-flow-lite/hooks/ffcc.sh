@@ -9,14 +9,14 @@
 cache=$1 notes=$2 family=$3 key=$4
 shift 4
 [ "$1" = -- ] && shift
-# Linux tools for now (macOS lacks flock and setsid, and may lack sha256sum):
-# without them, run the check uncached rather than risk a wrong key.
-for tool in flock setsid sha256sum stat; do command -v "$tool" >/dev/null 2>&1 || exec "$@"; done
-stat -L -c %Y . >/dev/null 2>&1 || exec "$@"
+# flock, setsid, sha256sum and GNU stat, or their macOS stand-ins
+. "$(dirname "$0")/ffcc-portable.sh" || exec "$@"
 root=$(git rev-parse --show-toplevel 2>/dev/null) || exec "$@"
 own=$(cd "$root" && cd "$(git rev-parse --git-common-dir)" 2>/dev/null && pwd -P)/ff-check-cache
 [ "$own" = "$(cd "$cache" 2>/dev/null && pwd -P)" ] || exec "$@"
-rel=${PWD#"$root"}
+# git prints the real path; so must the cwd (macOS's $TMPDIR and /tmp are symlinks)
+rel=$(pwd -P)
+rel=${rel#"$root"}
 head=$(git -C "$root" rev-parse HEAD 2>/dev/null || echo none)
 base=$(cat "$cache/base" 2>/dev/null || echo none)
 # The tree fingerprint: HEAD plus the hash of every modified and untracked non-ignored file.
@@ -38,7 +38,7 @@ fingerprint() {
       paste -d' ' <(printf '%s\n' "${present[@]}" | (cd "$root" && git hash-object --no-filters --stdin-paths)) <(printf '%s\n' "${present[@]}")
     fi
     [ ${#gone[@]} -gt 0 ] && printf 'deleted %s\n' "${gone[@]}"
-  } | sha256sum | cut -c1-16)
+  } | ff_sha | cut -c1-16)
 }
 fingerprint
 toolchain() {
@@ -50,19 +50,18 @@ toolchain() {
   esac
   local f
   for f in .yarn/install-state.gz node_modules/.yarn-state.yml node_modules/.package-lock.json node_modules/.modules.yaml node_modules .venv/pyvenv.cfg .venv; do
-    [ -e "$root/$f" ] && echo "$f $(stat -L -c '%s %Y' "$root/$f")"
+    [ -e "$root/$f" ] && echo "$f $(ff_stat "$root/$f")"
   done
-  for f in "$root"/.venv/lib/*/site-packages; do [ -d "$f" ] && echo "${f#"$root"} $(stat -L -c '%Y' "$f")"; done
+  for f in "$root"/.venv/lib/*/site-packages; do [ -d "$f" ] && echo "${f#"$root"} $(ff_mtime "$f")"; done
   return 0
 }
-tools=$(toolchain | sha256sum | cut -c1-16)
-k=$(printf '%s\n' "$key" "$rel" "$tree" "$tools" | sha256sum | cut -c1-24)
-bk=$(printf '%s\n' "$key" "$rel" "$tools" | sha256sum | cut -c1-24)
+tools=$(toolchain | ff_sha | cut -c1-16)
+k=$(printf '%s\n' "$key" "$rel" "$tree" "$tools" | ff_sha | cut -c1-24)
+bk=$(printf '%s\n' "$key" "$rel" "$tools" | ff_sha | cut -c1-24)
 entry=$cache/entries/$k
 mkdir -p "$cache/entries" "$cache/locks" "$cache/base-results"
 [ "$notes" = - ] || mkdir -p "$(dirname "$notes")"
-now() { date +%s.%N; }
-since() { awk -v a="$1" -v b="$(now)" 'BEGIN { printf "%.1f", b - a }'; }
+since() { awk -v a="$1" -v b="$(ff_now)" 'BEGIN { printf "%.1f", b - a }'; }
 note() { [ "$notes" = - ] || printf '%s\n' "$1" >>"$notes"; }
 # FF_CACHE_ORIGIN says who started the run (an agent, or the mod ahead of time); FF_CACHE_BASE=1
 # marks a run on a clean copy of the base commit, whose result is the base commit's.
@@ -71,26 +70,26 @@ ledger() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date +%s)" "$1" "$key" "
 exec 9>"$cache/locks/$k"
 bgmark=$cache/locks/$k.bg
 preempt=$cache/locks/$k.preempt
-asked=$(now)
+asked=$(ff_now)
 if [ "${FF_CACHE_BG:-}" = 1 ]; then
   # A queued run ahead of time: skip it if its result is already stored, or if
   # anyone is running the same key now.
   [ -f "$entry/status" ] && exit 0
   [ "${FF_CACHE_BASE:-}" = 1 ] && [ -f "$cache/base-results/$bk" ] && exit 0
-  flock -n 9 || exit 0
+  ff_lock 9 nb || exit 0
   [ -f "$entry/status" ] && exit 0
   rm -f "$preempt"
-elif ! flock -n 9; then
+elif ! ff_lock 9 nb; then
   # Someone holds the key. If it is a background run, wait only when it should be
   # done within 30s (from its last run's time); otherwise stop it and run now.
-  if read -r bpid bstart best <"$bgmark" 2>/dev/null; then
+  if read -r bpid bstart best 2>/dev/null <"$bgmark"; then
     left=$(awk -v s="$bstart" -v e="$best" -v n="$(date +%s)" 'BEGIN { print (e == "" ? 999 : e - (n - s)) }')
     if awk -v l="$left" 'BEGIN { exit !(l > 30) }'; then
       : >"$preempt"
       kill -TERM -- "-$bpid" 2>/dev/null || kill -TERM "$bpid" 2>/dev/null
     fi
   fi
-  flock -w 3600 9 || true
+  ff_lock 9 wait 3600 || true
 fi
 waited=$(since "$asked")
 if [ -f "$entry/status" ]; then
@@ -103,10 +102,10 @@ if [ -f "$entry/status" ]; then
   exit "$(cat "$entry/status")"
 fi
 tmp=$(mktemp -d "$cache/run.XXXXXX")
-started=$(now)
+started=$(ff_now)
 if [ "${FF_CACHE_BG:-}" = 1 ]; then
   # its own process group, so an agent can stop the whole check (yarn, node and workers)
-  setsid "$@" >"$tmp/out" 2>"$tmp/err" 9>&- &
+  "${ff_setsid[@]}" "$@" >"$tmp/out" 2>"$tmp/err" 9>&- &
   pid=$!
   est=$(awk -F'\t' -v k="$key" -v r="$rel" '$3 == k && $4 == r && $2 != "hit" { s = $6 } END { print s }' "$cache/ledger.tsv" 2>/dev/null)
   printf '%s %s %s\n' "$pid" "$(date +%s)" "$est" >"$bgmark"
