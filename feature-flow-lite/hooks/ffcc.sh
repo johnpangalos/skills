@@ -9,6 +9,10 @@
 cache=$1 notes=$2 family=$3 key=$4
 shift 4
 [ "$1" = -- ] && shift
+# Linux tools for now (macOS lacks flock and setsid, and may lack sha256sum):
+# without them, run the check uncached rather than risk a wrong key.
+for tool in flock setsid sha256sum stat; do command -v "$tool" >/dev/null 2>&1 || exec "$@"; done
+stat -L -c %Y . >/dev/null 2>&1 || exec "$@"
 root=$(git rev-parse --show-toplevel 2>/dev/null) || exec "$@"
 own=$(cd "$root" && cd "$(git rev-parse --git-common-dir)" 2>/dev/null && pwd -P)/ff-check-cache
 [ "$own" = "$(cd "$cache" 2>/dev/null && pwd -P)" ] || exec "$@"
