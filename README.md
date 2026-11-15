@@ -4,7 +4,7 @@ Agent skills by [@johnpangalos](https://github.com/johnpangalos).
 
 | Skill | What it does |
 |---|---|
-| [feature-flow-lite](feature-flow-lite/SKILL.md) | Runs a feature or fix through a subagent pipeline: Opus writes the acceptance criteria and orchestrates four Haiku roles (investigator, implementor, simplifier, reviewer), and a fresh Opus gatekeeper decides when the change is mergeable. |
+| [feature-flow-lite](feature-flow-lite/SKILL.md) | Runs a feature or fix through a subagent pipeline: Opus writes the acceptance criteria and has them checked against the request, Haiku investigates, builds and simplifies, and a panel of Opus gatekeepers red-teams the change and decides when it is mergeable. |
 | [figma-flow](figma-flow/SKILL.md) | Turns a Figma frame into React that matches it: lint the frame for values code would have to guess, export Figma's exact values with the scripts it carries, build with the project's own components and tokens, measure the result against those values, then have a fresh agent compare screenshots. |
 | [figma-setup](figma-setup/SKILL.md) | Sets a React repo up, once, to build from Figma and check the result against Figma's exact values: export scripts, a measuring test, the mapping rules in CLAUDE.md and one worked example. After it, "build X from Figma" works with figma-flow, or with no skill once the values are exported. |
 | [heavy-limiter](heavy-limiter/README.md) | A mod that makes parallel sessions on one machine take turns with heavy commands (cargo, go test, Playwright, jest, vitest, tsc, builds): one pool of cores and memory shared by every session, with fewer workers per command when it's contended. |
