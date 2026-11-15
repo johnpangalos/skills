@@ -93,7 +93,9 @@ export function loadFigmaPage(url: URL): Record<string, FigmaPageNode> {
  *
  * Text that hugs its content may be under a pixel off in width, as with expectToMatchFigma; for
  * it to hug at all, its parent has to stop it stretching (`align-items: flex-start` in a column,
- * Figma's default). Pass `width: false` where the rendered text differs from Figma's.
+ * Figma's default). Pass `width: false` only where the words differ from Figma's (sample data in
+ * place of the design's). A width that is off because the font differs is a failure to report:
+ * the app isn't drawing the design's font, and turning the check off hides it.
  */
 export async function expectTextToMatchFigma(element: Locator, figma: FigmaText, { width = true } = {}) {
   const box = await element.boundingBox();
@@ -127,7 +129,10 @@ export async function expectTextToMatchFigma(element: Locator, figma: FigmaText,
   });
 }
 
-/** Leaves an entry of a page export unmeasured, with the reason; the report lists it. */
+/**
+ * Leaves an entry of a page export unmeasured, with the reason; the report lists it. For an
+ * entry the helper can't read (a vector, a shadow with blur), never for one whose values fail.
+ */
 export const skip = (reason: string) => ({ skip: reason });
 
 type Located = Locator | { skip: string } | { element: Locator; width?: false; position?: false };
@@ -198,7 +203,8 @@ export async function expectPageToMatchFigma(nodes: Record<string, FigmaPageNode
  *
  * Pass `width: false` where the width can't be compared: the element's text differs from the
  * Figma node's (a state variant labelled "Tab"), or it holds several text-hugging children,
- * whose fractions add up past a pixel.
+ * whose fractions add up past a pixel. Not where the font differs from the design's: that is a
+ * failure to report, and turning the check off hides it.
  */
 export async function expectToMatchFigma(element: Locator, figma: FigmaNode, { width = true } = {}) {
   const box = await element.boundingBox();
@@ -229,6 +235,23 @@ export async function expectToMatchFigma(element: Locator, figma: FigmaNode, { w
       .flatMap((match) => (match && Number(match[2]) > 0 && hex(match[1]!) ? [[hex(match[1]!), Number(match[2])]] : []))
       .sort((a, b) => (b[1] as number) - (a[1] as number));
     const px = (value: string) => parseFloat(value) || 0;
+    // Where the label's text starts, measured from the element's left edge. Not the padding: after
+    // a leading child (a dot, with its gap) the text starts further in.
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    let first: Text | null = null;
+    let last: Text | null = null;
+    for (let node = walker.nextNode() as Text | null; node; node = walker.nextNode() as Text | null) {
+      if (!/\S/.test(node.data)) continue;
+      first ??= node;
+      last = node;
+    }
+    let labelX = px(style.paddingLeft) + border;
+    if (first && last) {
+      const range = document.createRange();
+      range.setStart(first, 0);
+      range.setEnd(last, last.length);
+      labelX = range.getBoundingClientRect().left - el.getBoundingClientRect().left;
+    }
     const sides = ["Top", "Right", "Bottom", "Left"] as const;
     return {
       layout: {
@@ -243,7 +266,7 @@ export async function expectToMatchFigma(element: Locator, figma: FigmaNode, { w
       radius: parseFloat(style.borderTopLeftRadius),
       rings,
       label: {
-        x: parseFloat(style.paddingLeft) + parseFloat(style.borderLeftWidth),
+        x: labelX,
         y: parseFloat(style.paddingTop) + border,
         height: parseFloat(style.lineHeight),
         color: hex(style.color),
@@ -264,7 +287,10 @@ export async function expectToMatchFigma(element: Locator, figma: FigmaNode, { w
   sameColor(rendered.fill, figma.fill, "fill");
   sameColor(rendered.stroke, figma.stroke, "border");
   expect.soft(rendered.strokeWeight, "border width").toBe(figma.strokeWeight);
-  expect.soft(rendered.radius, "radius").toBe(figma.radius);
+  // A radius past half the box is drawn as half the box: rounded-full computes to a huge value
+  // where Figma says 9999. Both sides are clamped to the box each is drawn in, which is exact.
+  const drawn = (radius: number, { width, height }: Region) => Math.min(radius, Math.min(width, height) / 2);
+  expect.soft(drawn(rendered.radius, box!), "radius").toBe(drawn(figma.radius, figma));
   // Figma can draw a ring another way (the ghost Button uses a rectangle), which this can't read.
   if (figma.rings.length > 0) {
     expect.soft(rendered.rings.map(([, spread]) => spread), "ring widths").toEqual(figma.rings.map(([, spread]) => spread));

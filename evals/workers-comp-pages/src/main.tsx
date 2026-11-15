@@ -1,12 +1,15 @@
 import "@workers-comp/ui/styles.css";
+import "./fonts.css";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
 // Every file in src/pages/ is a page at /<file name>. The pages are built from Figma designs with
 // @workers-comp/ui, installed from npm as any app would.
-const pages = import.meta.glob<{ default: () => React.JSX.Element }>("./pages/*.tsx", { eager: true });
+// Pages load on demand, so a page's CSS is only on the page that imports it.
+const pages = import.meta.glob<{ default: () => React.JSX.Element }>("./pages/*.tsx");
 const name = location.pathname.replace(/^\/|\/$/g, "");
-const Page = pages[`./pages/${name}.tsx`]?.default;
+const load = pages[`./pages/${name}.tsx`];
+const Page = load ? (await load()).default : undefined;
 
 function Index() {
   return (

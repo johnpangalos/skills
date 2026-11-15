@@ -144,3 +144,56 @@ against Figma's 3.19. Left failing, rightly.
    apps without Tailwind; tell the app to serve Inter 3.19.
 5. figma-flow's look step: a fallback when no agent can be spawned (run it from the orchestrator,
    or ask the person).
+
+## Round 2: after the fixes
+
+What changed (commits on this branch): export-node keys repeats with a number and gives every
+entry its id (1.B); a frame is exported as a page, down to its instances, with text (2.B), and an
+instance of a component made in the file (ClaimRow) is opened, since the app builds it; the
+helper adds `expectTextToMatchFigma` (3), checks each element's position in its parent (4) and,
+in `expectPageToMatchFigma`, needs an element or `skip("why")` for every key (5). The template
+also took two fixes the workers_comp copy had and it lacked: radii clamped to half the box
+(`rounded-full` against Figma's 9999) and a label's x measured where its text starts.
+
+Three fresh Sonnet agents, one per page, each from the updated skill (logs `runs/retest-*.md`,
+about 3 to 4 minutes each). All three reached a pass. What they had to work around, and what I
+did after:
+
+- **The loader caught the old false pass.** The first Report an injury export now fails to load:
+  "repeats Card > TextField, TextField, TextField > Employer, Button".
+- **Text measurement caught a real bug.** Report an injury's heading and subtitle stretched to
+  400px instead of hugging their text (`align-items: flex-start` was missing).
+- **The font was behind most of the relaxations.** The agents turned off width or position on 10
+  entries because this machine's Inter is 4, not 3.19. The helper's note ("where the rendered text
+  differs from Figma's") let them read a font difference as allowed. After the run I served Inter
+  3.19 from `inter-ui` (`src/fonts.css`), as workers_comp's playground does, removed those
+  relaxations, and both pages pass with none. The helper now says a font difference is a failure
+  to report, not a reason for `width: false`.
+- **Chips and the Badge were skipped** for the radius (33554400px computed against 9999) and the
+  Badge's label x. With the template's fixes they are measured and pass.
+- **Every page's CSS loaded on every page** (the app's `main.tsx`, my scaffold), so Claim summary's
+  classes collided with Claims inbox's. Pages now load on demand.
+- **The ghost Button draws the browser's button face** (`#efefef`) in this app: `@workers-comp/ui`'s
+  CSS gives buttons no background reset, and the playground hides it with Tailwind's preflight.
+  The agent covered it with page CSS; I removed that, so **`test:figma` fails here on purpose**
+  (Claim summary, Withdraw claim, fill `#efefef` against none) until the package is fixed.
+- **ClaimRow's insides** weren't exported when the agents ran (the export stopped at every
+  instance). The export now opens local components; Claims inbox's export predates that, so its
+  rows' text and Badges are still unmeasured until it is exported again.
+
+Final state: `test:figma` 6 of 7 pass, the failure being the ghost Button above. Relaxations left,
+all in Claims inbox and all text rounding across a row of text-hugging siblings, the documented
+case: the filter row's width, the last Chip's x, the TabList's width.
+
+### Still open
+
+- **The look step never ran blind.** A subagent can't spawn another agent, and the Figma
+  screenshot URL is blocked by this environment's proxy. Every agent compared screenshots itself.
+- **Scripts are pasted into `use_figma` by hand** (about 9KB, full of blanks left by type
+  stripping) and saved by hand, because the mod isn't running here. The hashes caught nothing
+  wrong, but it is the slowest step. `print.ts --hash` and the in-file hash still can't be
+  compared directly.
+- **No per-field skip**: skipping an entry for one field loses its other checks. With the radius
+  and label fixes nothing needed it this round.
+- figma-setup's own fixes (tokens from the library, the lint spec's name, a non-Tailwind mapping,
+  serving the font) and the trap page's "should be" advice are not done yet.

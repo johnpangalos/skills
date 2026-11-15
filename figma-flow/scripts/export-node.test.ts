@@ -34,7 +34,7 @@ const text = (id: string, characters: string, extra: Partial<Fake> = {}): Fake =
 });
 // An instance whose text is inside a nested frame, as TextField's is, with a text property.
 const textField = (id: string, label: string, y: number): Fake => {
-  const main = { name: "state=default, invalid=false", parent: { type: "COMPONENT_SET", name: "TextField" } };
+  const main = { name: "state=default, invalid=false", remote: true, parent: { type: "COMPONENT_SET", name: "TextField" } };
   return box(id, "INSTANCE", "TextField", {
     y,
     // The description comes first, both as a property and as a direct text child; the key uses the label.
@@ -91,7 +91,7 @@ test("a frame is a page: frames and text all the way down, instances as one entr
 
 test("repeated keys are numbered, so nothing is lost when the JSON is read", async () => {
   const row = (id: string) => box(id, "INSTANCE", "ClaimRow", {
-    componentProperties: {}, getMainComponentAsync: async () => ({ name: "ClaimRow", parent: { type: "PAGE" } }),
+    componentProperties: {}, getMainComponentAsync: async () => ({ name: "ClaimRow", remote: true, parent: { type: "PAGE" } }),
   });
   const page = box("2:1", "FRAME", "Inbox", { children: [row("2:2"), row("2:3"), row("2:4"), text("2:5", "Open"), text("2:6", "Open")] });
   const out = await run([page], "2:1");
@@ -114,6 +114,25 @@ test("components keep their shape: variants, and laid-out children one level dow
   assert.equal(buttons["variant=default"]!.label && (buttons["variant=default"]!.label as { fontSize: number }).fontSize, 14);
   // Two children labelled "Tab" no longer overwrite each other.
   assert.deepEqual(Object.keys(parse(await run([tabs], "4:1"))), ["TabList", "TabList > Tab", "TabList > Tab (2)"]);
+});
+
+test("an instance of a component made in this file is opened; a library one isn't", async () => {
+  const badge = box("6:4", "INSTANCE", "Badge", {
+    componentProperties: { "Label#1:0": { type: "TEXT", value: "Approved" } },
+    getMainComponentAsync: async () => ({ name: "color=green", remote: true, parent: { type: "COMPONENT_SET", name: "Badge" } }),
+    children: [text("6:5", "Approved")],
+  });
+  const row = box("6:2", "INSTANCE", "ClaimRow", {
+    componentProperties: { "title#1:0": { type: "TEXT", value: "WC-2038" } },
+    getMainComponentAsync: async () => ({ name: "ClaimRow", remote: false, parent: { type: "PAGE" } }),
+    children: [text("6:3", "WC-2038"), badge],
+  });
+  const nodes = parse(await run([box("6:1", "FRAME", "Inbox", { children: [row] })], "6:1"));
+  assert.deepEqual(Object.keys(nodes), ["Inbox", "Inbox > WC-2038", "Inbox > WC-2038 > WC-2038", "Inbox > WC-2038 > Approved"]);
+  assert.equal(nodes["Inbox > WC-2038"]!.local, true);
+  assert.equal(nodes["Inbox > WC-2038"]!.label, null);
+  assert.equal(nodes["Inbox > WC-2038 > Approved"]!.local, false);
+  assert.equal(nodes["Inbox > WC-2038 > Approved"]!.parent, "Inbox > WC-2038");
 });
 
 test("the last line is a hash of everything above it", async () => {

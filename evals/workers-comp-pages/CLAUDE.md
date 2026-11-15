@@ -53,8 +53,8 @@ Rules:
   variable in Figma is a question for the designer, not a magic number.
 - Page CSS and components live in `src/pages/`; a page is `src/pages/<name>.tsx`, shown at `/<name>`.
 - Behaviour comes from `@workers-comp/ui` (comp0 inside it). Don't add another component library.
-- The font is Inter 3.19, the version Figma uses. Nothing in this app serves it yet (see the
-  setup report); don't switch to Google Fonts' Inter.
+- The font is Inter 3.19, the version Figma uses, served by `src/fonts.css` from `inter-ui`. Don't
+  switch to Google Fonts' Inter. A spec waits for it (`document.fonts.load`) before measuring.
 
 ### Building something from Figma
 

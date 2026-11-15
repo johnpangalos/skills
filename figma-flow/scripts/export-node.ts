@@ -11,8 +11,9 @@
 //
 // Pages. An id that is a frame (not a component) is a page, or part of one, built from
 // instances: every frame under it gets an entry, all the way down, and so does every text node,
-// with its type. An instance gets one entry, its box, and nothing inside it: the component is
-// the design system's to measure. Each entry names its `parent` entry, and its x and y are inside
+// with its type. An instance of a library component gets one entry, its box, and nothing inside
+// it: the component is the design system's to measure. An instance of a component made in this
+// file (`local: true`) is opened like a frame, since the app builds it. Each entry names its `parent` entry, and its x and y are inside
 // that parent. A frame's `label` is null here, because its text has entries of its own.
 //
 // Every entry has the node's `id`. Keys are unique: a repeated key is numbered (`Row`,
@@ -154,7 +155,11 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
           const main = await child.getMainComponentAsync();
           const component = main?.parent?.type === "COMPONENT_SET" ? main.parent.name : (main?.name ?? null);
           const variant = main?.parent?.type === "COMPONENT_SET" ? main.name : null;
-          entries.push([key, { ...describe(child, true), type: "INSTANCE", component, variant, parent }]);
+          // A component from a library is the library's to measure. One made in this file (a
+          // ClaimRow) has no code until the app builds it, so its insides are measured here.
+          const local = main !== null && !main.remote;
+          entries.push([key, { ...describe(child, !local), type: "INSTANCE", component, variant, local, parent }]);
+          if (local) await walk(key, child);
         } else {
           entries.push([key, { ...describe(child, false), type: "FRAME", parent }]);
           await walk(key, child);
