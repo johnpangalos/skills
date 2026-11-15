@@ -65,8 +65,29 @@ note() { [ "$notes" = - ] || printf '%s\n' "$1" >>"$notes"; }
 origin=${FF_CACHE_ORIGIN:-agent}
 ledger() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date +%s)" "$1" "$key" "$rel" "$tree" "$2" "$3" "$origin" >>"$cache/ledger.tsv"; }
 exec 9>"$cache/locks/$k"
+bgmark=$cache/locks/$k.bg
+preempt=$cache/locks/$k.preempt
 asked=$(now)
-flock -w 3600 9 || true
+if [ "${FF_CACHE_BG:-}" = 1 ]; then
+  # A queued run ahead of time: skip it if its result is already stored, or if
+  # anyone is running the same key now.
+  [ -f "$entry/status" ] && exit 0
+  [ "${FF_CACHE_BASE:-}" = 1 ] && [ -f "$cache/base-results/$bk" ] && exit 0
+  flock -n 9 || exit 0
+  [ -f "$entry/status" ] && exit 0
+  rm -f "$preempt"
+elif ! flock -n 9; then
+  # Someone holds the key. If it is a background run, wait only when it should be
+  # done within 30s (from its last run's time); otherwise stop it and run now.
+  if read -r bpid bstart best <"$bgmark" 2>/dev/null; then
+    left=$(awk -v s="$bstart" -v e="$best" -v n="$(date +%s)" 'BEGIN { print (e == "" ? 999 : e - (n - s)) }')
+    if awk -v l="$left" 'BEGIN { exit !(l > 30) }'; then
+      : >"$preempt"
+      kill -TERM -- "-$bpid" 2>/dev/null || kill -TERM "$bpid" 2>/dev/null
+    fi
+  fi
+  flock -w 3600 9 || true
+fi
 waited=$(since "$asked")
 if [ -f "$entry/status" ]; then
   cat "$entry/out"
@@ -79,12 +100,29 @@ if [ -f "$entry/status" ]; then
 fi
 tmp=$(mktemp -d "$cache/run.XXXXXX")
 started=$(now)
-"$@" >"$tmp/out" 2>"$tmp/err" 9>&- &
-pid=$!
-trap 'kill -TERM $pid 2>/dev/null; cat "$tmp/out"; cat "$tmp/err" >&2; rm -rf "$tmp"; exit 143' TERM INT HUP
+if [ "${FF_CACHE_BG:-}" = 1 ]; then
+  # its own process group, so an agent can stop the whole check (yarn, node and workers)
+  setsid "$@" >"$tmp/out" 2>"$tmp/err" 9>&- &
+  pid=$!
+  est=$(awk -F'\t' -v k="$key" -v r="$rel" '$3 == k && $4 == r && $2 != "hit" { s = $6 } END { print s }' "$cache/ledger.tsv" 2>/dev/null)
+  printf '%s %s %s\n' "$pid" "$(date +%s)" "$est" >"$bgmark"
+else
+  "$@" >"$tmp/out" 2>"$tmp/err" 9>&- &
+  pid=$!
+fi
+trap 'kill -TERM -- "-$pid" 2>/dev/null || kill -TERM $pid 2>/dev/null; cat "$tmp/out"; cat "$tmp/err" >&2; rm -rf "$tmp" "$bgmark"; exit 143' TERM INT HUP
 wait $pid
 status=$?
 trap - TERM INT HUP
+if [ "${FF_CACHE_BG:-}" = 1 ]; then
+  rm -f "$bgmark"
+  if [ -f "$preempt" ]; then
+    # an agent stopped this run to run the check itself: no result, pass or fail
+    rm -rf "$tmp" "$preempt"
+    ledger preempted "$(since "$started")" 0
+    exit 0
+  fi
+fi
 seconds=$(since "$started")
 cat "$tmp/out"
 cat "$tmp/err" >&2

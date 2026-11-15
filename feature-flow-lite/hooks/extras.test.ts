@@ -193,10 +193,12 @@ test('extras hook: an implementor finishing reruns ahead the checks the orchestr
   const before = w.runs.length
   await $.turn.complete({ agentId: 'agent-1', answer: 'STATUS: pass', durationMs: 1, isAborted: false, turnId: 't', reason: 'answer' } as never)
   await new Promise(r => setTimeout(r, 0))
-  const ahead = w.runs.slice(before).filter(r => r[0] === 'bash' && r[1]?.endsWith('ffcc.sh'))
-  expect(ahead.map(r => r.slice(4, 6))).toEqual([
-    ['go', 'go test -race ./...'],
-    ['go', 'go vet ./...'],
+  const ahead = w.runs.slice(before).filter(r => r[0] === 'bash' && r[1]?.endsWith('ffcc-queue.sh'))
+  // queued for the low-priority worker (tree jobs prio 1), the first replacing older queued jobs
+  expect(ahead.map(r => r.slice(2, 9))).toEqual([
+    ['enqueue', '/r/.git/ff-check-cache', '1', '/r', 'go', 'go test -race ./...', 'mod'],
+    ['enqueue', '/r/.git/ff-check-cache', '1', '/r', 'go', 'go vet ./...', 'mod'],
   ])
-  expect(ahead[0]?.slice(6)).toEqual(['--', 'go', 'test', '-race', '-count=1', './...'])
+  expect(ahead[0]?.slice(9)).toEqual(['--replace', '--', 'go', 'test', '-p=1', '-race', '-count=1', './...'])
+  expect(ahead[1]?.slice(9)).toEqual(['--', 'go', 'vet', '-p=1', './...'])
 })

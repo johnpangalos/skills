@@ -1,5 +1,5 @@
 import type { EngineInterface, Register } from 'claude-code'
-import { checkOf, noteFor, parseNotes, planRewrite, projectChecks, segments, tokenize } from './check-cache'
+import { checkOf, lowThreadWords, noteFor, parseNotes, planRewrite, projectChecks, segments, tokenize } from './check-cache'
 import { PANEL_FOCI, isProbe, mustFixes, panelPrompts, requestOf, timeline, withRequest, withRuledOn } from './extras'
 import type { Span } from './extras'
 
@@ -404,12 +404,11 @@ type ExtrasState = {
   agentChecks: Map<string, { key: string; family: string; words: string[] }>
 }
 
-// The checks a project file lists, each with its st.cache key, run through the
-// wrapper in the background. Runs of a key already in flight are skipped; an
-// agent asking for the same check meanwhile waits on it and replays it.
 // Ahead of the orchestrator, the checks it has run in this session (each key
-// once); on the base commit, the project file's Checks. Each runs through the
-// wrapper in the background: an agent asking for it meanwhile waits on it.
+// once); on the base commit, the project file's Checks. Each is queued for the
+// repo's low-priority worker, with one worker thread (lowThreadWords). An agent
+// that asks for a queued check runs it itself; one the worker is running, it
+// waits for when it should finish within 30s, and otherwise stops (ffcc.sh).
 async function runChecksAhead($: EngineInterface, st: ExtrasState, opts: { cwd: string; base: boolean }): Promise<void> {
   if (st.cache === undefined) return
   const setup = st.cache
@@ -426,15 +425,22 @@ async function runChecksAhead($: EngineInterface, st: ExtrasState, opts: { cwd: 
   } else {
     checks = [...st.agentChecks.values()]
   }
+  // Queued, not started: one worker per repo runs them one at a time at the
+  // lowest priority, cheapest first (hooks/ffcc-queue.sh). A newer tree's
+  // batch replaces the jobs still queued for an older one.
+  const queue = setup.script.replace(/ffcc\.sh$/, 'ffcc-queue.sh')
+  const origin = opts.base ? 'mod-base' : 'mod'
+  let replace = !opts.base
   for (const check of checks) {
-    const words = check.words
     const id = `${opts.base ? 'base' : 'tree'}:${check.key}`
     if (st.inflight.has(id)) continue
     st.inflight.add(id)
-    const env: Record<string, string> = { FF_CACHE_ORIGIN: opts.base ? 'mod-base' : 'mod' }
-    if (opts.base) env.FF_CACHE_BASE = '1'
-    void $.process
-      .run(['bash', setup.script, setup.dir, '-', check.family, check.key, '--', ...words], { cwd: opts.cwd, env, timeoutMs: 600_000 })
+    const argv = ['bash', queue, 'enqueue', setup.dir, opts.base ? '2' : '1', opts.cwd, check.family, check.key, origin]
+    if (replace) argv.push('--replace')
+    replace = false
+    argv.push('--', ...lowThreadWords(check.words))
+    await $.process
+      .run(argv, { cwd: opts.cwd, timeoutMs: 60_000 })
       .catch(() => undefined)
       .finally(() => st.inflight.delete(id))
   }
