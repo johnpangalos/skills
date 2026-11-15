@@ -50,6 +50,7 @@ A summary of every eval run on feature-flow-lite and its Figma offshoots so far 
 | Figma | Pipeline vs plain model on Button and Tabs | Plain Opus and Sonnet passed everything for a quarter of the cost or less. | figma-flow builds directly (PR #10) |
 | Opus reviewer | Does moving the reviewer to Opus on risky paths pay? | No. Both arms passed every hidden case in 30 of 30 builds; Opus cost 27% more. | Removed |
 | Review gate | One Opus agent reviews and decides, criteria checked before building, a check cache | The criteria check fixed chi-etag's Flush criterion in 1 of 2 builds (the first hidden Flush pass). Not faster: 2 to 6 gate rounds, about 35 min. The cache saved 0.5 to 1.2 min. | Not yet (2 builds) |
+| Review panel | Three Opus gatekeepers at once (request, edges, repo), one fix round each, a fresh final gate; plus a mod that runs base checks and checks ahead | Panel alone: 18.8 min on chi-etag and 22.9 min on react-aria, every hidden test passing on both, matching the current skill's time on react-aria. The mod made react-aria 2–3× slower. | Panel promising (1 build per task); mod's check-ahead no |
 
 ### Earlier rounds (1–5)
 
@@ -337,6 +338,40 @@ Results:
 - **The cache had less to save in this variant.** Its check commands came to 6 to 8 minutes of Bash time per build, against the ≈20 check-minutes measured for the Opus xhigh gatekeeper arm. With no separate reviewer and the don't-rerun rule, most repeats are gone before the cache sees them.
 - **Subshells weren't cached in this batch.** Agents often write checks inside `( … )` subshells, and the parser skipped those; it now handles them. Measure the cache again on an arm with more repeats (`lite-merge-gate-opus-xhigh`), or make it the default since it costs nothing.
 
+### 15. Review panel: three gatekeepers at once, and the mod's extras
+
+Section 14 showed that the number of gate rounds sets the clock. The `review-panel` variant changes `review-gate` so that each round covers more ground and fewer rounds are needed:
+- At step 8 the orchestrator spawns three gatekeepers in one message, each with a `FOCUS`. *request* probes every sentence of the request and every criterion. *edges* probes what the code wraps and its edge inputs, running the same inputs with and without the wrapper across call orders and diffing every output. *repo* covers conventions, the sibling, docs, tests and the full checks.
+- Fixes batch every must-fix, with "change only what each must-fix needs; any other change in behavior is a regression". Each gatekeeper is then continued with `SendMessage` to verify its own items, which needs session persistence (`persist_session` in the arm). A fresh `FOCUS: all` gate then makes the final call, given the `RULED ON` list.
+- Step 0 also starts the full checks on the untouched tree in the background. After that, only the affected checks run.
+- The criteria checker is told that the request wins over the sibling.
+
+`review-panel-mod` is the same with `FEATURE_FLOW_EXTRAS=1` on, which turns on these mod parts in `hooks/register.ts` and `hooks/extras.ts`:
+- base checks in a worktree of the base commit;
+- running the orchestrator's checks ahead after each implementor or simplifier, so the result is cached when asked for;
+- the request and earlier must-fixes appended to every gatekeeper handoff;
+- probe-file cleanup;
+- a timeline in `/ff-usage`.
+
+A mod-side fan-out of `FOCUS: panel` exists but isn't used, because `claude -p` exits without waiting for agents a mod spawns: two builds were cut short by it.
+
+| | chi-etag panel | chi-etag panel + mod (2 builds) | rac-shadow-hide panel | rac-shadow-hide panel + mod (2 builds) |
+|---|---|---|---|---|
+| Wall time | **18.8 min** | 23.5, 31.2 min | **22.9 min** | 50.9, 63.5 min |
+| Cost | $4.85 | $4.49, $7.30 | $5.30 | $9.52, $6.01 |
+| Hidden tests and outcome checks | all pass, Flush included | all pass | all 6 pass | all 6 pass (one type-check failure was the grader's Node crashing under load; it passes alone in 19 s) |
+| Probes | 5 of 7 | 5 of 7, **7 of 7** | nested target passes | nested target passes in both |
+| Audit would merge | yes | yes, yes | no: slot anchors aren't found for closed shadow roots | yes; no (no test for content added later to an outer shadow root) |
+| Cache time saved for agents / waited on shared runs | – | –, 3.3 / 1.6 min | 1.2 / 0 min | 14.6 / 8.1, 10.3 / 8.4 min |
+
+Results:
+- **The panel is the first merge-gate variant to match the current skill's clock on react-aria** (22.9 against 22.3 min), and it took chi-etag from 38 min (`review-gate`) to 19 min with the hidden Flush test passing. It does this by catching most issues in one parallel round: on react-aria the panel found the nested-target bug at minute 12, and the final gate found one slotted-target issue.
+- **It costs 3–4× the current skill** ($4.85–$5.30 against about $1.35), because the gatekeepers are Opus.
+- **The mod's checks-ahead and base checks made react-aria slower, not faster.** With two builds sharing 4 CPUs, the background checks competed with the agents. The implementors took 9–10 min instead of about 4. Agents waited 8 min each on shared in-flight runs, and the mod's own runs were mostly repeats (45 and 33 of its runs were hits on results it already had). One build also reran the whole repo's `yarn test` at the end, a 17-minute tail with two flaky suites failing. On chi-etag (a small Go repo) the mod's cost was small, and its best build passed all 7 probes. That build's three fix rounds came from the verifying gatekeepers finding trailer and 1xx issues, not from the mod.
+- **Keep:** the panel and the check cache (agent replays saved 10–15 min of check time per react-aria build).
+- **Drop or gate:** checks-ahead and base checks. Run them only when the machine is idle, or only for checks under a minute.
+- `cache_stats.py` now counts only agents' hits as time saved. Before, the mod's own repeat hits were counted, which reported 55 min "saved" for one build.
+
 ### Open questions
 
 - Does v5 plus the screenshot reviewer alone (without v9's verify paragraph) keep the product gain and the tests?
@@ -424,6 +459,7 @@ Process checks (`kind: process`) apply only to skill arms. Outcome checks (hidde
 | `skill-v1`, `skill-v0` | feature-flow with named agents (`b6eface`), and as first committed (`0263562`), loaded as a bare project skill with no agents |
 | `lite-opus-reviewer`, `lite-no-opus-reviewer` | The skill with its mod before the Opus-reviewer clause was removed (`f11f50c`; the batch ran it as `lite-pc-mod`), and the working tree |
 | `lite-review-gate`, `lite-review-gate-cache` | The `review-gate` variant (one Opus gatekeeper that reviews and decides, a criteria check before the implementor, the investigator started at once); the second arm sets `FEATURE_FLOW_CHECK_CACHE=1` through its `env` |
+| `lite-review-panel`, `lite-review-panel-mod` | The `review-panel` variant (three gatekeepers at once by focus, batched fixes verified by `SendMessage`, a fresh final gate; check cache on, `SendMessage` allowed, session persistence kept), and `review-panel-mod`, the same plus `FEATURE_FLOW_EXTRAS=1` (base checks, checks ahead, request and `RULED ON` added to handoffs) |
 
 The full feature-flow skill isn't in the tree any more, so its arms load it from history: an arm can pin any git `ref` of any skill `folder`, and the harness extracts that version with `git archive`. An arm can also lay a variant's files over the skill (`variant`: `harness/variants/<name>/`, which can replace SKILL.md or add and replace agents), pin every agent's model and effort or a single agent's (`agents`), set environment variables for its runs (`env`), and tell the grader which model every role should run on (`roster_model`). The skill's value claim is that `lite-v2` matches `baseline` on outcomes for no more money.
 
