@@ -25,6 +25,7 @@ ROLE_PATTERNS = [
     ("planner", r"plann"),
     ("looker", r"looker|compare two images"),
     ("council", r"councill?or|council"),
+    ("criteria_check", r"criteria[ -]?check"),
     ("gate", r"gatekeep|merge gate"),
     ("investigator", r"investigat"),
     ("explorer", r"explor|mapper|locat"),
@@ -56,6 +57,7 @@ ROSTER = {
     "looker": {"opus"},  # figma-flow's fresh pair of eyes: weaker models miss subtle differences
     "council": {"haiku"},  # the council variant's ten councillors
     "gate": {"opus", "fable"},  # the merge-gate variant's gatekeeper decides whether the change is mergeable
+    "criteria_check": {"opus"},  # the review-gate variant's check of the criteria before the implementor runs
     "other": {"haiku", "sonnet"},
 }
 
@@ -77,6 +79,7 @@ ROLE_WORDS = {
     "looker": r"looker|looked|screenshot",
     "gate": r"gatekeep|merge gate",
     "council": r"council",
+    "criteria_check": r"criteria[ -]?check",
 }
 
 STAGE_WORDS = r"investigat|explor|implement|verif|simplif|review|test.?writer|debug|docs"
@@ -190,6 +193,7 @@ AGENT_ROLES = {
     "looker": "looker",  # figma-flow's agent
     "gatekeeper": "gate",  # the merge-gate variant's agent
     "councillor": "council",  # the council variant's agent
+    "criteria-checker": "criteria_check",  # the review-gate variant's agent
 }
 
 
@@ -239,7 +243,7 @@ def roles_use_roster_models(t, sc, rule):
     bad = []
     for s in t.main_spawns:
         allowed = set(ROSTER.get(s["role"], ROSTER["other"]))
-        if sc.get("_pinned_model") and s["role"] not in ("looker", "gate"):
+        if sc.get("_pinned_model") and s["role"] not in ("looker", "gate", "criteria_check"):
             allowed = {sc["_pinned_model"]}  # the arm pins every agent to one model (the looker and gate keep their own)
         if sc.get("risky") and s["role"] == "reviewer":
             allowed.add("opus")
@@ -297,7 +301,7 @@ def stages_announced_first(t, sc, rule):
 
 
 def checks_before_review(t, sc, rule):
-    reviews = t.of_role("reviewer")
+    reviews = t.of_role("reviewer") or t.of_role("gate")
     if not reviews:
         return True, "no reviewer spawned (n/a)"
     bad = []
@@ -435,7 +439,7 @@ PIPELINE_RULES = [
     {"name": "no spawns refused at the depth limit", "rule": "no_depth_refusals"},
     {"name": "main conversation leaves edits to subagents", "rule": "main_does_not_edit"},
     # for a design, figma-flow's looker is the review
-    {"name": "a reviewer checked the result", "rule": "role_count", "role": "reviewer", "or": ["looker"], "min": 1},
+    {"name": "a reviewer checked the result", "rule": "role_count", "role": "reviewer", "or": ["looker", "gate"], "min": 1},
     {"name": "final report lists the agents that ran", "rule": "report_lists_agents"},
 ]
 

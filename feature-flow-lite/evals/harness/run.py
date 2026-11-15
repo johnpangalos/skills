@@ -111,9 +111,10 @@ def command(scenario, arm, prompt):
         "claude", "-p", prefix + prompt, *plugin,
         "--model", arm["model"], "--effort", arm["effort"],
         "--output-format", "stream-json", "--verbose", "--forward-subagent-text",
-        "--permission-mode", "acceptEdits", "--allowedTools", TOOLS, "--permission-prompts", "none",
+        "--permission-mode", "acceptEdits", "--allowedTools", ",".join([TOOLS, *arm.get("extra_tools", ())]), "--permission-prompts", "none",
         "--max-budget-usd", str(arm.get("budget_usd") or scenario.get("budget_usd", 5)),
-        "--no-session-persistence",
+        # continuing a finished subagent (SendMessage) needs its transcript on disk
+        *(() if arm.get("persist_session") else ("--no-session-persistence",)),
     ]
 
 
@@ -133,6 +134,7 @@ def run_one(out, scenario, arm_name, arm, rep, prompt, dry_run):
     # claude -p stops background subagents 10 minutes after the last turn by default, which cut off
     # slow gatekeepers mid-review. Wait for them; the timeout below still bounds the run.
     env["CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS"] = "0"
+    env.update(arm.get("env") or {})  # an arm's own variables, e.g. to turn on a mod feature for an A/B
     started = time.time()
     with open(run_dir / "trace.jsonl", "w") as trace, open(run_dir / "stderr.txt", "w") as err:
         try:

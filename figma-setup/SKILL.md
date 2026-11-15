@@ -43,7 +43,10 @@ disagree, it reports the difference and leaves both alone.
    - Pick the exports folder, where saved Figma values will live: `figma/` at the root unless
      the repo has a better place. Nothing else goes in it.
    - `tests/figma.ts` and `playwright.config.ts`: the measuring helper and its config. Fill in
-     the config's three placeholders. If the repo already has a Playwright config, add a
+     the config's three placeholders.
+   - `tests/figma-lint.spec.ts`: fails while an export has no lint file of the same ids, or its
+     lint has a finding not accepted in `lint-ignore.json` (in the exports folder; create it as
+     `[]`). Point its path at the exports folder. If the repo already has a Playwright config, add a
      project or a second config file instead of replacing it.
    - Add a `test:figma` script that runs Playwright on the Figma specs, install
      `@playwright/test` with the repo's package manager,
@@ -65,8 +68,11 @@ disagree, it reports the difference and leaves both alone.
    serves. A different version of the same family changes text widths (Figma's "Inter" is
    3.19; Google Fonts serves 4, about 2% narrower). Report a mismatch; don't swap fonts.
 8. **Make the worked example.** For the component the user named:
-   - Export it with figma-flow's `export-node` and save the result exactly as returned (it
-     ends in a hash).
+   - Lint it with figma-flow's `lint-node` and save the result exactly as returned to
+     `<name>-lint.json` in the exports folder. Each finding is a question for the designer:
+     report it, and don't accept one in `lint-ignore.json` without the user's reason.
+   - Export it with figma-flow's `export-node`, on the same ids, and save the result exactly as
+     returned (it ends in a hash).
    - If the component exists in code, add a page that renders every variant where a test can
      find it, and a spec from `templates/tests/example.figma.spec.ts`. The page doesn't have
      to look like the Figma file.

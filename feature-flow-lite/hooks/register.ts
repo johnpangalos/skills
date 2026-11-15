@@ -1,15 +1,29 @@
 import type { EngineInterface, Register } from 'claude-code'
+import { checkOf, lowThreadWords, noteFor, parseNotes, planRewrite, projectChecks, segments, tokenize } from './check-cache'
+import { PANEL_FOCI, isProbe, mustFixes, panelPrompts, requestOf, timeline, withRequest, withRuledOn } from './extras'
+import type { Span } from './extras'
 
 // feature-flow-lite's mod. Silent until the skill is invoked (a skill.prompt
 // for feature-flow-lite); after that it keeps the ACCEPTANCE CRITERIA block in
-// implementor, reviewer and gatekeeper handoffs, flags implementor runs that changed no
-// test file, and records per-role tokens and time for /ff-usage. Every hook
-// passes the event through unless its condition holds, and none of them can
-// deny a spawn or a tool call.
+// implementor, reviewer, gatekeeper and criteria-checker handoffs, flags implementor runs that changed no
+// test file, and records per-role tokens and time for /ff-usage. With
+// FEATURE_FLOW_CHECK_CACHE=1 it also caches passing checks (check-cache.ts):
+// every agent's check commands go through a wrapper that replays a pass on an
+// unchanged tree instead of running it again. With FEATURE_FLOW_EXTRAS=1 it
+// also: starts the full checks ahead of the orchestrator (when an implementor or
+// simplifier finishes and when a gatekeeper starts) and on a copy of the base
+// commit; puts the user's request word for word into criteria-checker and
+// gatekeeper handoffs; carries earlier must-fixes to later gatekeepers as RULED
+// ON; turns a `FOCUS: panel` gatekeeper call into three focused gatekeepers run
+// in parallel; denies the main conversation's edits to repo files (the one hook
+// that can deny); and removes leftover zz_gate_ probe files. Every other hook
+// passes the event through unless its condition holds.
 
-type Role = 'investigator' | 'implementor' | 'simplifier' | 'reviewer' | 'gatekeeper'
+type Role = 'investigator' | 'implementor' | 'simplifier' | 'reviewer' | 'gatekeeper' | 'criteria-checker'
 
-const ROLES: readonly Role[] = ['investigator', 'implementor', 'simplifier', 'reviewer', 'gatekeeper']
+const ROLES: readonly Role[] = ['investigator', 'implementor', 'simplifier', 'reviewer', 'gatekeeper', 'criteria-checker']
+// the roles whose handoffs must carry the ACCEPTANCE CRITERIA block
+const CRITERIA_ROLES: readonly Role[] = ['implementor', 'reviewer', 'gatekeeper', 'criteria-checker']
 const ROLE_ORDER = ['orchestrator', ...ROLES, 'other']
 const AGENT_PREFIX = 'feature-flow-lite:'
 
@@ -23,6 +37,8 @@ type UsageRecord = {
   cache_creation_input_tokens: number
   durationMs: number
   reason: string
+  startedAt?: number
+  endedAt?: number
 }
 
 const isRole = (name: string): name is Role => (ROLES as readonly string[]).includes(name)
@@ -38,15 +54,16 @@ function roleOf(subagentType: string | undefined, prompt: string | undefined): R
   }
   if (subagentType === 'general-purpose') {
     const first = (prompt ?? '').split('\n').find(line => line.trim() !== '')
-    const match = first?.trim().match(/^ROLE:\s*([a-z]+)$/)
-    return match && isRole(match[1]) ? match[1] : undefined
+    const match = first?.trim().match(/^ROLE:\s*([a-z-]+)$/)
+    const name = match?.[1]
+    return name !== undefined && isRole(name) ? name : undefined
   }
   return undefined
 }
 
 // The handoff headers that can follow the criteria. A criterion that merely
 // starts in capitals ("UI: ...") is not one.
-const HANDOFF_HEADER = /^(?:GOAL|FILES|CONSTRAINTS|HOSTILE INPUTS|CHECKS|PROJECT CHECKLIST|REQUEST|BASE|FOCUS|STATUS|SUMMARY|FILES TOUCHED|FINDINGS|OPEN QUESTIONS):/
+const HANDOFF_HEADER = /^(?:GOAL|FILES|CONSTRAINTS|HOSTILE INPUTS|CHECKS|PROJECT CHECKLIST|REQUEST|SIBLING|BASE|RULED ON|FOCUS|STATUS|SUMMARY|FILES TOUCHED|FINDINGS|OPEN QUESTIONS):/
 
 // The ACCEPTANCE CRITERIA block: from its header line through the line before
 // the next handoff header (CHECKS:, HOSTILE INPUTS:, ...), or the end.
@@ -56,7 +73,7 @@ function criteriaBlock(prompt: string): string | undefined {
   if (start < 0) return undefined
   let end = lines.length
   for (let i = start + 1; i < lines.length; i++) {
-    if (HANDOFF_HEADER.test(lines[i])) {
+    if (HANDOFF_HEADER.test(lines[i] ?? '')) {
       end = i
       break
     }
@@ -97,7 +114,7 @@ async function changedPaths($: EngineInterface): Promise<string[] | undefined> {
 }
 
 const ROLE_ROW = (cells: readonly string[]) =>
-  [cells[0].padEnd(14), ...cells.slice(1).map(cell => cell.padStart(12))].join(' ').trimEnd()
+  [(cells[0] ?? '').padEnd(14), ...cells.slice(1).map(cell => cell.padStart(12))].join(' ').trimEnd()
 
 function usageTable(records: readonly UsageRecord[]): string {
   if (records.length === 0) return 'ff-usage: nothing recorded yet. Records start once feature-flow-lite is invoked.'
@@ -124,7 +141,11 @@ function usageTable(records: readonly UsageRecord[]): string {
   const header = ROLE_ROW(['role', 'runs', 'input', 'output', 'cache read', 'cache write', 'seconds'])
   const rows = roles.map(role => ROLE_ROW(cells(role, sum(records.filter(r => r.role === role)))))
   const total = ROLE_ROW(cells('total', sum(records)))
-  return ['ff-usage (feature-flow-lite, this session)', header, ...rows, total].join('\n')
+  const spans: Span[] = records
+    .filter(r => r.agentId !== undefined && r.startedAt !== undefined && r.endedAt !== undefined)
+    .map(r => ({ role: r.role, startedAt: r.startedAt ?? 0, endedAt: r.endedAt ?? 0 }))
+  const when = timeline(spans)
+  return ['ff-usage (feature-flow-lite, this session)', header, ...rows, total, ...(when ? ['', when] : [])].join('\n')
 }
 
 export const register: Register = on => {
@@ -133,13 +154,113 @@ export const register: Register = on => {
   const roleByAgent = new Map<string, Role>()
   const records: UsageRecord[] = []
 
-  on('skill.prompt', ($, e, next) => {
+  const st: ExtrasState = {
+    cache: undefined,
+    extras: false,
+    root: undefined,
+    lastUserText: '',
+    request: '',
+    raised: [],
+    baseStarted: false,
+    runningGates: new Set<string>(),
+    inflight: new Set<string>(),
+    waiters: new Map<string, (report: string) => void>(),
+    answers: new Map<string, string>(),
+    agentChecks: new Map<string, { key: string; family: string; words: string[] }>(),
+  }
+
+  on('prompt.submit', ($, e, next) => {
+    st.lastUserText = e.text
+    return next(e)
+  }).catch(($, e, next) => next(e))
+
+  on('skill.prompt', async ($, e, next) => {
     // Each invocation is a new feature: forget the last one's criteria.
     if (isOurSkill(e.skill)) {
       gated = true
       savedCriteria = undefined
+      st.cache = await setUpCache($)
+      st.extras = (await $.env.get('FEATURE_FLOW_EXTRAS').catch(() => undefined)) === '1'
+      st.request = requestOf(st.lastUserText)
+      st.raised = []
+      st.baseStarted = false
+      st.root = st.extras ? await repoRoot($) : undefined
     }
     return next(e)
+  }).catch(($, e, next) => next(e))
+
+  on('tool.call', { tool: 'Edit' }, async ($, e, next) => (await guardEdit($, st, gated, e.agentId, e.file_path)) ?? next(e)).catch(($, e, next) => next(e))
+  on('tool.call', { tool: 'Write' }, async ($, e, next) => (await guardEdit($, st, gated, e.agentId, e.file_path)) ?? next(e)).catch(($, e, next) => next(e))
+
+  // A gatekeeper call with `FOCUS: panel` runs three gatekeepers in parallel,
+  // one per focus: the call itself becomes the first, and the mod starts the
+  // other two and waits for their reports, which come back as context with
+  // their agent ids (for SendMessage). Not used by the review-panel variants:
+  // in headless runs the engine moves the call's own seat to the background
+  // after two minutes, a hook can't wait that long, and `claude -p` exits
+  // without waiting for agents a mod started, so the orchestrator spawns the
+  // three itself.
+  on('tool.call', { tool: 'Agent' }, async ($, e, next) => {
+    if (!gated || !st.extras || !(e.subagent_type ?? '').endsWith('gatekeeper')) return next(e)
+    const prompts = panelPrompts(e.prompt)
+    if (prompts === undefined) return next(e)
+    const names = Object.keys(PANEL_FOCI)
+    const others = await Promise.all(
+      [1, 2].map(async i => {
+        const base = prompts[i] ?? e.prompt
+        const withReq = withRequest(base, st.request) ?? base
+        const res = await $.agent.spawn({
+          prompt: withRuledOn(withReq, st.raised) ?? withReq,
+          description: `${e.description} (${names[i]})`,
+          subagentType: e.subagent_type ?? 'general-purpose',
+        } as never)
+        const id = (res as { agentId?: string }).agentId
+        if (id !== undefined) roleByAgent.set(id, 'gatekeeper')
+        if (id === undefined) return { name: names[i], id: 'none', report: Promise.resolve('(the mod could not start this gatekeeper)') }
+        return { name: names[i], id, report: reportOf(st, id) }
+      }),
+    )
+    const first = await next({ ...e, prompt: prompts[0] ?? e.prompt, description: `${e.description} (${names[0]})`, run_in_background: false })
+    if (first.deny !== undefined) return first
+    // the call's own seat may have gone to the background anyway: then wait for its report too, so
+    // the call returns with all three and nothing of the panel is left running
+    const own = first.result as { status?: string; agentId?: string } | undefined
+    const firstId = own?.agentId ?? 'unknown'
+    const ownReport = own?.status !== 'completed' && own?.agentId !== undefined ? await reportOf(st, own.agentId) : undefined
+    const reports = await Promise.all(others.map(async o => `FOCUS ${o.name} (agent id ${o.id}):\n${await o.report}`))
+    const note =
+      `${$.plugin.name} review panel: all three gatekeepers have finished; none is still running. ` +
+      (ownReport === undefined ? `The result above is FOCUS ${names[0]} (agent id ${firstId}); the other two follow. ` : 'All three reports follow. ') +
+      'Merge their must-fixes into one fix round now, and continue each gatekeeper with SendMessage to verify its fixes.'
+    const own0 = ownReport === undefined ? [] : [`FOCUS ${names[0]} (agent id ${firstId}):\n${ownReport}`]
+    return { ...first, context: [...(first.context ?? []), note, ...own0, ...reports] }
+  }).catch(($, e, next) => next(e))
+
+  // The check cache: route each check in a Bash call through the wrapper, then
+  // say what was replayed. Off unless FEATURE_FLOW_CHECK_CACHE=1.
+  on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
+    const cache = st.cache
+    if (!gated || cache === undefined) return next(e)
+    void ensureBaseChecks($, st)
+    const checks = await readProjectChecks($, cache.root)
+    const notes = `${cache.dir}/notes/${crypto.randomUUID()}`
+    const plan = planRewrite(e.command, { script: cache.script, cacheDir: cache.dir, notes, projectChecks: checks })
+    if (plan === undefined) return next(e)
+    // the orchestrator's own checks are the ones it waits on: those are worth running ahead
+    // (an agent's targeted test or a probe's run is not)
+    if (e.agentId === undefined) for (const w of plan.wrapped) if (!st.agentChecks.has(w.key)) st.agentChecks.set(w.key, w)
+    const ran = await next({ ...e, command: plan.command })
+    if (e.run_in_background === true || ran.deny !== undefined) return ran
+    let note: string | undefined
+    try {
+      if (await $.fs.exists(notes)) {
+        note = noteFor(parseNotes(await $.fs.read(notes)), $.plugin.name)
+        await $.process.run(['rm', '-f', notes])
+      }
+    } catch {
+      return ran
+    }
+    return note === undefined ? ran : { ...ran, context: [...(ran.context ?? []), note] }
   }).catch(($, e, next) => next(e))
 
   on('agent.spawn', async ($, e, next) => {
@@ -148,7 +269,20 @@ export const register: Register = on => {
     const role = roleOf(e.subagentType, e.prompt)
     let prompt = e.prompt
 
-    if (role === 'implementor' || role === 'reviewer' || role === 'gatekeeper') {
+    if (st.extras && (role === 'gatekeeper' || role === 'criteria-checker')) {
+      const exact = withRequest(prompt, st.request)
+      if (exact !== undefined) {
+        prompt = exact
+        $.ui.log(`${$.plugin.name}: added the user's request word for word to the ${role} handoff.`)
+      }
+      const ruled = role === 'gatekeeper' ? withRuledOn(prompt, st.raised) : undefined
+      if (ruled !== undefined) prompt = ruled
+      void ensureBaseChecks($, st)
+      // the full checks run beside the review, so a gatekeeper's own run replays them
+      if (role === 'gatekeeper' && st.cache !== undefined) void runChecksAhead($, st, { cwd: st.cache.root, base: false })
+    }
+
+    if (role !== undefined && CRITERIA_ROLES.includes(role)) {
       const block = criteriaBlock(prompt)
       if (block !== undefined) {
         savedCriteria = block
@@ -167,7 +301,7 @@ export const register: Register = on => {
     const ran = await next(e)
     if (!gated || ran.deny !== undefined || ran.isError === true) return ran
 
-    const result = ran.result
+    const result = ran.result as { status?: string; agentId?: string } | undefined
     if (result?.status !== 'completed') return ran
 
     const role = (result.agentId && roleByAgent.get(result.agentId)) || roleOf(e.subagent_type, e.prompt)
@@ -182,7 +316,16 @@ export const register: Register = on => {
     return { ...ran, context: [...(ran.context ?? []), note] }
   }).catch(($, e, next) => next(e))
 
+  on('turn.start', ($, e, next) => {
+    if (gated && e.agentId !== undefined && roleByAgent.get(e.agentId) === 'gatekeeper') st.runningGates.add(e.agentId)
+    return next(e)
+  }).catch(($, e, next) => next(e))
+
+  // The extras that follow a subagent's end: a gatekeeper's must-fixes are
+  // kept for RULED ON and its leftover probe files removed once no gatekeeper
+  // runs; an implementor's or simplifier's end starts the full checks.
   on('turn.complete', async ($, e, next) => {
+    await afterSubagent($, st, gated, roleByAgent, e)
     if (gated) {
       try {
         const usage = e.usage
@@ -197,6 +340,13 @@ export const register: Register = on => {
           cache_creation_input_tokens: usage?.cache_creation_input_tokens ?? 0,
           durationMs: e.durationMs,
           reason: e.reason,
+        }
+        if (e.agentId !== undefined) {
+          const now = await $.clock.now().catch(() => undefined)
+          if (now !== undefined) {
+            record.endedAt = now
+            record.startedAt = now - e.durationMs
+          }
         }
         records.push(record)
         await appendUsageLine($, record)
@@ -234,4 +384,187 @@ async function appendUsageLine($: EngineInterface, record: UsageRecord): Promise
   } catch (err) {
     $.ui.log(`${$.plugin.name}: could not write the usage log ${path}: ${String((err as Error)?.message ?? err)}`)
   }
+}
+
+// The extras' state, for one invocation of the skill.
+type ExtrasState = {
+  cache: CacheSetup | undefined
+  extras: boolean
+  root: string | undefined
+  lastUserText: string
+  request: string
+  raised: string[]
+  baseStarted: boolean
+  runningGates: Set<string>
+  inflight: Set<string>
+  // panel seats waiting for their reports, and the reports of seats that finished first
+  waiters: Map<string, (report: string) => void>
+  answers: Map<string, string>
+  // the checks the orchestrator ran in this session, by key: what the mod runs ahead
+  agentChecks: Map<string, { key: string; family: string; words: string[] }>
+}
+
+// Ahead of the orchestrator, the checks it has run in this session (each key
+// once); on the base commit, the project file's Checks. Each is queued for the
+// repo's low-priority worker, with one worker thread (lowThreadWords). An agent
+// that asks for a queued check runs it itself; one the worker is running, it
+// waits for when it should finish within 30s, and otherwise stops (ffcc.sh).
+async function runChecksAhead($: EngineInterface, st: ExtrasState, opts: { cwd: string; base: boolean }): Promise<void> {
+  if (st.cache === undefined) return
+  const setup = st.cache
+  let checks: { key: string; family: string; words: string[] }[]
+  if (opts.base) {
+    const project = await readProjectChecks($, setup.root)
+    checks = []
+    for (const words of project) {
+      const tokens = tokenize(words.map(w => `'${w.replace(/'/g, `'\\''`)}'`).join(' '))
+      const seg = tokens && segments(tokens)[0]
+      const check = seg && checkOf(seg, project)
+      if (check) checks.push({ key: check.key, family: check.family, words })
+    }
+  } else {
+    checks = [...st.agentChecks.values()]
+  }
+  // Queued, not started: one worker per repo runs them one at a time at the
+  // lowest priority, cheapest first (hooks/ffcc-queue.sh). A newer tree's
+  // batch replaces the jobs still queued for an older one.
+  const queue = setup.script.replace(/ffcc\.sh$/, 'ffcc-queue.sh')
+  const origin = opts.base ? 'mod-base' : 'mod'
+  let replace = !opts.base
+  for (const check of checks) {
+    const id = `${opts.base ? 'base' : 'tree'}:${check.key}`
+    if (st.inflight.has(id)) continue
+    st.inflight.add(id)
+    const argv = ['bash', queue, 'enqueue', setup.dir, opts.base ? '2' : '1', opts.cwd, check.family, check.key, origin]
+    if (replace) argv.push('--replace')
+    replace = false
+    argv.push('--', ...lowThreadWords(check.words))
+    await $.process
+      .run(argv, { cwd: opts.cwd, timeoutMs: 60_000 })
+      .catch(() => undefined)
+      .finally(() => st.inflight.delete(id))
+  }
+}
+
+// The base commit's checks, once, on a worktree of the base commit (ignored
+// paths such as node_modules linked in), so a later failure can be looked up.
+async function ensureBaseChecks($: EngineInterface, st: ExtrasState): Promise<void> {
+  if (!st.extras || st.cache === undefined || st.baseStarted) return
+  if ((await readProjectChecks($, st.cache.root)).length === 0) return
+  st.baseStarted = true
+  try {
+    const base = (await $.fs.read(`${st.cache.dir}/base`)).trim()
+    const tmp = (await $.env.get('TMPDIR')) || '/tmp'
+    const tree = `${tmp}/ff-base${st.cache.root.replace(/[^A-Za-z0-9]/g, '_')}`
+    const made = await $.process.run(['bash', st.cache.script.replace(/ffcc\.sh$/, 'ffcc-base.sh'), st.cache.root, tree, base], { timeoutMs: 300_000 })
+    if (made.exitCode !== 0) {
+      $.ui.log(`${$.plugin.name}: no base-commit checks: ${made.stderr.trim().slice(0, 200)}`)
+      return
+    }
+    await runChecksAhead($, st, { cwd: tree, base: true })
+  } catch (err) {
+    $.ui.log(`${$.plugin.name}: no base-commit checks: ${String((err as Error)?.message ?? err)}`)
+  }
+}
+
+// The main conversation hands edits to the implementor: deny its edits to
+// files in the repo, except the project file.
+async function guardEdit($: EngineInterface, st: ExtrasState, gated: boolean, agentId: string | undefined, path: string | undefined): Promise<{ deny: string } | undefined> {
+  if (!gated || !st.extras || agentId !== undefined || st.root === undefined || path === undefined) return undefined
+  const inside = path === st.root || path.startsWith(`${st.root}/`)
+  if (!inside || path === `${st.root}/FEATURE_FLOW.md`) return undefined
+  return {
+    deny:
+      `${$.plugin.name}: the orchestrator doesn't edit the change itself. Send this edit to the implementor ` +
+      '(continue it with SendMessage, or spawn one with a narrow handoff).',
+  }
+}
+async function afterSubagent($: EngineInterface, st: ExtrasState, gated: boolean, roleByAgent: ReadonlyMap<string, Role>, e: { agentId?: string; answer: string }): Promise<void> {
+  const waiter = e.agentId === undefined ? undefined : st.waiters.get(e.agentId)
+  if (waiter !== undefined && e.agentId !== undefined) {
+    st.waiters.delete(e.agentId)
+    waiter(e.answer)
+  } else if (e.agentId !== undefined && roleByAgent.get(e.agentId) === 'gatekeeper') {
+    st.answers.set(e.agentId, e.answer)
+  }
+  const role = e.agentId === undefined ? undefined : roleByAgent.get(e.agentId)
+  if (gated && st.extras && e.agentId !== undefined && role !== undefined) {
+    try {
+      if (role === 'gatekeeper') {
+        st.raised.push(...mustFixes(e.answer).filter(item => !st.raised.includes(item)))
+        st.runningGates.delete(e.agentId)
+        if (st.runningGates.size === 0) await removeProbes($)
+      }
+      if ((role === 'implementor' || role === 'simplifier') && st.cache !== undefined) {
+        void runChecksAhead($, st, { cwd: st.cache.root, base: false })
+      }
+    } catch (err) {
+      $.ui.log(`${$.plugin.name}: st.extras after a ${role} run failed: ${String((err as Error)?.message ?? err)}`)
+    }
+  }
+}
+
+
+// A gatekeeper's report: now if it already finished, else when its turn ends.
+function reportOf(st: ExtrasState, agentId: string): Promise<string> {
+  const done = st.answers.get(agentId)
+  if (done !== undefined) return Promise.resolve(done)
+  return new Promise<string>(resolve => st.waiters.set(agentId, resolve))
+}
+
+type CacheSetup = { root: string; dir: string; script: string }
+
+// Turns the check cache on for this invocation when FEATURE_FLOW_CHECK_CACHE=1:
+// the cache lives in the repo's git dir (out of every diff), and the base
+// commit is recorded there. The wrapper is the plugin's hooks/ffcc.sh. Undefined (cache off) when the variable is unset or git
+// can't say where the repo is.
+async function setUpCache($: EngineInterface): Promise<CacheSetup | undefined> {
+  if ((await $.env.get('FEATURE_FLOW_CHECK_CACHE').catch(() => undefined)) !== '1') return undefined
+  try {
+    const top = await $.process.run(['git', 'rev-parse', '--show-toplevel'])
+    const common = await $.process.run(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'])
+    const head = await $.process.run(['git', 'rev-parse', 'HEAD'])
+    if (top.exitCode !== 0 || common.exitCode !== 0) return undefined
+    const root = top.stdout.trim()
+    const dir = `${common.stdout.trim()}/ff-check-cache`
+    const script = `${$.plugin.root}/hooks/ffcc.sh`
+    if (!(await $.fs.exists(script))) return undefined
+    await $.fs.write(`${dir}/base`, head.exitCode === 0 ? `${head.stdout.trim()}\n` : 'none\n')
+    $.ui.log(`${$.plugin.name}: check cache on (${dir}).`)
+    return { root, dir, script }
+  } catch (err) {
+    $.ui.log(`${$.plugin.name}: check cache off: ${String((err as Error)?.message ?? err)}`)
+    return undefined
+  }
+}
+
+// The project file's Checks, read on each call (the orchestrator may write it
+// after the first check runs). None when it is missing.
+async function readProjectChecks($: EngineInterface, root: string): Promise<string[][]> {
+  try {
+    const path = `${root}/FEATURE_FLOW.md`
+    return (await $.fs.exists(path)) ? projectChecks(await $.fs.read(path)) : []
+  } catch {
+    return []
+  }
+}
+
+
+async function repoRoot($: EngineInterface): Promise<string | undefined> {
+  try {
+    const top = await $.process.run(['git', 'rev-parse', '--show-toplevel'])
+    return top.exitCode === 0 ? top.stdout.trim() : undefined
+  } catch {
+    return undefined
+  }
+}
+
+// Deletes untracked zz_gate_ / zz_redteam_ probe files a gatekeeper left.
+async function removeProbes($: EngineInterface): Promise<void> {
+  const left = (await changedPaths($))?.filter(isProbe) ?? []
+  if (left.length === 0) return
+  const top = await repoRoot($)
+  if (top === undefined) return
+  await $.process.run(['rm', '-f', '--', ...left.map(p => `${top}/${p}`)])
+  $.ui.log(`${$.plugin.name}: removed probe files a gatekeeper left: ${left.join(', ')}`)
 }
