@@ -473,7 +473,7 @@ None showed a gain. Run eagerly they made react-aria 2–3× slower (section 15)
 
 ### 20. The review panel on Haiku and on Sonnet (chi-etag, one build each)
 
-These are the shipped 0.3 skill with every gatekeeper (the panel of three and the final gate) pinned to Haiku or Sonnet at high effort. The criteria-checker stays on Opus.
+**Every gatekeeper on the cheaper model.** These are the shipped 0.3 skill with every gatekeeper (the panel of three *and* the final gate) pinned to Haiku or Sonnet at high effort. The criteria-checker stays on Opus.
 
 | | Haiku panel | Sonnet panel | Opus panel (section 18, plus the shipped build) |
 |---|---|---|---|
@@ -487,6 +487,23 @@ These are the shipped 0.3 skill with every gatekeeper (the panel of three and th
 - **Haiku isn't cheaper.** Its gatekeepers raised 26 must-fixes over 12 verdicts, and the Opus orchestrator spent $4 handling them. The Haiku agents themselves cost $0.62.
 - **Sonnet is the fastest and cheapest panel so far** (15 min, $2.97), but it caught the least: 4 must-fixes, the lowest probe score of any panel build, and a HEAD bug the audit found.
 - **Both cheaper panels missed a HEAD case.** The Opus panel's chi-etag builds passed the audit in 3 of 4. One build each, so this is direction, not a result.
+
+**Only the panel on the cheaper model, the final gate on Opus** (`review-panel-split`: the panel gets its own `panelist` agent, pinned per arm; the final `gatekeeper` stays Opus at high):
+
+| | Haiku panelists | Sonnet panelists | Opus panel (4 builds) |
+|---|---|---|---|
+| Wall time | 38 min | 32 min | 19–42 min (mean 31) |
+| Cost | $5.78 (orchestrator $3.41) | $5.80 (orchestrator $3.43) | $4.85–8.83 (mean $6.68) |
+| Panel | 10 verdicts, 20 must-fixes | 7 verdicts, 4 must-fixes | – |
+| Opus final gate | 1 must-fix, then yes | 3 must-fixes, then yes | – |
+| Outcome checks | all pass, Flush included | all pass, Flush included | all pass |
+| Probes | 5 of 7 (`HeadServeContent`, `GarbageMember`) | 6 of 7 (`NonCanonicalKey`) | 5–7 of 7 |
+| Audit would merge | no: a HEAD from a handler that serves HEAD itself gets the empty body's ETag | **yes** | 3 of 4 |
+
+- **Sonnet panelists with an Opus final gate matched the Opus panel on quality:** a clean audit and 6 of 7 probes. The Opus final gate found 3 must-fixes the Sonnet panel had passed.
+- **They don't save much.** At $5.80 against a $6.68 mean, the Opus orchestrator ($3.4) is most of the cost whatever the panel runs on.
+- **Haiku panelists are noisy** (20 must-fixes) and missed a HEAD case for the third build running. The Opus final gate didn't catch it.
+- One build each: worth repeating Sonnet panelists before changing the default.
 
 ### Open questions
 
