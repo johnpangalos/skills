@@ -1,0 +1,9 @@
+| scenario | arm | runs | process | outcome | cost $ | opus share | main tool calls | spawns (role:model/effort) |
+|---|---|---|---|---|---|---|---|---|
+| chi-etag | lite-0.3-lean-orch | 1 | 0.79 | 1.0 | 6.08 | 0.97 | 42.0 | investigator:haiku/fm, criteria_check:opus/fm, implementor:haiku/fm, simplifier:haiku/fm, gate:opus/fm, gate:opus/fm, gate:opus/fm, implementor:haiku/fm, implementor:haiku/fm, implementor:haiku/fm, gate:opus/fm, implementor:haiku/fm, implementor:haiku/fm |
+
+## Failed checks
+
+- chi-etag / lite-0.3-lean-orch rep: [process] handoff prompts use the template — gate missing GOAL; gate missing GOAL; gate missing GOAL; gate missing GOAL
+- chi-etag / lite-0.3-lean-orch rep: [process] stages announced before the first spawn — stage words before first spawn: none
+- chi-etag / lite-0.3-lean-orch rep: [process] main conversation leaves edits to subagents — main conversation edited ['/tmp/claude-0/-tmp-ff-eval-5120fgq9-workspace/109fa5fd-2653-4bdd-b871-b8a56b05b5e3/scratchpad/brief.md', '/tmp/claude-0/-tmp-ff-eval-5120fgq9-workspace/109fa5fd-2653-4bdd-b871-b8a56b05b5e3/scratchpad/criteria.md', '/tmp/claude-0/-tmp-ff-eval-5120fgq9-workspace/109fa5fd-2653-4bdd-b871-b8a56b05b5e3/scratchpad/criteria.md', '/tmp/claude-0/-tmp-ff-eval-5120fgq9-workspace/109fa5fd-2653-4bdd-b871-b8a56b05b5e3/scratchpad/criteria.md']

@@ -1,0 +1,9 @@
+| scenario | arm | runs | process | outcome | cost $ | opus share | main tool calls | spawns (role:model/effort) |
+|---|---|---|---|---|---|---|---|---|
+| chi-etag | lite-shipped-0.3 | 1 | 0.79 | 1.0 | 8.35 | 0.93 | 49.0 | investigator:haiku/fm, criteria_check:opus/fm, implementor:haiku/fm, simplifier:haiku/fm, gate:opus/fm, gate:opus/fm, gate:opus/fm, gate:opus/fm |
+
+## Failed checks
+
+- chi-etag / lite-shipped-0.3 rep: [process] handoff prompts use the template — criteria_check missing GOAL; simplifier missing GOAL; gate missing GOAL; gate missing GOAL; gate missing GOAL; gate missing GOAL
+- chi-etag / lite-shipped-0.3 rep: [process] stages announced before the first spawn — stage words before first spawn: none
+- chi-etag / lite-shipped-0.3 rep: [process] main conversation leaves edits to subagents — main conversation edited ['/tmp/claude-0/-tmp-ff-eval-u6ykblhq-workspace/7c6d91e0-9cd8-438c-b69e-4425fefe14a7/scratchpad/criteria.md', '/tmp/claude-0/-tmp-ff-eval-u6ykblhq-workspace/7c6d91e0-9cd8-438c-b69e-4425fefe14a7/scratchpad/criteria.md']
