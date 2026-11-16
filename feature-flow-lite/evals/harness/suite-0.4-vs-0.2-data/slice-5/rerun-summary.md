@@ -1,0 +1,13 @@
+| scenario | arm | runs | process | outcome | cost $ | opus share | main tool calls | spawns (role:model/effort) |
+|---|---|---|---|---|---|---|---|---|
+| chi-etag | lite-shipped-0.2 | 2 | 0.82 | 0.8 | 1.14 | 0.94 | 18.0 | investigator:haiku/fm, implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm, implementor:haiku/fm; investigator:haiku/fm, implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm, implementor:haiku/fm |
+
+## Failed checks
+
+- chi-etag / lite-shipped-0.2 rep: [process] handoff prompts use the template — investigator missing GOAL; simplifier missing GOAL
+- chi-etag / lite-shipped-0.2 rep: [process] stages announced before the first spawn — stage words before first spawn: none
+- chi-etag / lite-shipped-0.2 rep: [outcome] hidden ETag tests pass (with -race) — FAIL | FAIL	github.com/go-chi/chi/v5/middleware/etaghidden	0.118s | FAIL
+- chi-etag / lite-shipped-0.2 rep: [process] handoff prompts use the template — investigator missing GOAL; simplifier missing GOAL; reviewer missing GOAL
+- chi-etag / lite-shipped-0.2 rep: [process] stages announced before the first spawn — stage words before first spawn: ['inves']
+- chi-etag / lite-shipped-0.2 rep: [process] main conversation leaves edits to subagents — main conversation edited ['/tmp/claude-0/-tmp-ff-eval-6tcpnruv-workspace/08263edc-1c45-4c44-89bb-9c4d9413b9a0/scratchpad/criteria.md']
+- chi-etag / lite-shipped-0.2 rep: [outcome] hidden ETag tests pass (with -race) — FAIL | FAIL	github.com/go-chi/chi/v5/middleware/etaghidden	0.115s | FAIL
