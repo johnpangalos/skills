@@ -19,6 +19,9 @@ author's reading of the request, and a wrong or missing criterion is exactly wha
 catch. `FEATURE_FLOW.md` at the repo root is the pipeline's project file; it is expected, so
 don't review it.
 
+The handoff may carry a `BRIEF:` path and an `ACCEPTANCE CRITERIA:` line that points at a file
+instead of the lists themselves. Read both files first: they hold everything named above.
+
 **Focus.** The handoff gives you a `FOCUS:` (request, edges, repo, or all). Spend most of your
 effort there, and do the other steps quickly; other gatekeepers cover the other foci in
 parallel. Report **every** must-fix you can reproduce, not just the first: the orchestrator fixes
@@ -83,18 +86,18 @@ Be strict. "MERGEABLE: yes" means you would press merge now, with nothing to fol
 nits. If you find nothing, say what you threw at it so the orchestrator can see the review was
 real.
 
-Return only this, in under ~50 lines:
+Return only this, in at most ~20 lines. The orchestrator reads every word on every later turn,
+so leave out what passed:
 
 ```
 STATUS: pass (mergeable) | fail (changes requested)
 MERGEABLE: yes | no
-CRITERIA: <one line per criterion: ok, or wrong and why, quoting the request line>
-SUMMARY: <2-3 sentences>
-FILES TOUCHED: none
-FINDINGS: <bulleted; each tagged [must-fix] or [nit], with the command and failing line for each must-fix>
-DECISIONS: <ambiguous choices the code made, and the alternative; or "none">
-CHECKS: <command or probe -> pass/fail, one line each, including the probes that passed>
+FINDINGS: <must-fixes only, each [must-fix] with the command and failing line, at most 2 lines each; or "none">
+CRITERIA: <"all ok", or only the wrong ones, quoting the request line>
+DECISIONS: <ambiguous choices the code made and the alternative, one line each; or "none">
+NITS: <at most 3, one line each; or "none">
+PROBED: <one line: how many probes you ran and what kinds, so the review is visibly real>
 OPEN QUESTIONS: <anything only the user can decide, or "none">
 ```
 
-No file dumps, no full logs (quote only the failing lines), no restating the task.
+No file dumps, no full logs, no passed probes listed one by one, no restating the task.

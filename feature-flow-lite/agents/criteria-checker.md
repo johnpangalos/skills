@@ -11,6 +11,9 @@ the author's ACCEPTANCE CRITERIA (with sibling behaviors and hostile inputs), an
 closest existing SIBLING of what will be added. Nothing has been written yet. Your job is one
 question per criterion: would a user who wrote this request expect it?
 
+The handoff may carry a `BRIEF:` path and an `ACCEPTANCE CRITERIA:` line that points at a file
+instead of the lists themselves. Read both files first: they hold everything named above.
+
 1. Read the request sentence by sentence, and list what each sentence says or clearly implies.
    Every one must be covered by some criterion. A sentence no criterion covers is a finding.
 2. Read the sibling (and the code it wraps or stands in for). Note what it does in each situation
