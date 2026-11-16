@@ -14,24 +14,40 @@
 // with its type. A group gets no entry of its own: its children are walked as children of the
 // entry above it, and Figma reports a group's children's x and y relative to the nearest frame,
 // which is that entry, so they hold. Any other container with children is walked the same way
-// (a section can't sit inside a frame, so a page has none). An instance of a library component gets one entry, its box, and nothing inside
-// it: the component is the design system's to measure. An instance of a component made in this
-// file (`local: true`) is opened like a frame, since the app builds it. Each entry names its
-// `parent` entry, and its x and y are inside that parent. A frame's `label` is null here, because
-// its text has entries of its own.
+// (a section can't sit inside a frame, so a page has none). An instance of a library component
+// gets one entry, its box, and nothing inside it: the component is the design system's to
+// measure. An instance of a component made in this file (`local: true`) is opened like a frame,
+// since the app builds it. Each entry names its `parent` entry, and its x and y are inside that
+// parent. A frame's `label` is null here, because its text has entries of its own.
 //
 // What a box records: its size and position, `fill`, `stroke` and `strokeWeight` (a number, or
-// top, right, bottom, left when the sides differ), `strokeAlign` and `dashed` (with a stroke only),
-// `radius` (a number, or top-left, top-right, bottom-right, bottom-left when the corners differ),
-// `rings` (drop shadows with no blur and no offset, a focus ring: colour and spread), `shadows`
-// (every other visible shadow, an inset ring included: x, y, blur, spread, colour, inset), `opacity`, `sizing` (hug, fill or fixed, across then down),
-// and `minWidth`/`maxWidth`/`minHeight`/`maxHeight` where set. Colours are "#rrggbb", or
-// "#rrggbbaa" when see-through. `layout` (two or more laid-out children) adds `justify` and `align`
-// in CSS's words, left out where a child fills that axis, and `wrap` with `rowGap` when it wraps.
+// top, right, bottom, left when the sides differ; 0 with no stroke), `strokeAlign` and `dashed`
+// (with a stroke only), `radius` (a number, or top-left, top-right, bottom-right, bottom-left when
+// the corners differ), `rings` (spread-only drop shadows: no blur and no offset, a focus ring,
+// as colour and spread), `shadows` (every other visible shadow, an inset ring included: x, y,
+// blur, spread, colour, inset), `opacity`, `sizing` (hug, fill or fixed, across then down), and
+// `minWidth`/`maxWidth`/`minHeight`/`maxHeight` where set. A shadow (drop or inner) with no blur,
+// no offset and no spread draws nothing, so it is in neither list. Colours are "#rrggbb", or "#rrggbbaa"
+// when see-through.
+//
+// `layout` (two or more laid-out children) adds `justify` and `align` in CSS's words, and `wrap`
+// with `rowGap` when it wraps. Each is left out where it can't show. `justify`: when the box hugs
+// its direction (no free room) or a child fills it. `align`: when every child fills across or
+// already spans the box's content across, which is the box less its padding and, when auto layout
+// takes the stroke's room (`strokesIncludedInLayout`), less the stroke.
+//
 // `label` (a component's first text) and a page's text entries carry the type: `fontFamily`,
 // `fontSize`, `fontWeight`, `lineHeight`, `letterSpacing` (px), `textCase`, `textDecoration`, and
 // `textAlign` where the text has a set width. `tokens`, where anything is bound to a variable or
-// style, names them: a variable by its web code syntax, a style by its name.
+// style, names them: a variable by its web code syntax, a style by its name. A text style names
+// its own font, so `tokens` leaves out fontFamily, fontSize, fontWeight, lineHeight and
+// letterSpacing when the text has one.
+//
+// Format 2 (`"format": 2`, after `node`): a field at its default is left out. Those are `fill`,
+// `stroke` and `label` null; `strokeWeight` and `radius` 0; `rings` and `shadows` empty; `opacity`
+// 1; a text's `letterSpacing` 0; `textCase` and `textDecoration` "none"; `strokeAlign` "inside".
+// The reader (figma.ts, loadFigmaNodes) fills them back in, so a file without a `format` (written
+// before this) has its absent fields skipped instead.
 //
 // Every entry has the node's `id`. Keys are unique: a repeated key is numbered (`Row`,
 // `Row (2)`), since a JSON object keeps only the last of two equal keys and the first would go
@@ -141,10 +157,14 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
     const text = node.type === "TEXT" ? node : label;
     if (text) {
       const textBound = (text.boundVariables ?? {}) as Record<string, VariableAlias | VariableAlias[] | undefined>;
-      set("text", await styleName(text.textStyleId));
+      const style = await styleName(text.textStyleId);
+      set("text", style);
       set("textColor", await paintToken(text, "fills"));
-      for (const field of ["fontFamily", "fontSize", "fontWeight", "lineHeight", "letterSpacing"]) {
-        set(field, await variableName(textBound[field]));
+      // A text style names its own font, so its bindings aren't repeated (the style is checked instead).
+      if (style === null) {
+        for (const field of ["fontFamily", "fontSize", "fontWeight", "lineHeight", "letterSpacing"]) {
+          set(field, await variableName(textBound[field]));
+        }
       }
     }
     return Object.keys(tokens).length > 0 ? { tokens } : {};
@@ -174,19 +194,42 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
   };
 
   // Where auto layout puts the children, in CSS's words: justify-content along the direction,
-  // align-items across it. Left out where it can't show: justify when a child fills the
-  // direction (it takes the room), align when every child fills across.
+  // align-items across it. Left out where it can't show: justify when the box hugs its direction
+  // (no free room) or a child fills it (the child takes the room); align when every child fills
+  // across or already spans the box's content across (within 1px, as the fill check is).
   const sizingAlong = (child: SceneNode, horizontal: boolean) =>
     "layoutSizingHorizontal" in child ? (horizontal ? child.layoutSizingHorizontal : child.layoutSizingVertical) : "FIXED";
-  function alignment(node: Box, laidOut: SceneNode[]) {
+  function alignment(node: Box, laidOut: SceneNode[], stroked: boolean) {
     const horizontal = node.layoutMode === "HORIZONTAL";
     const justify = css({ MIN: "start", CENTER: "center", MAX: "end", SPACE_BETWEEN: "space-between" }, node.primaryAxisAlignItems);
     const align = css({ MIN: "start", CENTER: "center", MAX: "end", BASELINE: "baseline" }, node.counterAxisAlignItems);
+    // The box's content across the children: less its padding, and less the stroke when auto
+    // layout takes the stroke's room. Stroke weights are only taken off where there is a stroke.
+    const strokeRoom = stroked && node.strokesIncludedInLayout
+      ? horizontal ? node.strokeTopWeight + node.strokeBottomWeight : node.strokeLeftWeight + node.strokeRightWeight
+      : 0;
+    const across = horizontal
+      ? node.height - node.paddingTop - node.paddingBottom - strokeRoom
+      : node.width - node.paddingLeft - node.paddingRight - strokeRoom;
+    const spans = (child: SceneNode) =>
+      "width" in child && Math.abs((horizontal ? child.height : child.width) - across) <= 1;
+    const hugs = (horizontal ? node.layoutSizingHorizontal : node.layoutSizingVertical) === "HUG";
     return {
-      ...(!laidOut.some((child) => sizingAlong(child, horizontal) === "FILL") && { justify }),
-      ...(!laidOut.every((child) => sizingAlong(child, !horizontal) === "FILL") && { align }),
+      ...(!hugs && !laidOut.some((child) => sizingAlong(child, horizontal) === "FILL") && { justify }),
+      ...(!laidOut.every((child) => sizingAlong(child, !horizontal) === "FILL" || spans(child)) && { align }),
     };
   }
+
+  // Format 2: a field at its default is left out, and the reader puts it back. `rings` and
+  // `shadows` default to an empty list; the rest to the value here.
+  const defaults: Record<string, unknown> = {
+    fill: null, stroke: null, strokeWeight: 0, radius: 0, rings: [], label: null, opacity: 1, shadows: [],
+    letterSpacing: 0, textCase: "none", textDecoration: "none", strokeAlign: "inside",
+  };
+  const isDefault = (key: string, value: unknown) =>
+    key in defaults && (Array.isArray(defaults[key]) ? Array.isArray(value) && value.length === 0 : value === defaults[key]);
+  const withoutDefaults = <T extends object>(fields: T): Partial<T> =>
+    Object.fromEntries(Object.entries(fields).filter(([key, value]) => !isDefault(key, value))) as Partial<T>;
 
   async function describe(node: Box, withLabel: boolean) {
     const label = withLabel ? firstText(node) : undefined;
@@ -194,14 +237,17 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
     const stroke = solid(node.strokes);
     const weight = single(node.strokeWeight);
     const radius = single(node.cornerRadius);
+    // A shadow, drop or inner, with no blur, no offset and no spread draws nothing: it is in neither list.
+    const isEmpty = (effect: DropShadowEffect | InnerShadowEffect) =>
+      effect.radius === 0 && effect.offset.x === 0 && effect.offset.y === 0 && (effect.spread ?? 0) === 0;
     const shadows = node.effects.filter(
       (effect): effect is DropShadowEffect | InnerShadowEffect =>
-        (effect.type === "DROP_SHADOW" || effect.type === "INNER_SHADOW") && effect.visible !== false,
+        (effect.type === "DROP_SHADOW" || effect.type === "INNER_SHADOW") && effect.visible !== false && !isEmpty(effect),
     );
     // A ring: a drop shadow that only spreads, with no blur and no offset.
     const isRing = (effect: DropShadowEffect | InnerShadowEffect) =>
       effect.type === "DROP_SHADOW" && effect.radius === 0 && effect.offset.x === 0 && effect.offset.y === 0;
-    return {
+    return withoutDefaults({
       id: node.id,
       x: node.x,
       y: node.y,
@@ -209,20 +255,20 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
       height: node.height,
       fill: solid(node.fills),
       stroke,
-      // One weight, or top, right, bottom, left when the sides differ.
+      // One weight, or top, right, bottom, left when the sides differ; 0 with no stroke.
       strokeWeight: stroke ? (weight ?? [node.strokeTopWeight, node.strokeRightWeight, node.strokeBottomWeight, node.strokeLeftWeight]) : 0,
       // One radius, or top-left, top-right, bottom-right, bottom-left when the corners differ.
       radius: radius ?? [node.topLeftRadius, node.topRightRadius, node.bottomRightRadius, node.bottomLeftRadius],
       // Spread-only shadows are how Figma draws a focus ring: [colour, spread], outermost first.
       rings: shadows.flatMap((effect) => (isRing(effect) ? [[hex(effect.color, effect.color.a), effect.spread ?? 0]] : [])),
       label: label
-        ? {
+        ? withoutDefaults({
             x: label.x,
             y: label.y,
             height: label.height,
             color: solid(label.fills),
             ...typeOf(label),
-          }
+          })
         : null,
       ...(laidOut.length >= 2 && {
         layout: {
@@ -234,7 +280,7 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
           // its own and the padding starts inside it, as padding does inside a CSS border. Only
           // recorded for a node with a stroke, where it changes where the children start.
           ...(stroke !== null && { strokesIncludedInLayout: node.strokesIncludedInLayout }),
-          ...alignment(node, laidOut),
+          ...alignment(node, laidOut, stroke !== null),
           // Children that wrap onto more lines, with the gap between the lines.
           ...(node.layoutWrap === "WRAP" && { wrap: true, rowGap: node.counterAxisSpacing ?? 0 }),
         },
@@ -262,24 +308,25 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
         ),
       ),
       ...(await tokensOf(node, label)),
-    };
+    });
   }
 
   // A text node on a page: where it sits, its size, and its type. `wraps` is true when its width
   // is set (the text wraps to it) rather than hugging the text.
-  const describeText = async (node: TextNode) => ({
-    id: node.id,
-    type: "TEXT",
-    x: node.x,
-    y: node.y,
-    width: node.width,
-    height: node.height,
-    color: solid(node.fills),
-    ...typeOf(node),
-    wraps: node.textAutoResize !== "WIDTH_AND_HEIGHT",
-    opacity: round(node.opacity),
-    ...(await tokensOf(node)),
-  });
+  const describeText = async (node: TextNode) =>
+    withoutDefaults({
+      id: node.id,
+      type: "TEXT",
+      x: node.x,
+      y: node.y,
+      width: node.width,
+      height: node.height,
+      color: solid(node.fills),
+      ...typeOf(node),
+      wraps: node.textAutoResize !== "WIDTH_AND_HEIGHT",
+      opacity: round(node.opacity),
+      ...(await tokensOf(node)),
+    });
 
   const entries: [string, object][] = [];
   const keys = new Set<string>();
@@ -348,7 +395,7 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
   }
 
   const lines = entries.map(([key, value]) => `    ${JSON.stringify(key)}: ${JSON.stringify(value)}`);
-  const body = `{\n  "file": ${JSON.stringify(figma.fileKey ?? null)},\n  "node": ${JSON.stringify(nodeIds.join(" "))},\n  "variants": {\n${lines.join(",\n")}\n  },\n`;
+  const body = `{\n  "file": ${JSON.stringify(figma.fileKey ?? null)},\n  "node": ${JSON.stringify(nodeIds.join(" "))},\n  "format": 2,\n  "variants": {\n${lines.join(",\n")}\n  },\n`;
 
   // djb2 over the text above; the measuring helper (figma.ts, loadFigmaNodes) computes the same.
   let hash = 5381;

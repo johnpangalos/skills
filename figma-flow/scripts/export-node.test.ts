@@ -107,7 +107,7 @@ test("a frame is a page: frames and text all the way down, instances as one entr
   // Text has an entry of its own, with its type; frames carry no label on a page.
   assert.equal(nodes["Report > Card > Header > Report an injury"]!.fontSize, 18);
   assert.equal(nodes["Report > Card > Header > Report an injury"]!.type, "TEXT");
-  assert.equal(nodes["Report > Card > Header"]!.label, null);
+  assert.equal("label" in nodes["Report > Card > Header"]!, false);
   // Each entry names its parent entry; positions are inside it.
   assert.equal(nodes["Report > Card > Header"]!.parent, "Report > Card");
   assert.equal(nodes["Report > Card"]!.x, 416);
@@ -155,7 +155,7 @@ test("an instance of a component made in this file is opened; a library one isn'
   const nodes = parse(await run([box("6:1", "FRAME", "Inbox", { children: [row] })], "6:1"));
   assert.deepEqual(Object.keys(nodes), ["Inbox", "Inbox > WC-2038", "Inbox > WC-2038 > WC-2038", "Inbox > WC-2038 > Approved"]);
   assert.equal(nodes["Inbox > WC-2038"]!.local, true);
-  assert.equal(nodes["Inbox > WC-2038"]!.label, null);
+  assert.equal("label" in nodes["Inbox > WC-2038"]!, false);
   assert.equal(nodes["Inbox > WC-2038 > Approved"]!.local, false);
   assert.equal(nodes["Inbox > WC-2038 > Approved"]!.parent, "Inbox > WC-2038");
 });
@@ -240,7 +240,7 @@ test("A1: a spread-only shadow is a ring, and a shadow with blur is not", async 
   });
   const entry = parse(await run([frame("12:1", [ring])], "12:1"))["Page > Ring"]!;
   assert.deepEqual(entry.rings, [["#0066ff", 2]]);
-  assert.deepEqual(entry.shadows, []);
+  assert.equal("shadows" in entry, false);
 });
 
 test("A1: an inset ring and an offset shadow with no blur are shadows, not rings, and not lost", async () => {
@@ -252,7 +252,7 @@ test("A1: an inset ring and an offset shadow with no blur are shadows, not rings
     ],
   });
   const entry = parse(await run([frame("13:1", [node])], "13:1"))["Page > Inset"]!;
-  assert.deepEqual(entry.rings, []);
+  assert.equal("rings" in entry, false);
   assert.deepEqual(entry.shadows, [
     { x: 0, y: 0, blur: 0, spread: 1, color: "#000000", inset: true },
     { x: 0, y: 1, blur: 0, spread: 0, color: "#0000000d", inset: false },
@@ -269,8 +269,8 @@ test("A1 hostile: a hidden shadow or ring is left out, and a dash needs a stroke
   const noStroke = box("11:3", "FRAME", "NoStroke", { dashPattern: [4, 2], strokeAlign: "OUTSIDE" });
   const centred = box("11:4", "FRAME", "Centred", { strokes: black, strokeAlign: "CENTER" });
   const nodes = parse(await run([frame("11:1", [hidden, noStroke, centred])], "11:1"));
-  assert.deepEqual(nodes["Page > Hidden"]!.shadows, []);
-  assert.deepEqual(nodes["Page > Hidden"]!.rings, []);
+  assert.equal("shadows" in nodes["Page > Hidden"]!, false);
+  assert.equal("rings" in nodes["Page > Hidden"]!, false);
   assert.equal("dashed" in nodes["Page > NoStroke"]!, false);
   assert.equal("strokeAlign" in nodes["Page > NoStroke"]!, false);
   assert.equal(nodes["Page > Centred"]!.strokeAlign, "center");
@@ -308,7 +308,7 @@ test("A3: radius and stroke weight are one number when the sides agree, and four
   assert.deepEqual(nodes["Page > Uneven"]!.radius, [4, 4, 0, 0]);
   assert.deepEqual(nodes["Page > Uneven"]!.strokeWeight, [1, 2, 1, 0]);
   // No stroke, so no weight, whatever the node's stroke weight says.
-  assert.equal(nodes["Page > Unstroked"]!.strokeWeight, 0);
+  assert.equal("strokeWeight" in nodes["Page > Unstroked"]!, false);
 });
 
 test("A4: a label and a page's text record their type; letter spacing is px, and alignment needs a set width", async () => {
@@ -354,8 +354,12 @@ test("A4 hostile: a mixed type value is null, and percent spacing with a mixed s
 });
 
 test("A5: layout records justify, align and wrap, in CSS's words", async () => {
+  // Children are 40 tall in a 60 tall row (and 100 wide in a 200 wide column), so they don't span
+  // the box across, and align shows.
   const pair = (id: string, name: string, extra: Partial<Fake>) =>
-    box(id, "COMPONENT", name, { layoutMode: "HORIZONTAL", children: [box(`${id}.a`, "FRAME", "A"), box(`${id}.b`, "FRAME", "B")], ...extra });
+    box(id, "COMPONENT", name, {
+      layoutMode: "HORIZONTAL", width: 200, height: 60, children: [box(`${id}.a`, "FRAME", "A"), box(`${id}.b`, "FRAME", "B")], ...extra,
+    });
   const spread = parse(await run([pair("17:1", "Row", { primaryAxisAlignItems: "SPACE_BETWEEN", counterAxisAlignItems: "CENTER", layoutWrap: "WRAP", counterAxisSpacing: 12 })], "17:1"));
   assert.deepEqual(spread["Row"]!.layout, { direction: "row", gap: 8, padding: [0, 0, 0, 0], justify: "space-between", align: "center", wrap: true, rowGap: 12 });
   const column = parse(await run([pair("17:2", "Column", { layoutMode: "VERTICAL", primaryAxisAlignItems: "MAX", counterAxisAlignItems: "BASELINE" })], "17:2"));
@@ -431,7 +435,97 @@ test("A6: a label's text is named by its style, and per-run bindings give a name
     boundVariables: { fontSize: alias("v:size"), fontWeight: [alias("v:weight"), alias("v:weight")], lineHeight: [alias("v:size"), alias("v:weight")] },
   });
   const nodes = parse(await runIn(library, [box("22:2", "COMPONENT", "Button", { children: [label] })], ["22:2"]));
-  assert.deepEqual(nodes["Button"]!.tokens, {
-    text: "text-sm/semibold", textColor: "var(--color-blue-600)", fontSize: "var(--text-sm)", fontWeight: "font-weight/semibold",
+  // The style names the font, so its size and weight aren't repeated.
+  assert.deepEqual(nodes["Button"]!.tokens, { text: "text-sm/semibold", textColor: "var(--color-blue-600)" });
+  // Without a style, the font's bindings are named, and a line height whose runs disagree is not.
+  const bare = text("22:5", "Save", {
+    fills: [{ type: "SOLID", visible: true, color: { r: 1, g: 1, b: 1 }, boundVariables: { color: alias("v:blue") } }],
+    boundVariables: { fontSize: alias("v:size"), fontWeight: [alias("v:weight"), alias("v:weight")], lineHeight: [alias("v:size"), alias("v:weight")] },
   });
+  const plain = parse(await runIn(library, [box("22:4", "COMPONENT", "Plain", { children: [bare] })], ["22:4"]));
+  assert.deepEqual(plain["Plain"]!.tokens, { textColor: "var(--color-blue-600)", fontSize: "var(--text-sm)", fontWeight: "font-weight/semibold" });
+});
+
+test("format 2: the file says so; a field at its default is left out, and one off it is kept", async () => {
+  const plain = box("23:2", "FRAME", "Plain");
+  const tinted = box("23:3", "FRAME", "Tinted", { fills: white, cornerRadius: 4, opacity: 0.5 });
+  const out = await run([frame("23:1", [plain, tinted, text("23:4", "Hi")])], "23:1");
+  assert.equal(JSON.parse(out).format, 2);
+  assert.match(out, /^  "node": "23:1",\n  "format": 2,\n  "variants": \{$/m);
+  const nodes = parse(out);
+  // Only the id, position, size and sizing are left; the frame's type and parent are added on a page.
+  assert.deepEqual(Object.keys(nodes["Page > Plain"]!), ["id", "x", "y", "width", "height", "sizing", "type", "parent"]);
+  assert.equal(nodes["Page > Tinted"]!.fill, "#ffffff");
+  assert.equal(nodes["Page > Tinted"]!.radius, 4);
+  assert.equal(nodes["Page > Tinted"]!.opacity, 0.5);
+  // A text's defaults (no letter spacing, no case, no decoration) are left out; its type stays.
+  assert.deepEqual(Object.keys(nodes["Page > Hi"]!), ["id", "type", "x", "y", "width", "height", "color", "fontFamily", "fontSize", "fontWeight", "lineHeight", "wraps", "parent"]);
+});
+
+test("format 2: a label with no text has no label, and a stroke's inside align is the default", async () => {
+  const bare = box("24:2", "COMPONENT", "Bare", { children: [] });
+  const inside = box("24:3", "FRAME", "Inside", { strokes: black, strokeAlign: "INSIDE" });
+  const outside = box("24:4", "FRAME", "Outside", { strokes: black, strokeAlign: "OUTSIDE" });
+  const nodes = parse(await run([frame("24:1", [inside, outside]), bare], "24:1", "24:2"));
+  assert.equal("label" in nodes["Bare"]!, false);
+  assert.equal("strokeAlign" in nodes["Page > Inside"]!, false);
+  assert.equal(nodes["Page > Outside"]!.strokeAlign, "outside");
+  assert.equal(nodes["Page > Inside"]!.stroke, "#000000");
+});
+
+test("S8: a drop or inner shadow with no blur, offset or spread draws nothing and is in neither list", async () => {
+  const zero = { type: "DROP_SHADOW", visible: true, radius: 0, spread: 0, offset: { x: 0, y: 0 }, color: { r: 0, g: 0, b: 0, a: 1 } };
+  const nothing = box("25:2", "FRAME", "Nothing", { effects: [zero, { ...zero, type: "INNER_SHADOW" }] });
+  const lift = box("25:3", "FRAME", "Lift", { effects: [zero, { ...zero, radius: 2 }] });
+  const nodes = parse(await run([frame("25:1", [nothing, lift])], "25:1"));
+  assert.equal("shadows" in nodes["Page > Nothing"]!, false);
+  assert.equal("rings" in nodes["Page > Nothing"]!, false);
+  assert.equal((nodes["Page > Lift"]!.shadows as unknown[]).length, 1);
+  assert.equal("rings" in nodes["Page > Lift"]!, false);
+});
+
+test("G4: justify is left out where a hugging box has no room to justify, and kept on a fixed box", async () => {
+  const children = (id: string) => [box(`${id}.a`, "FRAME", "A"), box(`${id}.b`, "FRAME", "B")];
+  const hug = box("26:2", "COMPONENT", "Hug", {
+    layoutMode: "HORIZONTAL", layoutSizingHorizontal: "HUG", primaryAxisAlignItems: "SPACE_BETWEEN", children: children("26:4"),
+  });
+  const fixed = box("26:3", "COMPONENT", "Fixed", {
+    layoutMode: "HORIZONTAL", width: 300, height: 60, primaryAxisAlignItems: "SPACE_BETWEEN", children: children("26:5"),
+  });
+  const nodes = parse(await run([hug, fixed], "26:2", "26:3"));
+  assert.equal("justify" in (nodes["Hug"]!.layout as object), false);
+  assert.equal((nodes["Fixed"]!.layout as { justify: string }).justify, "space-between");
+});
+
+test("G4: align is kept when a child doesn't span the box across, and left out when every child does", async () => {
+  const kids = (id: string, heights: [number, number]) => [
+    box(`${id}.a`, "FRAME", "A", { height: heights[0] }),
+    box(`${id}.b`, "FRAME", "B", { height: heights[1] }),
+  ];
+  const mixed = box("27:2", "COMPONENT", "Mixed", { layoutMode: "HORIZONTAL", height: 60, children: kids("27:4", [60, 20]) });
+  const all = box("27:3", "COMPONENT", "All", { layoutMode: "HORIZONTAL", height: 60, children: kids("27:5", [60, 60]) });
+  const nodes = parse(await run([mixed, all], "27:2", "27:3"));
+  assert.equal((nodes["Mixed"]!.layout as { align: string }).align, "start");
+  assert.equal("align" in (nodes["All"]!.layout as object), false);
+});
+
+test("G4: the box's content across is less its padding, and less the stroke when auto layout takes the stroke's room", async () => {
+  const kids = (id: string) => [box(`${id}.a`, "FRAME", "A", { height: 40 }), box(`${id}.b`, "FRAME", "B", { height: 40 })];
+  // Padding 4 top and bottom in a 48 tall box leaves 40 for the children: they span it.
+  const padded = box("28:2", "COMPONENT", "Padded", {
+    layoutMode: "HORIZONTAL", height: 48, paddingTop: 4, paddingBottom: 4, counterAxisAlignItems: "CENTER", children: kids("28:5"),
+  });
+  // A 1px stroke on each side of a 42 tall box: when auto layout takes the stroke's room, 40 is
+  // left and the children span it; when it doesn't, all 42 is the content and they don't.
+  const stroked = { strokes: black, strokeWeight: 1, strokeTopWeight: 1, strokeBottomWeight: 1, strokeLeftWeight: 1, strokeRightWeight: 1 };
+  const inLayout = box("28:3", "COMPONENT", "InLayout", {
+    ...stroked, layoutMode: "HORIZONTAL", height: 42, strokesIncludedInLayout: true, counterAxisAlignItems: "CENTER", children: kids("28:6"),
+  });
+  const outside = box("28:4", "COMPONENT", "Outside", {
+    ...stroked, layoutMode: "HORIZONTAL", height: 42, strokesIncludedInLayout: false, counterAxisAlignItems: "CENTER", children: kids("28:7"),
+  });
+  const nodes = parse(await run([padded, inLayout, outside], "28:2", "28:3", "28:4"));
+  assert.equal("align" in (nodes["Padded"]!.layout as object), false);
+  assert.equal("align" in (nodes["InLayout"]!.layout as object), false);
+  assert.equal((nodes["Outside"]!.layout as { align: string }).align, "center");
 });
