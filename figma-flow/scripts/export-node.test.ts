@@ -529,3 +529,67 @@ test("G4: the box's content across is less its padding, and less the stroke when
   assert.equal("align" in (nodes["InLayout"]!.layout as object), false);
   assert.equal((nodes["Outside"]!.layout as { align: string }).align, "center");
 });
+
+test("G4: a hugging box with a min size on its axis has room to justify, so justify is kept", async () => {
+  const kids = (id: string) => [box(`${id}.a`, "FRAME", "A", { width: 20, height: 20 }), box(`${id}.b`, "FRAME", "B", { width: 20, height: 20 })];
+  const minimum = box("29:2", "COMPONENT", "MinRow", {
+    layoutMode: "HORIZONTAL", layoutSizingHorizontal: "HUG", width: 200, minWidth: 200, primaryAxisAlignItems: "CENTER", children: kids("29:4"),
+  });
+  // A minimum of 0 is still a set minimum: the box can grow into room.
+  const zero = box("29:3", "COMPONENT", "ZeroRow", {
+    layoutMode: "HORIZONTAL", layoutSizingHorizontal: "HUG", minWidth: 0, primaryAxisAlignItems: "CENTER", children: kids("29:5"),
+  });
+  // A min size on the other axis doesn't give the main axis room.
+  const across = box("29:6", "COMPONENT", "AcrossRow", {
+    layoutMode: "HORIZONTAL", layoutSizingHorizontal: "HUG", minHeight: 80, primaryAxisAlignItems: "CENTER", children: kids("29:7"),
+  });
+  const nodes = parse(await run([minimum, zero, across], "29:2", "29:3", "29:6"));
+  assert.equal((nodes["MinRow"]!.layout as { justify: string }).justify, "center");
+  assert.equal((nodes["ZeroRow"]!.layout as { justify: string }).justify, "center");
+  assert.equal("justify" in (nodes["AcrossRow"]!.layout as object), false);
+});
+
+test("tokens: a stroke's token is named only where there is a stroke", async () => {
+  const library: Library = {
+    variables: {
+      "v:border": { name: "border-width/default", codeSyntax: { WEB: "1px" } },
+      "v:blue": { name: "blue/600", codeSyntax: { WEB: "var(--color-blue-600)" } },
+    },
+    styles: { "s:stroke": { name: "stroke/muted" } },
+  };
+  const bindings = {
+    strokeTopWeight: alias("v:border"), strokeRightWeight: alias("v:border"), strokeBottomWeight: alias("v:border"), strokeLeftWeight: alias("v:border"),
+  };
+  // Bound to a weight, with no stroke at all: nothing is named.
+  const ghost = box("30:2", "FRAME", "Ghost", { strokes: [], boundVariables: bindings });
+  // A stroke that is invisible is no stroke either, even with a style on it.
+  const hidden = box("30:3", "FRAME", "Hidden", {
+    strokes: [{ type: "SOLID", visible: false, color: { r: 0, g: 0, b: 0 }, boundVariables: { color: alias("v:blue") } }],
+    strokeStyleId: "s:stroke", boundVariables: bindings,
+  });
+  // A visible stroke: its colour and its weight are named.
+  const drawn = box("30:4", "FRAME", "Drawn", {
+    strokes: [{ type: "SOLID", visible: true, color: { r: 0, g: 0, b: 0 }, boundVariables: { color: alias("v:blue") } }],
+    boundVariables: bindings,
+  });
+  const nodes = parse(await runIn(library, [frame("30:1", [ghost, hidden, drawn])], ["30:1"]));
+  assert.equal("tokens" in nodes["Page > Ghost"]!, false);
+  assert.deepEqual(nodes["Page > Hidden"]!.tokens, undefined);
+  assert.deepEqual(nodes["Page > Drawn"]!.tokens, { stroke: "var(--color-blue-600)", strokeWeight: "1px" });
+});
+
+test("A4: a percent line height is px of the font size; AUTO and a mixed size are null", async () => {
+  const percent = text("31:3", "Percent", { lineHeight: { unit: "PERCENT", value: 150 }, fontSize: 14 });
+  const fractional = text("31:4", "Fraction", { lineHeight: { unit: "PERCENT", value: 125 }, fontSize: 13 });
+  const auto = text("31:5", "Auto", { lineHeight: { unit: "AUTO" } });
+  const mixedSize = text("31:6", "Mixed", { lineHeight: { unit: "PERCENT", value: 150 }, fontSize: mixed });
+  const page = parse(await run([frame("31:1", [percent, fractional, auto, mixedSize])], "31:1"));
+  assert.equal(page["Page > Percent"]!.lineHeight, 21);
+  assert.equal(page["Page > Fraction"]!.lineHeight, 16.25);
+  assert.equal(page["Page > Auto"]!.lineHeight, null);
+  assert.equal(page["Page > Mixed"]!.lineHeight, null);
+  // The label of a component reads the same way.
+  const label = text("31:8", "Save", { lineHeight: { unit: "PERCENT", value: 150 }, fontSize: 14 });
+  const component = parse(await run([box("31:7", "COMPONENT", "Button", { children: [label] })], "31:7"));
+  assert.equal((component["Button"]!.label as { lineHeight: number }).lineHeight, 21);
+});

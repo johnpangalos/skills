@@ -40,6 +40,8 @@ export type FigmaNode = Region & {
    */
   radius: number | [number, number, number, number] | null;
   rings: [color: string, spread: number][];
+  /** Set by loadFigmaNodes and loadFigmaPage on a root (see nodesOf). Copies of the node keep it. */
+  root?: true;
   /** Every shadow that isn't a ring (a blur, an offset, an inset ring), in the order CSS lists them. */
   shadows?: Shadow[];
   /** Across, then down. Absent from an export that doesn't record it; a root is never checked for fill. */
@@ -63,8 +65,9 @@ export type FigmaNode = Region & {
    * Present when the node lays out two or more children. Padding is top, right, bottom, left.
    * `strokesIncludedInLayout`, recorded for a node with a stroke, says whether the padding starts
    * inside the stroke (true, as inside a CSS border) or at the node's edge (false or absent).
-   * `justify` and `align` are left out when the children fill that axis; `wrap` and `rowGap` are
-   * for a layout whose children wrap onto more lines.
+   * `justify` is left out when the box hugs its direction with no min size on that axis, or a
+   * child fills it; `align` when every child fills across or spans the content across. `wrap` and
+   * `rowGap` are for a layout whose children wrap onto more lines.
    */
   layout?: {
     direction: "row" | "column";
@@ -77,12 +80,6 @@ export type FigmaNode = Region & {
     rowGap?: number;
   };
 };
-
-/**
- * The roots of the exports read so far: a component's variant, or a page entry with no parent. The
- * fill check skips them, since their DOM parent is the page's, not Figma's. nodesOf marks them.
- */
-const roots = new WeakSet<object>();
 
 /**
  * Reads a file written in Figma (by the figma-flow skill's export-node, or a script in figma/). Its
@@ -147,7 +144,9 @@ function restore(node: Json): Json {
 
 /**
  * The nodes of an export, by key. A format-2 export has its omitted defaults put back, on a copy;
- * an older export is taken as it is, and its absent fields are skipped. Each root is marked.
+ * an older export is taken as it is, and its absent fields are skipped. A root (a component's
+ * variant, or a page entry with no parent) gets `root: true`: the fill check skips it, since its
+ * DOM parent is the page's, not Figma's. The mark is on the data, so a copy of it keeps it.
  */
 export function nodesOf<T>(exported: Json): Record<string, T> {
   const { format, variants } = exported;
@@ -163,7 +162,7 @@ export function nodesOf<T>(exported: Json): Record<string, T> {
     // A page entry is a root when its parent is null; a component variant when its key has no " > ".
     let root = !key.includes(" > ");
     if ("parent" in node) root = node.parent === null;
-    if (root) roots.add(node);
+    if (root) node.root = true;
     nodes[key] = node as T;
   }
   return nodes;
@@ -180,6 +179,8 @@ export type FigmaText = Region &
     id: string;
     type: "TEXT";
     parent: string;
+    /** Set on a root, as for FigmaNode. A text is never a root, so this is only there for the type. */
+    root?: true;
     color: string | null;
     fontSize: number;
     fontWeight: number;
@@ -304,6 +305,31 @@ export async function expectTextToMatchFigma(element: Locator, figma: FigmaText,
       if (alpha < 255) bytes.push(alpha);
       return "#" + bytes.map((c) => c.toString(16).padStart(2, "0")).join("");
     };
+    // The text's parent: the decorations drawn on it are set on that parent or an ancestor, up to
+    // an inline-block, a float or a positioned box, which draw their own.
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    let owner: Element = el;
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      if (/\S/.test(node.textContent ?? "")) {
+        owner = node.parentElement ?? el;
+        break;
+      }
+    }
+    const decorations = (from: Element) => {
+      const lines = new Set<string>();
+      for (let node: Element | null = from; node; node = node.parentElement) {
+        const style = getComputedStyle(node);
+        for (const line of style.textDecorationLine.split(" ")) lines.add(line);
+        const boxed =
+          style.display.startsWith("inline-") ||
+          style.cssFloat !== "none" ||
+          style.position === "absolute" ||
+          style.position === "fixed";
+        if (boxed) break;
+      }
+      const drawn = ["underline", "line-through"].filter((line) => lines.has(line));
+      return drawn.join(" ") || "none";
+    };
     const style = getComputedStyle(el);
     const px = (value: string) => parseFloat(value) || 0;
     const aligns: Record<string, string> = { start: "left", end: "right" };
@@ -322,7 +348,7 @@ export async function expectTextToMatchFigma(element: Locator, figma: FigmaText,
         .replace(/^["']|["']$/g, ""),
       letterSpacing,
       textCase,
-      textDecoration: style.textDecorationLine,
+      textDecoration: decorations(owner),
       textAlign: aligns[style.textAlign] ?? style.textAlign,
       opacity: parseFloat(style.opacity),
     };
@@ -354,7 +380,8 @@ export async function expectTextToMatchFigma(element: Locator, figma: FigmaText,
 
 /**
  * Leaves an entry of a page export unmeasured, with the reason; the report lists it. For an
- * entry the helper can't read (a vector, a ring Figma draws as a separate shape), never for one whose values fail.
+ * entry the helper can't read (a vector, a ring Figma draws as a separate shape), never for one
+ * whose values fail.
  */
 export const skip = (reason: string) => ({ skip: reason });
 
@@ -439,7 +466,9 @@ export async function expectPageToMatchFigma(
 /**
  * Checks an element's fill axes against its DOM parent. Across, the element spans the parent's
  * content box. Along a flex parent, it has a flex-grow of at least 1 or leaves no free room for
- * anything else. A parent that isn't a flex container can't say, so the check is skipped and reported.
+ * anything else. A parent that isn't a flex container can't say, so the check is skipped and
+ * reported. Nor can a parent that wraps: its siblings may be on other lines, so the main axis is
+ * skipped and reported.
  */
 async function expectFillMatches(element: Locator, sizing: [Sizing, Sizing]) {
   const axes: ("horizontal" | "vertical")[] = [];
@@ -464,6 +493,7 @@ async function expectFillMatches(element: Locator, sizing: [Sizing, Sizing]) {
         style.position !== "fixed"
       );
     });
+    const wrap = parentStyle.flexWrap !== "nowrap";
     return {
       axes: wanted.map((axis) => {
         const horizontal = axis === "horizontal";
@@ -478,12 +508,22 @@ async function expectFillMatches(element: Locator, sizing: [Sizing, Sizing]) {
         const size = el.getBoundingClientRect()[key];
         const main = horizontal !== column;
         if (!main)
-          return { axis, main, across: size - content, size, content, free: 0, grow: false, noRoom: false };
+          return {
+            axis,
+            main,
+            wrap,
+            across: size - content,
+            size,
+            content,
+            free: 0,
+            grow: false,
+            noRoom: false,
+          };
         const used = siblings.reduce((sum, child) => sum + child.getBoundingClientRect()[key], 0);
         const free = content - used - gap * siblings.length;
         const grow = parseFloat(getComputedStyle(el).flexGrow) >= 1;
         const noRoom = Math.abs(free - size) < 1;
-        return { axis, main, across: size - content, size, content, free, grow, noRoom };
+        return { axis, main, wrap, across: size - content, size, content, free, grow, noRoom };
       }),
     };
   }, axes);
@@ -495,7 +535,12 @@ async function expectFillMatches(element: Locator, sizing: [Sizing, Sizing]) {
     return;
   }
   for (const check of fill.axes) {
-    if (check.main) {
+    if (check.main && check.wrap) {
+      test.info().annotations.push({
+        type: "figma: not measured",
+        description: `sizing: fill on ${check.axis} isn't checked, its parent wraps, so its siblings may be on other lines`,
+      });
+    } else if (check.main) {
       expect
         .soft(
           check.grow || check.noRoom,
@@ -529,7 +574,8 @@ async function expectFillMatches(element: Locator, sizing: [Sizing, Sizing]) {
  * nor a dash isn't checked for style at all.
  *
  * A "fill" axis (`sizing`) is checked against the element's flex parent (see expectFillMatches).
- * A root (a component's variant, or a page entry with no parent) is never checked for fill.
+ * A root (a component's variant, or a page entry with no parent, marked `root` by the loader) is
+ * never checked for fill.
  *
  * Every comparison is soft: one run reports each value that differs, not only the first.
  *
@@ -553,7 +599,7 @@ export async function expectToMatchFigma(
       .soft(Math.abs(box![side] - figma[side]), `${side} is ${box![side]}px, Figma's is ${figma[side]}px`)
       .toBeLessThan(1);
   }
-  if (sizing && figma.sizing && !roots.has(figma)) await expectFillMatches(element, figma.sizing);
+  if (sizing && figma.sizing && !figma.root) await expectFillMatches(element, figma.sizing);
 
   const rendered = await element.evaluate((el) => {
     // A CSS colour → "#rrggbb", or "#rrggbbaa" below alpha 1, or null when fully transparent. The
@@ -625,8 +671,25 @@ export async function expectToMatchFigma(
       range.setEnd(last, last.length);
       labelX = range.getBoundingClientRect().left - el.getBoundingClientRect().left;
     }
-    // A text's decoration is its own parent's: it isn't inherited.
+    // The decorations drawn on the label: those set on its parent and each ancestor up to and
+    // including the element (the decoration is drawn over what's inside it, not what's outside).
     const owner = first?.parentElement ?? el;
+    const decorations = (from: Element, stop: Element) => {
+      const lines = new Set<string>();
+      for (let node: Element | null = from; node; node = node.parentElement) {
+        const style = getComputedStyle(node);
+        for (const line of style.textDecorationLine.split(" ")) lines.add(line);
+        // An inline-block, a float or a positioned box draws its own decorations, not its parent's.
+        const boxed =
+          style.display.startsWith("inline-") ||
+          style.cssFloat !== "none" ||
+          style.position === "absolute" ||
+          style.position === "fixed";
+        if (node === stop || boxed) break;
+      }
+      const drawn = ["underline", "line-through"].filter((line) => lines.has(line));
+      return drawn.join(" ") || "none";
+    };
     const aligns: Record<string, string> = { start: "left", end: "right" };
     const justifies: Record<string, string> = {
       normal: "start",
@@ -703,7 +766,7 @@ export async function expectToMatchFigma(
           .replace(/^["']|["']$/g, ""),
         letterSpacing,
         textCase,
-        textDecoration: getComputedStyle(owner).textDecorationLine,
+        textDecoration: decorations(owner, el),
         textAlign: aligns[style.textAlign] ?? style.textAlign,
       },
     };

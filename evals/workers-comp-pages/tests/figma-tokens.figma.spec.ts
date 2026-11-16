@@ -1,5 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { expect, test } from "@playwright/test";
+import { loadFigmaExport, nodesOf } from "./figma";
 
 // Template: every export's `tokens` must agree with the token snapshot (tokens.json in the exports
 // folder, from figma-flow's export-tokens). A token is the name of the Figma variable or style a value
@@ -15,8 +16,9 @@ import { expect, test } from "@playwright/test";
 // A variable matches when the export's value equals its value or one of its modes' values. A colour
 // compares its first six hex digits: an 8-digit colour's alpha is the paint's own, not the variable's.
 // `text` must agree with the entry's text (a null weight in the style is skipped); `effect` must agree
-// with its shadows and rings, layer by layer. An export with `"format": 2` has its defaults filled in
-// first, as loadFigmaNodes does; one with no format is read as it is.
+// with its shadows and rings, layer by layer. The exports are read as the helper (figma.ts) reads
+// them, so a format-2 export has its defaults filled in and the hash is checked; a `lineHeight` that
+// is null on the label (AUTO) isn't compared.
 type Json = Record<string, unknown>;
 type Variable = { value: unknown; web: string | null; modes?: Record<string, unknown> };
 type TextStyle = {
@@ -68,19 +70,6 @@ const SIDE_NAMES: Record<string, string[]> = {
   padding: ["top", "right", "bottom", "left"],
   radius: ["top-left", "top-right", "bottom-right", "bottom-left"],
 };
-// The defaults a format-2 export leaves out. A TEXT entry has no box fields; a label has text ones.
-const BOX_DEFAULTS: Json = {
-  fill: null,
-  stroke: null,
-  strokeWeight: 0,
-  radius: 0,
-  rings: [],
-  label: null,
-  opacity: 1,
-  shadows: [],
-};
-const TEXT_DEFAULTS: Json = { letterSpacing: 0, textCase: "none", textDecoration: "none" };
-
 const isObject = (value: unknown): value is Json =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 const listOf = (value: unknown): unknown[] => {
@@ -165,15 +154,6 @@ function entriesWithTokens(file: string, node: unknown, path: string[] = [], fou
     else entriesWithTokens(file, value, [...path, key], found);
   }
   return found;
-}
-
-// The entry with the defaults a format-2 export leaves out filled back in.
-function withDefaults(entry: Json, format2: boolean): Json {
-  if (!format2) return entry;
-  if (entry.type === "TEXT") return { ...TEXT_DEFAULTS, ...entry };
-  const filled: Json = { ...BOX_DEFAULTS, ...entry };
-  if (isObject(filled.label)) filled.label = { ...TEXT_DEFAULTS, ...filled.label };
-  return filled;
 }
 
 // The value each field is drawn with, as the export records it.
@@ -266,9 +246,10 @@ function checkText(ctx: Context, at: string, token: unknown) {
   const text = ctx.text;
   const checks: [string, unknown, unknown][] = [
     ["size", text.fontSize, style.size],
-    ["lineHeight", text.lineHeight, lineHeightOf(style)],
     ["family", text.fontFamily, style.family],
   ];
+  // A label whose line height is null is AUTO (export-node writes null for it): not compared.
+  if (text.lineHeight !== null) checks.push(["lineHeight", text.lineHeight, lineHeightOf(style)]);
   if (typeof style.weight === "number") checks.push(["weight", text.fontWeight, style.weight]);
   if (style.letterSpacing !== undefined)
     checks.push(["letterSpacing", text.letterSpacing, style.letterSpacing]);
@@ -349,14 +330,14 @@ function checkToken(ctx: Context, field: string, token: unknown) {
   ctx.problems.push(`${at} is not a name`);
 }
 
-// The problems with one export, and the paint styles and opacities it couldn't measure.
+// The problems with one export, and the paint styles and opacities it couldn't measure. The
+// entries are nodesOf's, so the defaults of a format-2 export are filled in as the helper fills them.
 export function checkExport(file: string, exported: Json, snapshot: Snapshot) {
   const problems: string[] = [];
   const notMeasured: string[] = [];
-  const format2 = typeof exported.format === "number" && exported.format >= 2;
-  for (const { where, entry, tokens } of entriesWithTokens(file, exported)) {
-    const filled = withDefaults(entry, format2);
-    const ctx: Context = { where, entry: filled, text: textOf(filled), snapshot, problems, notMeasured };
+  const variants = { variants: nodesOf<Json>(exported) };
+  for (const { where, entry, tokens } of entriesWithTokens(file, variants)) {
+    const ctx: Context = { where, entry, text: textOf(entry), snapshot, problems, notMeasured };
     for (const [field, token] of Object.entries(tokens)) checkToken(ctx, field, token);
   }
   return { problems, notMeasured };
@@ -377,7 +358,7 @@ const exports = readdirSync(folder).filter(
 
 for (const file of exports) {
   test(`${file}: every token agrees with the token snapshot`, () => {
-    const exported = JSON.parse(readFileSync(new URL(file, folder), "utf8")) as Json;
+    const exported = loadFigmaExport(new URL(file, folder));
     const { problems, notMeasured } = checkExport(file, exported, snapshot);
     for (const description of notMeasured)
       test.info().annotations.push({ type: "figma: not measured", description });
@@ -571,6 +552,15 @@ test.describe("the checker", () => {
 
   test("a blur-only style has no shadows to match", () => {
     expect(problemsOf({ tokens: { effect: "blur-md" } })).toEqual([]);
+  });
+
+  test("a label whose line height is null (AUTO) isn't compared with its style's; a px one is", () => {
+    expect(problemsOf(textEntry({ text: "text-sm/semibold" }, { lineHeight: null }), 2)).toEqual([]);
+    expect(problemsOf(textEntry({ text: "text-sm/semibold" }, { lineHeight: 21 }), 2)).toHaveLength(1);
+  });
+
+  test("an export in a format this helper doesn't read throws, as nodesOf does", () => {
+    expect(() => problemsOf({ tokens: { fill: "blue/600" } }, 3)).toThrow(/format 3/);
   });
 
   test("a format-2 entry without shadows has none, so a shadow style fails", () => {

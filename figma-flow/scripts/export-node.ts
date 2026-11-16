@@ -22,26 +22,28 @@
 //
 // What a box records: its size and position, `fill`, `stroke` and `strokeWeight` (a number, or
 // top, right, bottom, left when the sides differ; 0 with no stroke), `strokeAlign` and `dashed`
-// (with a stroke only), `radius` (a number, or top-left, top-right, bottom-right, bottom-left when
-// the corners differ), `rings` (spread-only drop shadows: no blur and no offset, a focus ring,
-// as colour and spread), `shadows` (every other visible shadow, an inset ring included: x, y,
-// blur, spread, colour, inset), `opacity`, `sizing` (hug, fill or fixed, across then down), and
-// `minWidth`/`maxWidth`/`minHeight`/`maxHeight` where set. A shadow (drop or inner) with no blur,
-// no offset and no spread draws nothing, so it is in neither list. Colours are "#rrggbb", or "#rrggbbaa"
-// when see-through.
+// (with a stroke only), `radius` (a number, or top-left, top-right, bottom-right, bottom-left
+// when the corners differ), `rings` (spread-only drop shadows: no blur and no offset, a focus
+// ring, as colour and spread), `shadows` (every other visible shadow, an inset ring included: x,
+// y, blur, spread, colour, inset), `opacity`, `sizing` (hug, fill or fixed, across then down),
+// and `minWidth`/`maxWidth`/`minHeight`/`maxHeight` where set. A shadow (drop or inner) with no
+// blur, no offset and no spread draws nothing, so it is in neither list. Colours are "#rrggbb",
+// or "#rrggbbaa" when see-through.
 //
 // `layout` (two or more laid-out children) adds `justify` and `align` in CSS's words, and `wrap`
-// with `rowGap` when it wraps. Each is left out where it can't show. `justify`: when the box hugs
-// its direction (no free room) or a child fills it. `align`: when every child fills across or
-// already spans the box's content across, which is the box less its padding and, when auto layout
-// takes the stroke's room (`strokesIncludedInLayout`), less the stroke.
+// with `rowGap` when it wraps. Each is left out where it can't show. `justify`: when the box
+// hugs its direction and has no min size on that axis (no free room), or a child fills it.
+// `align`: when every child fills across or already spans the box's content across, which is the
+// box less its padding and, when auto layout takes the stroke's room (`strokesIncludedInLayout`),
+// less the stroke.
 //
 // `label` (a component's first text) and a page's text entries carry the type: `fontFamily`,
-// `fontSize`, `fontWeight`, `lineHeight`, `letterSpacing` (px), `textCase`, `textDecoration`, and
-// `textAlign` where the text has a set width. `tokens`, where anything is bound to a variable or
-// style, names them: a variable by its web code syntax, a style by its name. A text style names
-// its own font, so `tokens` leaves out fontFamily, fontSize, fontWeight, lineHeight and
-// letterSpacing when the text has one.
+// `fontSize`, `fontWeight`, `lineHeight` (px; a percent is of the font size; null for AUTO),
+// `letterSpacing` (px), `textCase`, `textDecoration`, and `textAlign` where the text has a set
+// width. `tokens`, where anything is bound to a variable or style, names them: a variable by its
+// web code syntax, a style by its name. A text style names its own font, so `tokens` leaves out
+// fontFamily, fontSize, fontWeight, lineHeight and letterSpacing when the text has one. `tokens`
+// records `stroke` and `strokeWeight` only where there is a stroke.
 //
 // Format 2 (`"format": 2`, after `node`): a field at its default is left out. Those are `fill`,
 // `stroke` and `label` null; `strokeWeight` and `radius` 0; `rings` and `shadows` empty; `opacity`
@@ -72,9 +74,14 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
   };
   // Figma reports `figma.mixed` (a symbol) when a value differs within the node.
   const single = <T>(value: T | typeof figma.mixed) => (typeof value === "symbol" ? null : (value as T));
-  const pixels = (lineHeight: LineHeight | typeof figma.mixed) => {
-    const value = single(lineHeight);
-    return value?.unit === "PIXELS" ? value.value : null;
+  // Line height in pixels, as CSS computes it: Figma's percent is of the font size. Null for AUTO,
+  // and for a mixed value.
+  const lineHeightPx = (node: TextNode) => {
+    const value = single(node.lineHeight);
+    const size = single(node.fontSize);
+    if (value?.unit === "PIXELS") return value.value;
+    if (value?.unit === "PERCENT" && size !== null) return round((value.value / 100) * size);
+    return null;
   };
   // Letter spacing in pixels, as CSS computes it: Figma's percent is of the font size.
   const tracking = (node: TextNode) => {
@@ -100,7 +107,7 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
     fontFamily: single(node.fontName)?.family ?? null,
     fontSize: single(node.fontSize),
     fontWeight: single(node.fontWeight),
-    lineHeight: pixels(node.lineHeight),
+    lineHeight: lineHeightPx(node),
     letterSpacing: tracking(node),
     textCase: textCase(node.textCase),
     textDecoration: textDecoration(node.textDecoration),
@@ -142,8 +149,11 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
     };
     if (node.type !== "TEXT") {
       set("fill", await paintToken(node, "fills"));
-      set("stroke", await paintToken(node, "strokes"));
-      set("strokeWeight", await fourNames(bound, ["strokeTopWeight", "strokeRightWeight", "strokeBottomWeight", "strokeLeftWeight"]));
+      // A stroke's binding is named only where there is a stroke to bind it to.
+      if (solid(node.strokes) !== null) {
+        set("stroke", await paintToken(node, "strokes"));
+        set("strokeWeight", await fourNames(bound, ["strokeTopWeight", "strokeRightWeight", "strokeBottomWeight", "strokeLeftWeight"]));
+      }
       set("radius", await fourNames(bound, ["topLeftRadius", "topRightRadius", "bottomRightRadius", "bottomLeftRadius"]));
       set("gap", await variableName(bound.itemSpacing));
       set("rowGap", await variableName(bound.counterAxisSpacing));
@@ -195,8 +205,9 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
 
   // Where auto layout puts the children, in CSS's words: justify-content along the direction,
   // align-items across it. Left out where it can't show: justify when the box hugs its direction
-  // (no free room) or a child fills it (the child takes the room); align when every child fills
-  // across or already spans the box's content across (within 1px, as the fill check is).
+  // with no min size on that axis (no free room), or a child fills it (the child takes the room);
+  // align when every child fills across or already spans the box's content across (within 1px,
+  // as the fill check is).
   const sizingAlong = (child: SceneNode, horizontal: boolean) =>
     "layoutSizingHorizontal" in child ? (horizontal ? child.layoutSizingHorizontal : child.layoutSizingVertical) : "FIXED";
   function alignment(node: Box, laidOut: SceneNode[]) {
@@ -215,8 +226,11 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
     const spans = (child: SceneNode) =>
       "width" in child && Math.abs((horizontal ? child.height : child.width) - across) <= 1;
     const hugs = (horizontal ? node.layoutSizingHorizontal : node.layoutSizingVertical) === "HUG";
+    // A min size on the axis leaves room a hugging box can justify into.
+    const minAlong = horizontal ? node.minWidth : node.minHeight;
+    const roomless = hugs && (minAlong === null || minAlong === undefined);
     return {
-      ...(!hugs && !laidOut.some((child) => sizingAlong(child, horizontal) === "FILL") && { justify }),
+      ...(!roomless && !laidOut.some((child) => sizingAlong(child, horizontal) === "FILL") && { justify }),
       ...(!laidOut.every((child) => sizingAlong(child, !horizontal) === "FILL" || spans(child)) && { align }),
     };
   }

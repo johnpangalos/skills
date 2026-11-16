@@ -46,6 +46,9 @@ const PAGE = `<!doctype html>
   <div id="block" style="width: 200px; height: 100px;"><div id="block-child" style="width: 200px; height: 30px;"></div></div>
   <div id="root-wrap" style="display: flex; flex-direction: column; align-items: flex-start; width: 200px; height: 100px;"><div id="root-variant" style="width: 120px; height: 40px;"></div></div>
   <p id="centred" style="width: 120px; height: 40px; margin: 0; text-align: center; font-family: Inter, sans-serif; font-size: 14px; font-weight: 400; line-height: 20px; color: #333333;">Some words that wrap onto more than one line of this text</p>
+  <div id="inherited" style="width: 160px; height: 36px; padding: 8px 16px; border-radius: 6px; background: #a800b7; color: #ffffff; font-family: Inter, sans-serif; font-size: 14px; font-weight: 600; line-height: 20px; letter-spacing: 0.5px; text-transform: uppercase; text-decoration: underline;"><span>Save</span></div>
+  <p id="under-p" style="margin: 0; width: 120px; text-decoration: underline; font-family: Inter, sans-serif; font-size: 14px; font-weight: 400; line-height: 20px; color: #333333;"><span id="under-span" style="display: block; width: 120px; height: 20px;">Save</span></p>
+  <div id="wrap-row" style="display: flex; flex-wrap: wrap; width: 200px; height: 80px;"><div id="wrap-full" style="width: 100%; height: 30px;"></div><div style="width: 50px; height: 30px;"></div></div>
 </body>
 </html>`;
 
@@ -155,6 +158,30 @@ const flex: FigmaNode = box(200, 60, {
   },
 });
 
+// The same box as `labelled`, its underline set on the box, not the text's own span.
+const inherited: FigmaNode = labelled;
+
+const underlinedText: FigmaText = {
+  x: 0,
+  y: 0,
+  width: 120,
+  height: 20,
+  id: "1:10",
+  type: "TEXT",
+  parent: "1:1",
+  color: "#333333",
+  fontSize: 14,
+  fontWeight: 400,
+  lineHeight: 20,
+  fontFamily: "Inter",
+  letterSpacing: 0,
+  textCase: "none",
+  textDecoration: "underline",
+  textAlign: "left",
+  wraps: false,
+  opacity: 1,
+};
+
 const centred: FigmaText = {
   x: 0,
   y: 0,
@@ -183,6 +210,8 @@ const full = box(150, 40, { sizing: ["fill", "hug"] });
 const gapped = box(100, 40, { sizing: ["fill", "hug"] });
 const blockChild = box(200, 30, { sizing: ["fill", "hug"] });
 const rootVariant = box(120, 40, { sizing: ["fill", "fill"] });
+// Wraps onto a second line, so it is alone on its first line: its parent's free room is not its own.
+const wrapFull = box(200, 30, { sizing: ["fill", "hug"] });
 
 /** The defaults a format-2 export leaves out, as export-node writes them. */
 const defaults: Json = {
@@ -261,7 +290,8 @@ test.describe("the loader", () => {
 
   test("a format-2 node round-trips to the node it was written from", () => {
     for (const node of [tinted, dashed, outlined, labelled, smallCaps, placeholder, flex, rootVariant]) {
-      expect(restored<FigmaNode>("a", node)).toEqual(node);
+      // Keyed "a", so a root: the loader marks it.
+      expect(restored<FigmaNode>("a", node)).toEqual({ ...node, root: true });
     }
   });
 
@@ -608,6 +638,44 @@ test.describe("the browser helper", () => {
     await open(page);
     const root = restored<FigmaNode>("variant=default", rootVariant);
     await expectToMatchFigma(page.locator("#root-variant"), root);
+  });
+
+  test("a spread copy of a loaded root keeps its mark, so it is not fill-checked", async ({ page }) => {
+    await open(page);
+    const root = restored<FigmaNode>("variant=default", rootVariant);
+    expect(root.root).toBe(true);
+    await expectToMatchFigma(page.locator("#root-variant"), { ...root });
+  });
+
+  test("a fill child of a wrapping flex parent is noted, not checked on its main axis", async ({ page }) => {
+    await open(page);
+    await expectToMatchFigma(page.locator("#wrap-full"), wrapFull);
+    expect(test.info().annotations.map((annotation) => annotation.type)).toContain("figma: not measured");
+  });
+
+  test("a label's underline set on its box, not its own span, passes", async ({ page }) => {
+    await open(page);
+    await expectToMatchFigma(page.locator("#inherited"), inherited);
+  });
+
+  test("#inherited: a label with no underline fails", async ({ page }) => {
+    test.fail();
+    await open(page);
+    await expectToMatchFigma(page.locator("#inherited"), {
+      ...inherited,
+      label: { ...inherited.label!, textDecoration: "none" },
+    });
+  });
+
+  test("a text's underline set on its parent, above the element, passes", async ({ page }) => {
+    await open(page);
+    await expectTextToMatchFigma(page.locator("#under-span"), underlinedText, { width: true });
+  });
+
+  test("a text with no underline, under an underlined parent, fails", async ({ page }) => {
+    test.fail();
+    await open(page);
+    await expectTextToMatchFigma(page.locator("#under-span"), { ...underlinedText, textDecoration: "none" });
   });
 
   test("the same node, not a root, is fill-checked and fails", async ({ page }) => {
