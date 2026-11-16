@@ -1,0 +1,1044 @@
+[
+  {
+    "id": "risky-auth",
+    "reports": [
+      {
+        "letter": "A",
+        "overall": 8,
+        "scores": {
+          "correctness": 9,
+          "robustness": 7,
+          "code_quality": 9,
+          "tests": 8,
+          "docs": 7,
+          "product": 8
+        },
+        "defects": [
+          {
+            "severity": "minor",
+            "what": "Tokens (used or expired) are never evicted from the in-memory _TOKENS dict, so the store grows without bound.",
+            "evidence": "shop/auth.py: entries are only inserted/marked used; probe printed 'store size 5' after 5 issues including used/expired ones."
+          },
+          {
+            "severity": "minor",
+            "what": "Clock values that are not valid are accepted silently: a redeem time earlier than the issue time succeeds, now=NaN passes the expiry check, and a token issued at now=inf never expires.",
+            "evidence": "probe: issue now=1000, redeem now=0 -> 'a'; redeem now=float('nan') -> accepted; issue now=inf, redeem now=10 -> 'a'. Comparison at shop/auth.py `if now - entry['issued_at'] > TOKEN_TTL`."
+          },
+          {
+            "severity": "minor",
+            "what": "No test covers concurrent redemption, although the code adds a lock for that case. The lock does work: in a probe with 50 threads, 1 redeem succeeded and 49 raised TokenUsed.",
+            "evidence": "tests/test_auth.py has no threading test; scratch probe with 50 threads printed '1 49'."
+          }
+        ],
+        "strengths": [
+          "Meets every part of the spec: the 1800 s boundary is inclusive, TokenUsed and TokenExpired subclass InvalidToken, now defaults to time.time(), and now=0 is honoured by using `is None`.",
+          "Redeeming an already-used token raises TokenUsed even after expiry, and an expired token is not marked used.",
+          "A threading.Lock makes the check-and-mark step atomic; a 50-thread probe got exactly one success.",
+          "Ten focused tests cover the round trip, both sides of the boundary, now=0, the default clock, the exact type for unknown tokens, and the subclasses.",
+          "The module docstring and the TOKEN_TTL constant document the behaviour, and the style is consistent with cart.py; ./check.sh passes with 17 tests."
+        ],
+        "stats": {
+          "files": 13,
+          "source_lines": 300,
+          "test_cases": 17
+        },
+        "summary": "Build A is a clean, small change that implements the spec correctly. Expiry is inclusive at exactly 1800 s, tokens are single-use with TokenUsed taking precedence, the exception hierarchy is right, and redemption is atomic under a lock. ./check.sh passes with 17 tests. All remaining issues are minor: the token store is never purged, a redeem time earlier than the issue time or a NaN/inf clock is accepted, and no test covers concurrent redemption."
+      },
+      {
+        "letter": "B",
+        "overall": 7,
+        "scores": {
+          "correctness": 8,
+          "robustness": 6,
+          "code_quality": 8,
+          "tests": 8,
+          "docs": 6,
+          "product": 8
+        },
+        "defects": [
+          {
+            "severity": "major",
+            "what": "Redeem is a non-atomic check-then-set with no lock. Concurrent redemptions of the same token can all pass the `used` check before any of them sets it, so a single-use token gets redeemed more than once.",
+            "evidence": "shop/auth.py:43-48. Throwaway probe scratchpad/r.py passes a `now` float subclass whose __sub__ sleeps 10ms to widen the window, then redeems one token from 5 threads. It printed ['a', 'a', 'a', 'a', 'a'] (5 successful redemptions). Under normal timing, 300 trials of 8 racing threads produced 0 double redemptions, so the window is narrow but real."
+          },
+          {
+            "severity": "minor",
+            "what": "A redeem time earlier than the issue time (negative elapsed) is accepted as valid. There is no input validation on `now`: issue_reset_token(now='abc') succeeds and fails only later at redeem with a TypeError, and a NaN issued_at produces a token that never expires.",
+            "evidence": "probe: issue now=1000, redeem now=0 -> 'a'; issue now=float('nan'), redeem now=1e12 -> 'a'; issue now='abc' -> no error; redeem with now='5' -> TypeError"
+          },
+          {
+            "severity": "minor",
+            "what": "The in-memory _TOKENS store never evicts used or expired entries, so it grows without bound. This was already true before the change, but the change gave the code a natural point to prune.",
+            "evidence": "shop/auth.py:8; after the probe, len(auth._TOKENS) == 309"
+          },
+          {
+            "severity": "minor",
+            "what": "The README does not mention the new 30-minute expiry or single-use behaviour, although it documents other business rules (shipping, tax).",
+            "evidence": "README.md has no mention of token TTL"
+          }
+        ],
+        "strengths": [
+          "Meets every spec point: the 1800s boundary is inclusive (expires only past 1800), tokens are single-use, TokenExpired and TokenUsed subclass InvalidToken, unknown tokens raise InvalidToken, and now defaults to time.time()",
+          "Small, idiomatic change with a named TOKEN_TTL_SECONDS constant and a docstring listing the exceptions",
+          "Sensible ordering: a failed expired attempt does not consume the token, and a used token reports TokenUsed even after the TTL",
+          "Tests cover the exact-boundary and just-past-boundary cases, reuse, independence of tokens, the default clock and the subclass relationship, all in the existing unittest style",
+          "./check.sh passes (17 tests OK)"
+        ],
+        "stats": {
+          "files": 2,
+          "source_lines": 86,
+          "test_cases": 10
+        },
+        "summary": "Build B meets every requirement in the task. The change is a clean, idiomatic edit to shop/auth.py with good boundary tests, and check.sh passes. The main gap is that the single-use guarantee does not hold under concurrent redemption: the check-then-set on entry[\"used\"] is not atomic and has no lock, and a forced interleaving redeemed one token five times. Smaller gaps: no validation of `now` (a negative elapsed time or NaN is accepted), the token store grows without bound, and the README does not mention the new expiry."
+      },
+      {
+        "letter": "C",
+        "overall": 7,
+        "scores": {
+          "correctness": 8,
+          "robustness": 6,
+          "code_quality": 8,
+          "tests": 8,
+          "docs": 5,
+          "product": 7
+        },
+        "defects": [
+          {
+            "severity": "major",
+            "what": "Single-use enforcement is a non-atomic check-then-act (`token in _USED` then `_USED.add(token)`) with no lock, so concurrent redeems of the same token can all succeed.",
+            "evidence": "shop/auth.py:41-46. Swapping _USED for a set subclass whose __contains__ sleeps 10ms, then running 5 threads on redeem_reset_token(t), printed 'successes 5'. Without the injected delay, 2000 trials with 8 threads each gave 0 double redeems, so in practice the window is narrow, but nothing guarantees it is closed."
+          },
+          {
+            "severity": "minor",
+            "what": "A token issued with a future or infinite issued_at never expires. Redeeming before issue time is accepted on purpose (the tests cover clock skew), but the gap is unbounded.",
+            "evidence": "issue_reset_token('u', now=float('inf')) followed by redeem_reset_token(t, now=0) returned 'u'. Also issue at now=5000, redeem at now=1000 returns 'ada' (tests/test_auth.py:96)."
+          },
+          {
+            "severity": "minor",
+            "what": "The in-memory stores grow without bound: expired and used tokens are never removed from _TOKENS or _USED.",
+            "evidence": "shop/auth.py:8-9,46. After a few probes it printed 'store sizes 9 3', and nothing ever deletes entries."
+          },
+          {
+            "severity": "minor",
+            "what": "Bad input types leak TypeError instead of InvalidToken or ValueError: an unhashable token, or a non-numeric now.",
+            "evidence": "redeem_reset_token([1], now=0) raised TypeError 'unhashable type: list'. redeem_reset_token(tok, now='100') raised TypeError 'unsupported operand type(s) for -: str and int'."
+          },
+          {
+            "severity": "minor",
+            "what": "The README mentions password-reset tokens but was not updated to describe the 30-minute TTL or the single-use behaviour.",
+            "evidence": "README.md:3-10 has no mention of expiry or single use."
+          }
+        ],
+        "strengths": [
+          "Small, clear implementation. TOKEN_TTL is a named constant, and the exception hierarchy matches the spec exactly.",
+          "The boundary is handled correctly: exactly 1800s is accepted, and 1801s and fractional values past 1800 raise TokenExpired.",
+          "NaN timestamps fail closed, using the `not <=` comparison, and that is documented in a comment.",
+          "Checking for prior use before checking expiry means reusing a token always raises TokenUsed. A failed (expired) redeem does not mark the token as used.",
+          "Thorough tests: boundaries, zero timestamps, NaN, reuse after the window, isolation between tokens, the default `now` mocked through time.time, and empty or None tokens. They use the existing unittest style.",
+          "./check.sh passes (27 tests OK)."
+        ],
+        "stats": {
+          "files": 12,
+          "source_lines": 278,
+          "test_cases": 27
+        },
+        "summary": "Build C meets every spec requirement: the 1800s TTL boundary is inclusive, tokens are single-use with TokenUsed, TokenExpired and TokenUsed subclass InvalidToken, unknown tokens raise plain InvalidToken, and `now` defaults to time.time() at call time. The tests are strong (20 auth cases) and check.sh passes. The main weakness is the lockless check-then-add in redeem_reset_token: concurrent redeems can double-spend a token, which I showed by injecting a delay. Smaller issues: future-dated tokens never expire, the stores are never pruned, bad input types raise TypeError, and the README was not updated. Files are in /tmp/inspect-risky-auth-C (shop/auth.py, tests/test_auth.py)."
+      },
+      {
+        "letter": "D",
+        "overall": 8,
+        "scores": {
+          "correctness": 9,
+          "robustness": 7,
+          "code_quality": 9,
+          "tests": 9,
+          "docs": 8,
+          "product": 8
+        },
+        "defects": [
+          {
+            "severity": "minor",
+            "what": "Token store grows without bound: expired and used tokens are never removed from _TOKENS or _USED, and the token and used sets are kept as two parallel structures.",
+            "evidence": "shop/auth.py:9-10. Nothing ever deletes from _TOKENS or _USED. A token in _USED stays in _TOKENS forever."
+          },
+          {
+            "severity": "minor",
+            "what": "Redeeming with a `now` earlier than the issue time is accepted (negative elapsed time), and a NaN issue time never expires, because neither now nor issued_at is validated. A test locks in the before-issue behavior.",
+            "evidence": "PYTHONPATH=. python3 probe: issue(now=nan) then redeem(now=1e9) returns 'a'. tests/test_auth.py test_redeem_before_issue_time_does_not_expire asserts that redeem(now=0) works after issue(now=1000)."
+          },
+          {
+            "severity": "minor",
+            "what": "A non-numeric `now`, or an unhashable token, surfaces as a raw TypeError instead of InvalidToken or a clear argument error.",
+            "evidence": "redeem_reset_token([], now=0) raises TypeError: unhashable type: 'list'. redeem_reset_token(tok, now='100') raises TypeError: unsupported operand type(s) for -: 'str' and 'int'. The token is not consumed in either case."
+          },
+          {
+            "severity": "minor",
+            "what": "issue_reset_token writes to _TOKENS without taking _LOCK. A single dict assignment is atomic under the GIL, so this is safe, but the locking discipline is inconsistent.",
+            "evidence": "shop/auth.py:30 assigns _TOKENS[token] outside `with _LOCK`."
+          }
+        ],
+        "strengths": [
+          "All spec points are met: expiry is strictly greater than 1800s (redeeming at exactly 1800s succeeds, at 1800.001s it raises TokenExpired), tokens are single-use, both exceptions subclass InvalidToken, unknown tokens raise plain InvalidToken, and now=0 is honored through an `is None` check.",
+          "The check-then-mark is atomic under a lock. 50 threads redeeming one token gave exactly 1 success and 49 TokenUsed.",
+          "A failed (expired) redeem does not consume the token. Used takes precedence over expired.",
+          "15 focused tests cover the boundaries, fractional overshoot, precedence, independence of tokens and exact exception types. ./check.sh passes (22 tests).",
+          "The change is small and idiomatic, with a named RESET_TOKEN_LIFETIME constant and a README line documenting the behavior, both in the codebase's style."
+        ],
+        "stats": {
+          "files": 13,
+          "source_lines": 257,
+          "test_cases": 22
+        },
+        "summary": "Build D meets every requirement in the spec, and no blocker or major defect turned up. Redeeming at exactly 1800 seconds after issue succeeds and anything later raises TokenExpired. Tokens are single-use, and a lock makes the check and the marking happen together, so 50 concurrent redeems of one token gave 1 success and 49 TokenUsed. Unknown tokens still raise a plain InvalidToken. ./check.sh passes (22 tests, 15 of them auth tests). The defects are all minor: the token store never removes old entries, inputs are not validated (NaN or a redeem time earlier than the issue time is accepted, and non-numeric or unhashable input raises a raw TypeError), and issuing a token skips the lock. The code is concise, the tests are thorough and fit the codebase, and the README mentions the new behavior."
+      },
+      {
+        "letter": "E",
+        "overall": 8,
+        "scores": {
+          "correctness": 9,
+          "robustness": 7,
+          "code_quality": 9,
+          "tests": 9,
+          "docs": 8,
+          "product": 8
+        },
+        "defects": [
+          {
+            "severity": "minor",
+            "what": "A redeem timestamp earlier than the issue time is always accepted, however far back it is. A bad or skewed clock can therefore keep a token valid. The test suite deliberately locks this behaviour in.",
+            "evidence": "shop/auth.py:45 only checks the upper bound. tests/test_auth.py:92 test_redeem_before_issue_is_accepted. Probe: issue(now=0), redeem(now=-1e18) returned 'u'."
+          },
+          {
+            "severity": "minor",
+            "what": "Used and expired tokens are never removed from the in-memory _TOKENS dict, so the store grows without limit.",
+            "evidence": "shop/auth.py:47 sets used=True and never deletes anything. Probe printed store size 10 after 10 issues, including used and expired ones."
+          },
+          {
+            "severity": "minor",
+            "what": "issue_reset_token does not validate `now` and does not hold the lock. A non-numeric `now` is stored as-is and only fails later, at redeem, with a TypeError. An unhashable token also raises TypeError instead of InvalidToken.",
+            "evidence": "Probe: issue(now='abc') then redeem(now=1) raised TypeError: unsupported operand type(s) for -: 'int' and 'str'. redeem(['x']) raised TypeError: unhashable type: 'list'. redeem(now='1000') raised TypeError."
+          }
+        ],
+        "strengths": [
+          "Meets every spec point. The boundary is inclusive (1800 s succeeds, 1800.0000001 s raises TokenExpired). TokenUsed and TokenExpired subclass InvalidToken. Unknown tokens raise InvalidToken.",
+          "The lock makes redemption atomic: 50 concurrent redeems of one token gave exactly 1 success and 49 TokenUsed.",
+          "A failed expired redeem does not consume the token. The used check runs before the expiry check, so a used token reports TokenUsed even after it would have expired.",
+          "The comparison is written as `not ... <=` so a NaN timestamp counts as expired, and a comment explains why.",
+          "The tests are meaningful and cover the exact-TTL and TTL+1 boundaries, floats, zero, NaN, empty and None tokens, independent tokens, and the exception hierarchy. They follow the repo's unittest style.",
+          "README was updated with the 30-minute single-use rule. ./check.sh passes (21 tests)."
+        ],
+        "stats": {
+          "files": 12,
+          "source_lines": 266,
+          "test_cases": 21
+        },
+        "summary": "Build E is a clean, small, correct change. RESET_TOKEN_TTL=1800, the TokenExpired and TokenUsed subclasses, and a lock-guarded redeem meet every requirement, including concurrent single use. The tests are thorough and test real behaviour. The only problems are minor: redeem times before the issue time are accepted without limit, the store is never cleaned up, and non-numeric `now` or unhashable tokens raise TypeError instead of being validated. ./check.sh passes. The repo is not a git repository, so the diff could not be isolated. The stats count the whole package."
+      },
+      {
+        "letter": "F",
+        "overall": 7,
+        "scores": {
+          "correctness": 8,
+          "robustness": 6,
+          "code_quality": 8,
+          "tests": 8,
+          "docs": 6,
+          "product": 8
+        },
+        "defects": [
+          {
+            "severity": "major",
+            "what": "Single-use is not atomic: redeem_reset_token reads record['used'], checks expiry, then sets used=True with no lock, so concurrent redeems of the same token can all succeed (replay of a password-reset token).",
+            "evidence": "shop/auth.py:44-48. A probe that wraps the record so reading 'issued_at' sleeps 50ms (widening the check-then-set window), then redeems from 4 threads, prints `successes: ['a', 'a', 'a', 'a']`. 200 natural 8-thread trials without the sleep showed no double success, so the race needs a thread switch inside the window."
+          },
+          {
+            "severity": "minor",
+            "what": "now is not validated. NaN makes every token redeemable forever because NaN comparisons are always False. A non-numeric now passed to issue is stored without error and only fails later with TypeError instead of an InvalidToken subclass.",
+            "evidence": "issue at now=0, redeem at now=float('nan') returns 'a'; issue_reset_token('a', now='x') succeeds, then redeem at now=5 raises TypeError: unsupported operand type(s) for -: 'int' and 'str'"
+          },
+          {
+            "severity": "minor",
+            "what": "A redeem time before the issue time (negative elapsed, e.g. clock skew) is accepted without comment.",
+            "evidence": "issue at now=0, redeem at now=-5 returns 'a'"
+          },
+          {
+            "severity": "minor",
+            "what": "Used and expired tokens are never removed from the module-level _TOKENS dict, so it grows without bound.",
+            "evidence": "shop/auth.py:47: used tokens are marked used=True and kept; nothing ever deletes an entry"
+          },
+          {
+            "severity": "minor",
+            "what": "The README was not updated to describe the 30-minute lifetime or single-use behavior, although it documents other business rules (shipping, tax).",
+            "evidence": "README.md mentions only 'password-reset tokens'; grep for expire, 1800 and single-use finds nothing"
+          }
+        ],
+        "strengths": [
+          "Meets every spec requirement: the now defaults are read at call time, the 1800 s boundary is inclusive and expiry starts strictly after it, TokenExpired and TokenUsed subclass InvalidToken, and unknown tokens raise the base class.",
+          "A failed redeem does not consume the token, and 'used' is checked before expiry; both behaviors are documented in the docstring and tested.",
+          "Small, clear implementation with a named TOKEN_LIFETIME_SECONDS constant, in the style of the codebase (module docstring, constants, plain functions).",
+          "Thorough tests: exact boundary, fractional seconds, patched time.time for the defaults, precedence, non-consumption on failure, the exception hierarchy, and empty or None tokens.",
+          "./check.sh passes (21 tests)."
+        ],
+        "stats": {
+          "files": 13,
+          "source_lines": 241,
+          "test_cases": 21
+        },
+        "summary": "Build F implements expiry and single-use tokens correctly and cleanly, and its tests cover the boundaries well. The one real issue is that redeeming is a check-then-set with no lock, so concurrent threads can redeem the same token more than once; a forced interleaving reproduces this. Minor gaps: now is not validated (NaN makes a token never expire), tokens are never cleaned up, and the README was not updated."
+      }
+    ],
+    "judge": {
+      "ranking": [
+        {
+          "letter": "E",
+          "score": 8.5,
+          "confirmed_defects": [
+            "minor: a redeem time earlier than the issue time is accepted with no limit, and a test locks that in",
+            "minor: used and expired tokens are never removed from the store",
+            "minor: non-numeric now or an unhashable token raises a raw TypeError"
+          ],
+          "refuted_defects": [],
+          "rationale": "Every spec point holds (1800 s succeeds, 1800.001 s raises TokenExpired, used is checked before expired, the exception hierarchy is right). The lock makes redeem atomic: my forced 10ms-delay probe got exactly 1 success out of 5 threads. It is the only locked build whose expiry check fails closed on NaN. The README is updated and the 14 auth tests cover the real behaviour. ./check.sh passes with 21 tests."
+        },
+        {
+          "letter": "D",
+          "score": 8,
+          "confirmed_defects": [
+            "minor: NaN now or NaN issued_at never expires (a NaN redeem time succeeded in my probe)",
+            "minor: a redeem time before the issue time is accepted, and a test locks that in",
+            "minor: the store is never pruned, and _TOKENS and _USED are two parallel structures"
+          ],
+          "refuted_defects": [],
+          "rationale": "Correct on every spec point. The lock-guarded check-then-mark held under my forced race (1 success). The README is updated and the 15 auth tests are thorough. It falls just behind E because NaN fails open. ./check.sh passes with 22 tests."
+        },
+        {
+          "letter": "A",
+          "score": 8,
+          "confirmed_defects": [
+            "minor: NaN now is accepted (fails open)",
+            "minor: a redeem time before the issue time is accepted",
+            "minor: the store is never pruned",
+            "minor: no test covers concurrency, although the lock works (1 success in my forced race)"
+          ],
+          "refuted_defects": [],
+          "rationale": "Correct, atomic under a lock, and clean, with the TTL documented in the module docstring. It has fewer tests (10 auth tests) than D or E and the README is not updated. ./check.sh passes with 17 tests."
+        },
+        {
+          "letter": "C",
+          "score": 7,
+          "confirmed_defects": [
+            "major (narrow window): single use is a check-then-add with no lock. With a forced 10ms delay all 5 threads redeemed the same token; 300 natural 8-thread trials with a 1µs switch interval produced none",
+            "minor: a redeem time before the issue time is accepted, and an inf issued_at never expires",
+            "minor: the stores are never pruned",
+            "minor: README not updated"
+          ],
+          "refuted_defects": [],
+          "rationale": "Spec-correct, and NaN fails closed. It has the most thorough tests (20 auth tests). But the single-use guarantee, which is the security property the task asked for, is not atomic. ./check.sh passes with 27 tests."
+        },
+        {
+          "letter": "F",
+          "score": 6.5,
+          "confirmed_defects": [
+            "major (narrow window): no lock on the check-then-set, and the forced race gave 5 successes out of 5 threads",
+            "minor: NaN now is accepted (fails open)",
+            "minor: a redeem time before the issue time is accepted",
+            "minor: the store is never pruned",
+            "minor: README not updated"
+          ],
+          "refuted_defects": [],
+          "rationale": "Correct sequentially, with a good docstring and good tests (14 auth tests, including a patched time.time). It shares C's race, has none of C's NaN hardening, and its tests are somewhat less thorough. ./check.sh passes with 21 tests."
+        },
+        {
+          "letter": "B",
+          "score": 6.5,
+          "confirmed_defects": [
+            "major (narrow window): no lock on the check-then-set, and the forced race gave 5 successes out of 5 threads",
+            "minor: NaN now is accepted, and a redeem time before the issue time is accepted",
+            "minor: the store is never pruned",
+            "minor: README not updated"
+          ],
+          "refuted_defects": [],
+          "rationale": "Its code is functionally the same as F's and spec-correct sequentially, with solid boundary tests, but it has the fewest auth tests (10) and the same lockless race. ./check.sh passes with 17 tests."
+        }
+      ],
+      "verdict": "All six builds meet the written spec sequentially, and ./check.sh passes for each. The 1800 s boundary, the exception hierarchy, used-before-expired precedence and the rule that an expired attempt does not consume the token all behave the same in every build. What separates them is whether the single-use guarantee holds under concurrent redemption. A, D and E wrap the check-then-mark in a lock, and my forced-interleaving probe got exactly one success from each. B, C and F have no lock, and 5 threads all redeemed the same token, although the window is narrow under natural timing. Within each group the order comes from smaller things: E fails closed on NaN and updates the README; D and A pass a NaN redeem time and differ mainly in test depth and docs. C has the strongest tests and NaN hardening of the unlocked builds, ahead of F and B."
+    },
+    "judges": [
+      {
+        "ranking": [
+          {
+            "letter": "E",
+            "score": 8.5,
+            "confirmed_defects": [
+              "minor: a redeem time earlier than the issue time is accepted with no limit, and a test locks that in",
+              "minor: used and expired tokens are never removed from the store",
+              "minor: non-numeric now or an unhashable token raises a raw TypeError"
+            ],
+            "refuted_defects": [],
+            "rationale": "Every spec point holds (1800 s succeeds, 1800.001 s raises TokenExpired, used is checked before expired, the exception hierarchy is right). The lock makes redeem atomic: my forced 10ms-delay probe got exactly 1 success out of 5 threads. It is the only locked build whose expiry check fails closed on NaN. The README is updated and the 14 auth tests cover the real behaviour. ./check.sh passes with 21 tests."
+          },
+          {
+            "letter": "D",
+            "score": 8,
+            "confirmed_defects": [
+              "minor: NaN now or NaN issued_at never expires (a NaN redeem time succeeded in my probe)",
+              "minor: a redeem time before the issue time is accepted, and a test locks that in",
+              "minor: the store is never pruned, and _TOKENS and _USED are two parallel structures"
+            ],
+            "refuted_defects": [],
+            "rationale": "Correct on every spec point. The lock-guarded check-then-mark held under my forced race (1 success). The README is updated and the 15 auth tests are thorough. It falls just behind E because NaN fails open. ./check.sh passes with 22 tests."
+          },
+          {
+            "letter": "A",
+            "score": 8,
+            "confirmed_defects": [
+              "minor: NaN now is accepted (fails open)",
+              "minor: a redeem time before the issue time is accepted",
+              "minor: the store is never pruned",
+              "minor: no test covers concurrency, although the lock works (1 success in my forced race)"
+            ],
+            "refuted_defects": [],
+            "rationale": "Correct, atomic under a lock, and clean, with the TTL documented in the module docstring. It has fewer tests (10 auth tests) than D or E and the README is not updated. ./check.sh passes with 17 tests."
+          },
+          {
+            "letter": "C",
+            "score": 7,
+            "confirmed_defects": [
+              "major (narrow window): single use is a check-then-add with no lock. With a forced 10ms delay all 5 threads redeemed the same token; 300 natural 8-thread trials with a 1µs switch interval produced none",
+              "minor: a redeem time before the issue time is accepted, and an inf issued_at never expires",
+              "minor: the stores are never pruned",
+              "minor: README not updated"
+            ],
+            "refuted_defects": [],
+            "rationale": "Spec-correct, and NaN fails closed. It has the most thorough tests (20 auth tests). But the single-use guarantee, which is the security property the task asked for, is not atomic. ./check.sh passes with 27 tests."
+          },
+          {
+            "letter": "F",
+            "score": 6.5,
+            "confirmed_defects": [
+              "major (narrow window): no lock on the check-then-set, and the forced race gave 5 successes out of 5 threads",
+              "minor: NaN now is accepted (fails open)",
+              "minor: a redeem time before the issue time is accepted",
+              "minor: the store is never pruned",
+              "minor: README not updated"
+            ],
+            "refuted_defects": [],
+            "rationale": "Correct sequentially, with a good docstring and good tests (14 auth tests, including a patched time.time). It shares C's race, has none of C's NaN hardening, and its tests are somewhat less thorough. ./check.sh passes with 21 tests."
+          },
+          {
+            "letter": "B",
+            "score": 6.5,
+            "confirmed_defects": [
+              "major (narrow window): no lock on the check-then-set, and the forced race gave 5 successes out of 5 threads",
+              "minor: NaN now is accepted, and a redeem time before the issue time is accepted",
+              "minor: the store is never pruned",
+              "minor: README not updated"
+            ],
+            "refuted_defects": [],
+            "rationale": "Its code is functionally the same as F's and spec-correct sequentially, with solid boundary tests, but it has the fewest auth tests (10) and the same lockless race. ./check.sh passes with 17 tests."
+          }
+        ],
+        "verdict": "All six builds meet the written spec sequentially, and ./check.sh passes for each. The 1800 s boundary, the exception hierarchy, used-before-expired precedence and the rule that an expired attempt does not consume the token all behave the same in every build. What separates them is whether the single-use guarantee holds under concurrent redemption. A, D and E wrap the check-then-mark in a lock, and my forced-interleaving probe got exactly one success from each. B, C and F have no lock, and 5 threads all redeemed the same token, although the window is narrow under natural timing. Within each group the order comes from smaller things: E fails closed on NaN and updates the README; D and A pass a NaN redeem time and differ mainly in test depth and docs. C has the strongest tests and NaN hardening of the unlocked builds, ahead of F and B."
+      },
+      {
+        "ranking": [
+          {
+            "letter": "E",
+            "score": 8.5,
+            "confirmed_defects": [
+              "minor: a redeem time before the issue time is accepted with no lower bound (probe: issue 1000, redeem 0 returned 'a')",
+              "minor: the token store is never pruned",
+              "minor: no test patches time.time to check the default clock"
+            ],
+            "refuted_defects": [],
+            "rationale": "Meets every spec point. A lock makes redemption atomic: my 5-thread probe with a slowed clock gave 1 success and 4 TokenUsed. The `not <=` comparison treats NaN as expired, which my probe confirmed. Tests are thorough and the README now states the 30-minute single-use rule. check.sh passes with 21 tests."
+          },
+          {
+            "letter": "D",
+            "score": 8,
+            "confirmed_defects": [
+              "minor: a NaN redeem time is accepted (probe returned 'a')",
+              "minor: a redeem time before the issue time is accepted",
+              "minor: the token store is never pruned",
+              "minor: no test covers the default clock"
+            ],
+            "refuted_defects": [],
+            "rationale": "Correct and lock-guarded: the race probe gave exactly 1 success. Good boundary and precedence tests (15), and the README is updated. It is slightly behind E only because NaN fails open."
+          },
+          {
+            "letter": "A",
+            "score": 8,
+            "confirmed_defects": [
+              "minor: a NaN redeem time is accepted",
+              "minor: a redeem time before the issue time is accepted",
+              "minor: the token store is never pruned",
+              "minor: README not updated"
+            ],
+            "refuted_defects": [],
+            "rationale": "Correct and atomic under a lock (race probe: 1 success). Clean code with a module docstring and solid tests (10), including the default clock. The README does not mention the new behaviour."
+          },
+          {
+            "letter": "C",
+            "score": 6.5,
+            "confirmed_defects": [
+              "major: check-then-add on _USED has no lock; my probe with a slowed clock and 5 threads gave 5 successful redemptions of one token",
+              "minor: README not updated",
+              "minor: the stores are never pruned"
+            ],
+            "refuted_defects": [],
+            "rationale": "Functionally correct, with the most thorough tests (20) and NaN that fails closed. But single-use, the security property the task asks for, is not atomic. The race window is narrow in practice."
+          },
+          {
+            "letter": "F",
+            "score": 6.5,
+            "confirmed_defects": [
+              "major: non-atomic check-then-set with no lock; my probe gave 5 successes from 5 threads",
+              "minor: a NaN redeem time is accepted",
+              "minor: README not updated"
+            ],
+            "refuted_defects": [],
+            "rationale": "Correct sequential behaviour, a good docstring and good tests (14), but the same non-atomic single-use race as C, and NaN fails open."
+          },
+          {
+            "letter": "B",
+            "score": 6,
+            "confirmed_defects": [
+              "major: non-atomic check-then-set with no lock; my probe gave 5 successes from 5 threads",
+              "minor: a NaN redeem time is accepted",
+              "minor: README not updated"
+            ],
+            "refuted_defects": [],
+            "rationale": "Correct sequential behaviour with adequate tests (10), but it has the replay race and NaN fails open. It has the least test coverage of the builds that share these flaws."
+          }
+        ],
+        "verdict": "All six builds meet the sequential spec. Each accepts exactly 1800 s and rejects 1800.001 s, each enforces single use with TokenUsed checked first, and check.sh passes for all six. What separates them is whether single use survives concurrent redemption. A, D and E hold a lock, and my slowed-clock probe got exactly one success out of five threads. B, C and F let all five redemptions succeed, which means a reset token can be replayed. Among the locked builds, E is ahead because NaN fails closed and the README is updated. A and D trail it slightly on NaN handling and docs."
+      }
+    ]
+  },
+  {
+    "id": "risky-refunds",
+    "reports": [
+      {
+        "letter": "A",
+        "overall": 7,
+        "scores": {
+          "correctness": 8,
+          "robustness": 6,
+          "code_quality": 8,
+          "tests": 8,
+          "docs": 7,
+          "product": 8
+        },
+        "defects": [
+          {
+            "severity": "major",
+            "what": "refund() is not thread-safe. It checks refunded()+amount <= total and the idempotency key, then writes to order._refunds, with no lock around the two steps. Concurrent refunds can push the total refunded past the order total, and concurrent calls with the same key could each record a refund.",
+            "evidence": "The race is in shop/orders.py refund(): the check `if order.refunded() + amount > order.total` comes before the write `order._refunds[key] = record`. To reproduce, widen the window by monkeypatching Order.refunded to sleep 10ms, then run 4 threads, each refunding Decimal('20.00') with a distinct key against a 27.98 order. It printed 'total 27.98 refunded 80.00 refundable -52.02'. Without the patch, 300 GIL-scheduled trials did not trigger it."
+          },
+          {
+            "severity": "minor",
+            "what": "Large whole-dollar amounts get the wrong error message. quantize overflows the 28-digit context, so they are reported as 'not whole cents' when they are really over the order total. They are still rejected, so no money is affected.",
+            "evidence": "refund(o, Decimal('1E+26'), 'x') raised RefundError 'amount must be whole cents'. The existing test test_invalid_amounts_rejected locks in this message for Decimal('1E+30')."
+          },
+          {
+            "severity": "minor",
+            "what": "The key is not validated. An unhashable key raises TypeError, not RefundError, and None is accepted as a key.",
+            "evidence": "refund(o, Decimal('1.00'), [1]) raised 'TypeError unhashable type: list'. refund(o, Decimal('1.00'), None) returned Refund(..., key=None)."
+          },
+          {
+            "severity": "minor",
+            "what": "The refund function and the Order class have no docstrings, and RefundError is a bare class. The README gets only a one-line mention.",
+            "evidence": "shop/orders.py: the Order class and RefundError have no docstrings. README.md, last line."
+          }
+        ],
+        "strengths": [
+          "Validation is thorough: non-Decimal, bool, NaN, sNaN, Infinity, zero, -0.00, negative and sub-cent amounts are all rejected before any state changes.",
+          "Decimal arithmetic runs in an isolated default context, so a caller's precision setting or traps (prec=2, an Inexact trap) cannot corrupt the sums. The tests cover this.",
+          "Idempotency is correct: the key is scoped to its order, a replay returns the same object, a replay after a full refund works, a changed amount is rejected, and a failed over-limit refund does not consume its key.",
+          "Refund is a frozen dataclass, and the order total is fixed when the order is placed.",
+          "The tests are focused and meaningful (21 cases plus subTests), follow the repo's unittest style, and ./check.sh passes."
+        ],
+        "stats": {
+          "files": 3,
+          "source_lines": 205,
+          "test_cases": 21
+        },
+        "summary": "Build A meets every functional point of the spec in single-threaded use. Validation is strong, the Decimal context is handled carefully, and idempotency is correct. ./check.sh passes (29 tests). The main gap is that refund() has no lock: it checks the limit and the key, then records the refund, so concurrent calls can refund more than the order total. Forcing the race produced refunded 80.00 against a 27.98 total. Smaller issues: huge whole amounts are reported with a misleading 'whole cents' error, keys are not validated, and doc comments are sparse."
+      },
+      {
+        "letter": "B",
+        "overall": 8.5,
+        "scores": {
+          "correctness": 9.5,
+          "robustness": 9,
+          "code_quality": 8,
+          "tests": 9,
+          "docs": 8,
+          "product": 8.5
+        },
+        "defects": [
+          {
+            "severity": "minor",
+            "what": "Idempotency key is not validated. None is accepted as a key, and an unhashable key raises a bare TypeError, not RefundError.",
+            "evidence": "python3 -c \"...refund(o,D('1.00'),None)\" printed Refund(order_id=1, amount=Decimal('1.00'), key=None); with key ['x'] it printed 'TypeError unhashable type: 'list'' (shop/orders.py:72 order.refunds.get(key))"
+          },
+          {
+            "severity": "minor",
+            "what": "One module-level lock serializes refunds across all orders. Order.refunds is a public mutable dict that callers can change directly, bypassing the cap and the lock.",
+            "evidence": "shop/orders.py:12 _REFUND_LOCK global; shop/orders.py:31 refunds: dict = field(default_factory=dict)"
+          },
+          {
+            "severity": "minor",
+            "what": "The code is somewhat over-defensive for a small shop module: a MAX_PREC/MAX_EMAX decimal context, a re-wrap to guard against Decimal subclasses, and tests with 5000-digit inputs. This adds complexity a maintainer might push back on.",
+            "evidence": "shop/orders.py:7,14,64; tests/test_orders.py test_decimal_subclass_cannot_bypass_checks, test_five_thousand_digit_*"
+          }
+        ],
+        "strengths": [
+          "Meets every spec point: Order total is a snapshot of the cart total, an empty cart raises ValueError, amounts must be positive whole-cent Decimals, the cap is enforced atomically, and idempotency keys are scoped per order, with a mismatched amount raising RefundError.",
+          "Validation is strict. It rejects float, int, str, bool, None, zero, -0, negative, sub-cent, NaN, sNaN and Infinity, and it accepts whole-cent values at other scales (Decimal('5'), Decimal('5.000'), Decimal('1E+1')).",
+          "Thread safety works: 50 threads retrying the same key produced exactly one Refund; the included 8-thread test lets only one full refund through.",
+          "Failed refunds leave the order unchanged (tested), and a key whose refund failed can be used again.",
+          "Results do not depend on a low-precision caller decimal context, and huge exponents give RefundError, not a decimal exception.",
+          "28 focused tests in the repo's unittest style. ./check.sh passes (37 tests OK), and the README is updated in the existing prose style."
+        ],
+        "stats": {
+          "files": 2,
+          "source_lines": 271,
+          "test_cases": 28
+        },
+        "summary": "Build B adds shop/orders.py (60 non-blank lines) and tests/test_orders.py (28 tests), and adds a README paragraph. ./check.sh passes with 37 tests OK. My extra probes found no spec failures. These covered key types, 50 concurrent retries of the same key, whole-cent values in exponent form, tiny exponents, and the ValueError subclass. Idempotency, the atomic cap, rejecting invalid input, and leaving the order unchanged after a failure all behave correctly. The only issues are minor: keys are not validated (None is accepted, and unhashable keys raise TypeError), one global lock covers all orders while the refunds dict is public, and some defensive code goes further than this small codebase needs."
+      },
+      {
+        "letter": "C",
+        "overall": 7,
+        "scores": {
+          "correctness": 8,
+          "robustness": 5,
+          "code_quality": 8,
+          "tests": 8,
+          "docs": 4,
+          "product": 7
+        },
+        "defects": [
+          {
+            "severity": "major",
+            "what": "refund() is a non-atomic check-then-act with no lock. Concurrent refunds can push an order past its total, and concurrent calls with the same key can record duplicate refunds. That breaks the 'never more than total' and idempotency guarantees in a money path.",
+            "evidence": "shop/orders.py:58-71 (key lookup, then refundable() check, then append, with no synchronization). Probe: 20 threads behind a Barrier, each refunding Decimal('10.00') with its own key on a 55.58 order, over 200 trials, with sys.setswitchinterval(1e-6). It printed 'over-refunded trials: 16'. 20 threads with the same key 'same' printed 'duplicate same-key trials: 18' (len(order.refunds)>1)."
+          },
+          {
+            "severity": "minor",
+            "what": "README not updated. It still describes the package as catalog, cart, receipts and reset tokens, and says nothing about orders and refunds.",
+            "evidence": "README.md lines 1-4 are unchanged and orders.py is not mentioned anywhere."
+          },
+          {
+            "severity": "minor",
+            "what": "Very large whole-cent amounts are reported as an invalid amount instead of an over-refund, because quantize overflows the default context.",
+            "evidence": "refund(order, Decimal('1E+30'), 'x') raises RefundError('amount must be a Decimal greater than zero in whole cents'), while Decimal('12345678901234567890123456.78') gives 'refund exceeds the order's refundable amount'. A RefundError is raised either way, so the spec still holds."
+          },
+          {
+            "severity": "minor",
+            "what": "Order exposes mutable internals (the refunds list and the refund_keys dict) as public dataclass fields, and Refund is mutable. Callers can corrupt the state that the invariants depend on.",
+            "evidence": "shop/orders.py:19-31: @dataclass without frozen=True, and refund_keys is a public dict."
+          },
+          {
+            "severity": "minor",
+            "what": "The new public functions and classes have no docstrings, unlike the existing shop/money.py helpers.",
+            "evidence": "shop/orders.py: place_order, refund, Order.refunded and Order.refundable have no docstrings, while money.py's to_cents and format_money do."
+          }
+        ],
+        "strengths": [
+          "Every spec point is implemented: unique ids, a snapshot of total, refunded() and refundable(), an empty cart raising ValueError, RefundError as a subclass of ValueError, whole-cent validation, an over-refund rejected with nothing changed, and idempotency scoped per order.",
+          "Amount validation is careful: it rejects int, float, str, bool, None, NaN, sNaN, Infinity, zero, -0 and sub-cent values, and accepts 5, 5.0 and 5.000 as whole cents.",
+          "A replay is compared by value, and a replay on a fully refunded order returns the original refund.",
+          "An unhashable key becomes a RefundError and nothing changes.",
+          "23 focused tests cover the boundaries: refunding exactly the total, one cent over, partials that sum past the total, a rejected key reused afterwards, the same key on another order, and order-id uniqueness.",
+          "The module is small and clear (52 non-blank lines), reuses shop.money.CENT, and follows the codebase's unittest style.",
+          "./check.sh passes, with ruff installed, running 32 tests."
+        ],
+        "stats": {
+          "files": 2,
+          "source_lines": 218,
+          "test_cases": 23
+        },
+        "summary": "Build C meets the spec in single-threaded use. Validation, partial refunds, the over-refund guard (which leaves nothing changed) and per-order idempotency all work, and the tests are meaningful and cover the boundaries. ./check.sh passes. The main defect is that refund() has no lock: a probe with concurrent threads over-refunded orders in 16 of 200 trials and recorded duplicate refunds for one idempotency key in 18 of 200. The minor issues are that the README was not updated, the new functions have no docstrings, the order's internal state is public and mutable, and very large amounts are reported as an invalid amount rather than an over-refund."
+      },
+      {
+        "letter": "D",
+        "overall": 8,
+        "scores": {
+          "correctness": 9,
+          "robustness": 9,
+          "code_quality": 8,
+          "tests": 8,
+          "docs": 8,
+          "product": 7
+        },
+        "defects": [
+          {
+            "severity": "minor",
+            "what": "The key must be a non-empty str. The spec puts no type on the key, so int, tuple and UUID keys are rejected even though they would work fine as dict keys.",
+            "evidence": "shop/orders.py:61-62; probe refund(o, Decimal('0.01'), 1) -> RefundError 'key must be a non-empty string'"
+          },
+          {
+            "severity": "minor",
+            "what": "The module calls the private Order._refund from outside the class. Order.total is a plain mutable public attribute, so a caller can reassign it after placement and change the refund ceiling.",
+            "evidence": "shop/orders.py:23-26, 63"
+          },
+          {
+            "severity": "minor",
+            "what": "Some tests and code go further than the task needs. They guard against Decimal subclasses that override __ne__ and against trapped Inexact/Rounded context signals. This adds a re-coercion step and an extra error message that a maintainer may find excessive for a small shop package.",
+            "evidence": "shop/orders.py:69 'amount = Decimal(amount)  # plain Decimal, so subclass comparisons can't interfere'; tests/test_orders.py test_decimal_subclass_cannot_bypass_whole_cent_check, test_trapped_decimal_signals_become_refund_error"
+          },
+          {
+            "severity": "minor",
+            "what": "The public classes and functions (Order, Refund, place_order, refund) have no docstrings. Only the module docstring exists.",
+            "evidence": "shop/orders.py (no docstrings beyond line 1)"
+          }
+        ],
+        "strengths": [
+          "Every spec requirement checks out: an empty cart raises ValueError, RefundError subclasses ValueError, amounts must be whole-cent positive Decimals, over-refunds are rejected atomically, and idempotency keys are scoped to their order.",
+          "A per-order lock covers both the idempotency lookup and the balance check. A probe with 50 threads sending the same key produced exactly one Refund and refunded 10.00. The bundled test with 100 distinct keys stops at 54 successful refunds.",
+          "Invalid input is handled thoroughly: NaN, sNaN, Infinity, int, float, str, bool, 0, -0, sub-cent and 1E+1000 all raise RefundError, and none of them leaves the key recorded.",
+          "Comparison is done after normalizing to cents, so Decimal('1.1') and Decimal('1.10') count as the same amount for idempotency.",
+          "The README gains a concise paragraph that matches the existing doc style, and ./check.sh passes (33 tests OK)."
+        ],
+        "stats": {
+          "files": 3,
+          "source_lines": 251,
+          "test_cases": 24
+        },
+        "summary": "Build D's orders module is compact and correct: shop/orders.py is 60 lines, guarded by a per-order lock, with a thorough suite of 24 unittest cases in tests/test_orders.py and a README update. ./check.sh passes. My probes found no spec failures: large amounts, negative amounts, 0.01, equivalent Decimal forms, concurrent calls with the same key, and over-refunds all behaved correctly. The issues are minor: keys are restricted to str beyond what the spec asks, the module calls a private method from outside the class, some hardening (Decimal subclasses, trapped context signals) goes further than needed, and the public API has no docstrings."
+      },
+      {
+        "letter": "E",
+        "overall": 6.5,
+        "scores": {
+          "correctness": 7,
+          "robustness": 5,
+          "code_quality": 8,
+          "tests": 7,
+          "docs": 7,
+          "product": 8
+        },
+        "defects": [
+          {
+            "severity": "major",
+            "what": "No locking around the check-then-act in refund(): concurrent refunds on the same order can push total refunds past the order total, which breaks the spec's 'never add up to more than its total'.",
+            "evidence": "shop/orders.py:57-67 (key lookup, then refundable() check, then dict insert, with no lock). Probe: 8 threads x 300 trials, each thread calling refund(o, Decimal('54.77'), f'k{i}') on a 54.77 order with sys.setswitchinterval(1e-6), printed 'over-refunded trials: 35 /300'."
+          },
+          {
+            "severity": "major",
+            "what": "Idempotency fails under concurrency: threads that use the same key at the same time can each record a refund, so the order is refunded twice and callers get different Refund objects.",
+            "evidence": "Same probe, 8 threads calling refund(o, Decimal('5.00'), 'same'), printed 'same-key distinct objects: 54' out of 300 trials."
+          },
+          {
+            "severity": "major",
+            "what": "Concurrent refunds can raise a raw RuntimeError instead of RefundError, because refunded() iterates the dict while another thread inserts into it.",
+            "evidence": "Probe tracebacks: shop/orders.py:38 refunded() -> 'RuntimeError: dictionary changed size during iteration' (seen many times)."
+          },
+          {
+            "severity": "minor",
+            "what": "A huge whole-cent amount such as Decimal('1E+2000') is rejected with the misleading message 'amount must be whole cents', because the quantize under prec=1000 fails.",
+            "evidence": "Probe: refund(o, Decimal('1E+2000'), ...) -> RefundError amount must be whole cents (shop/orders.py:76-78)."
+          },
+          {
+            "severity": "minor",
+            "what": "Keys are compared by hash and equality, so the keys 1 and True (or 1 and 1.0) count as the same idempotency key.",
+            "evidence": "Probe: r=refund(o,Decimal('1'),1); refund(o,Decimal('1'),True) is r -> True."
+          },
+          {
+            "severity": "minor",
+            "what": "Order is a plain mutable class with a public constructor that takes any id. Tests build Order(1,...) and Order(99,...) by hand, which can clash with ids from the global counter, and total can be reassigned after placement.",
+            "evidence": "shop/orders.py:27-31; tests/test_orders.py uses Order(99, ...), Order(1, ...), Order(2, ...), Order(3, ...)."
+          }
+        ],
+        "strengths": [
+          "Validation is thorough: it rejects non-Decimal input (including int, float, str and bool), NaN, sNaN, Infinity, zero and negatives, and sub-cent amounts. Valid amounts such as 1.5 are normalized to 1.50.",
+          "Arithmetic runs in a private wide Decimal context, so a low-precision or Inexact-trapping caller context cannot round or break the cap check, and tests cover this.",
+          "A rejected refund leaves no trace: the key is not consumed and refunded() is unchanged, and tests check both.",
+          "Idempotent replay returns the exact original object, works after a full refund, and keys are scoped to their order.",
+          "The module is small and readable with clear error messages. The README is updated to match the existing style, and ./check.sh passes (36 tests)."
+        ],
+        "stats": {
+          "files": 3,
+          "source_lines": 262,
+          "test_cases": 27
+        },
+        "summary": "Build E meets every single-threaded part of the spec, with careful validation, isolation from the caller's Decimal context, and focused tests: 27 new test cases, and ./check.sh passes with 36 tests. The main gap is thread safety, because refund() checks and then writes with no lock. Under concurrent calls (probe with 8 threads and 300 trials), the order was refunded past its total in 35 trials, a shared idempotency key created duplicate refunds in 54 trials, and some calls raised a raw RuntimeError from iterating the dict while it changed. Smaller issues: a misleading error message for astronomically large amounts, the keys 1 and True being treated as the same key, and a public Order constructor that allows id clashes. Fixing it needs a per-order lock (or one module lock) around the lookup, check and insert in refund()."
+      },
+      {
+        "letter": "F",
+        "overall": 7,
+        "scores": {
+          "correctness": 8,
+          "robustness": 6,
+          "code_quality": 8,
+          "tests": 8,
+          "docs": 4,
+          "product": 7
+        },
+        "defects": [
+          {
+            "severity": "major",
+            "what": "refund() is not thread-safe. The over-refund check and the idempotency-key scan are check-then-act steps with no lock, so concurrent refunds can push an order past its total, and concurrent calls with the same key can each record a separate refund.",
+            "evidence": "In the probe at /tmp/claude-0/-home-user-skills/81e0a659-724e-5a17-9f08-92ce13e1b5c2/scratchpad/probe.py, Order.refundable was wrapped with a 1ms sleep to widen the race window. 20 threads each refunding 10.00 under distinct keys printed 'distinct keys refunded 150.00 of 95.26'. 10 threads refunding 5.00 with the key 'same' printed 'same key refunds 10 50.00'. The cause is shop/orders.py refund(): the loop over order.refunds, then 'if amount > order.refundable()', then order.refunds.append(made), with no lock around them."
+          },
+          {
+            "severity": "minor",
+            "what": "Order is a mutable dataclass with a public refunds list and a mutable total, so callers can change refund history directly and skip the invariant.",
+            "evidence": "shop/orders.py: '@dataclass class Order' is not frozen and declares 'refunds: list = field(default_factory=list)'."
+          },
+          {
+            "severity": "minor",
+            "what": "The key is not validated, so None, a list or any other object is accepted as an idempotency key.",
+            "evidence": "The probe printed 'list key ok' and 'None key accepted'; the stored order showed Refund(..., key=['unhashable'])."
+          },
+          {
+            "severity": "minor",
+            "what": "The README was not updated to mention orders and refunds, even though it lists the package's features.",
+            "evidence": "README.md still says 'catalog, cart totals, receipts, and password-reset tokens'."
+          },
+          {
+            "severity": "minor",
+            "what": "The public functions and classes have no docstrings, although the existing modules document their helpers (for example money.py).",
+            "evidence": "place_order, refund, Order, Refund and RefundError in shop/orders.py have no docstrings; shop/money.py has a docstring on to_cents and format_money."
+          }
+        ],
+        "strengths": [
+          "Every single-threaded spec requirement holds: unique ids, a total snapshot, refunded() and refundable(), rejection of an empty cart, RefundError as a ValueError subclass, the over-refund guard that changes nothing, and per-order idempotency (a replay returns the same object; a different amount raises).",
+          "Amount validation is careful: it rejects non-Decimal values (including bool and float), NaN and sNaN, infinities, zero and -0, negatives and sub-cent amounts. It accepts trailing zeros such as 1.0000000, and it is independent of the caller's decimal context because comparisons run in a fixed prec=100 context.",
+          "Stored refund amounts are normalized to cents, and a replay with a numerically equal amount (5 vs 5.00) is treated as the same.",
+          "The tests are thorough and meaningful: a table of hostile inputs, exact-boundary and one-cent-over cases, a hostile caller decimal context, very large exponents, replay after a full refund and per-order key scoping.",
+          "The code is compact and readable and fits the codebase's Decimal and CENT conventions; ./check.sh passes with 32 tests."
+        ],
+        "stats": {
+          "files": 2,
+          "source_lines": 249,
+          "test_cases": 21
+        },
+        "summary": "Build F meets the spec in single-threaded use. Validation is thorough and context-independent, idempotency is right, the over-refund guard changes nothing on failure, and the tests are strong (./check.sh passes, 32 tests). The main gap: refund() has no lock, so concurrent calls can over-refund or record duplicate refunds for one key (shown with a sleep injected to widen the race). Smaller issues: the README is not updated, there are no docstrings, Order is mutable, and keys are not validated."
+      }
+    ],
+    "judge": {
+      "ranking": [
+        {
+          "letter": "B",
+          "score": 8.5,
+          "confirmed_defects": [
+            "minor: None is accepted as a key, and a list key raises a bare TypeError (reproduced)",
+            "minor: one global lock for all orders; Order.refunds is a public mutable dict"
+          ],
+          "refuted_defects": [],
+          "rationale": "All spec checks pass in my probes, including value-equal replay, failed refunds leaving no trace, a 1E+30 amount rejected as over-refund, and low-precision and Inexact-trapping caller contexts. It was clean under concurrency: 0 over-refunds, 0 duplicate same-key results and no exceptions in 200 to 300 trials. Its 28 tests include a concurrency test, and the README is updated. Some of the hardening (5000-digit tests) goes beyond what the task needs."
+        },
+        {
+          "letter": "D",
+          "score": 8,
+          "confirmed_defects": [
+            "minor: keys must be non-empty str, a restriction the spec does not ask for (int key rejected)",
+            "minor (missed by inspector): with a low-precision caller context (prec=2), valid amounts such as 12.34 are rejected as 'amount is out of range', and refundable() reports 52 for a 51.79 order. It fails closed, but it depends on the caller's context",
+            "minor: external code calls the private Order._refund; no docstrings on the public API"
+          ],
+          "refuted_defects": [],
+          "rationale": "Correct per-order lock around the key lookup, cap check and insert: 0 over-refunds, 0 duplicates and no errors in my race probes. Validation is strict, amounts are normalized to cents, the README is updated, and the tests include a concurrency case. Its only weak spots are the str-only key policy and not isolating the decimal context."
+        },
+        {
+          "letter": "E",
+          "score": 6.5,
+          "confirmed_defects": [
+            "major: refund() has no lock. 8 threads with distinct keys over-refunded in 22 of 200 trials",
+            "major: same-key concurrent calls returned different Refund objects in 45 of 300 trials, breaking idempotency for callers",
+            "major: concurrent refunds raise a raw RuntimeError ('dictionary changed size during iteration') instead of RefundError",
+            "minor: misleading 'whole cents' message for astronomically large amounts"
+          ],
+          "refuted_defects": [],
+          "rationale": "Single-threaded behaviour is fully correct, with a private wide decimal context, amounts normalized to cents, and unhashable keys turned into RefundError. The README and docstrings are updated. But the money invariant and idempotency both break under concurrency, and a raw RuntimeError can escape."
+        },
+        {
+          "letter": "A",
+          "score": 6.5,
+          "confirmed_defects": [
+            "major: no lock. Concurrent distinct-key refunds over-refunded in 18 of 200 trials, and same-key calls returned distinct Refund objects in 54 of 300 trials",
+            "major (missed by inspector): concurrent calls raise a raw RuntimeError 'dictionary changed size during iteration' from refunded() (22 occurrences in 200 trials)",
+            "minor: 1E+30 is reported as 'not whole cents'; unhashable key raises TypeError; None key accepted"
+          ],
+          "refuted_defects": [],
+          "rationale": "It meets the spec single-threaded and is careful with the decimal context. The tests are good, Refund is frozen, and the README gets a one-line mention. It has the same concurrency failures as E, including the raw RuntimeError the inspector did not report. It stores amounts unnormalized and validates keys slightly less well than E."
+        },
+        {
+          "letter": "C",
+          "score": 6,
+          "confirmed_defects": [
+            "major: no lock. Over-refunded in 5 of 200 trials and recorded duplicate same-key refunds in 11 of 200 trials (22 of 300 returned distinct objects)",
+            "minor: README not updated",
+            "minor (missed by inspector): with a low-precision caller context (prec=2), valid refunds are rejected with the 'amount must be...' message and refundable() returns 52 for a 51.79 order",
+            "minor: public mutable refunds/refund_keys fields; no docstrings"
+          ],
+          "refuted_defects": [],
+          "rationale": "It is spec-correct single-threaded, compact, and turns unhashable keys into RefundError, with good boundary tests. But it has no concurrency protection, does not isolate the decimal context, does not update the README, and has no docstrings."
+        },
+        {
+          "letter": "F",
+          "score": 6,
+          "confirmed_defects": [
+            "major: no lock. Over-refunded in 30 of 200 trials and recorded duplicate same-key refunds in 48 of 200 trials (71 of 300 returned distinct objects), the worst rate of the unlocked builds",
+            "minor: list and None keys accepted (linear scan with ==)",
+            "minor: README not updated; no docstrings",
+            "minor: public refunded() and refundable() round under a low-precision caller context (refunded 24 vs 24.69), although the cap check in refund() is isolated"
+          ],
+          "refuted_defects": [],
+          "rationale": "Single-threaded behaviour and validation are good, and the cap check runs in a fixed context. But it has the same unguarded check-then-act, the worst duplicate rate in my probe, an unvalidated key type, and no README update."
+        }
+      ],
+      "verdict": "All six builds pass ./check.sh and meet every functional point of the spec in single-threaded use: validation, the snapshot of the total, the over-refund guard and per-order idempotency all behave correctly in my probes. What separates them is whether refund() is atomic. B (a global lock) and D (a per-order lock) showed no over-refunds, duplicate same-key refunds or stray exceptions under contention. A, C, E and F all over-refunded orders and broke idempotency, and A and E also leaked a raw RuntimeError. Below that, the differences are about isolating the decimal context (A, B and E do it, C and D do not), key validation, and whether the README was updated (C and F did not)."
+    },
+    "judges": [
+      {
+        "ranking": [
+          {
+            "letter": "B",
+            "score": 8.5,
+            "confirmed_defects": [
+              "minor: None is accepted as a key, and a list key raises a bare TypeError (reproduced)",
+              "minor: one global lock for all orders; Order.refunds is a public mutable dict"
+            ],
+            "refuted_defects": [],
+            "rationale": "All spec checks pass in my probes, including value-equal replay, failed refunds leaving no trace, a 1E+30 amount rejected as over-refund, and low-precision and Inexact-trapping caller contexts. It was clean under concurrency: 0 over-refunds, 0 duplicate same-key results and no exceptions in 200 to 300 trials. Its 28 tests include a concurrency test, and the README is updated. Some of the hardening (5000-digit tests) goes beyond what the task needs."
+          },
+          {
+            "letter": "D",
+            "score": 8,
+            "confirmed_defects": [
+              "minor: keys must be non-empty str, a restriction the spec does not ask for (int key rejected)",
+              "minor (missed by inspector): with a low-precision caller context (prec=2), valid amounts such as 12.34 are rejected as 'amount is out of range', and refundable() reports 52 for a 51.79 order. It fails closed, but it depends on the caller's context",
+              "minor: external code calls the private Order._refund; no docstrings on the public API"
+            ],
+            "refuted_defects": [],
+            "rationale": "Correct per-order lock around the key lookup, cap check and insert: 0 over-refunds, 0 duplicates and no errors in my race probes. Validation is strict, amounts are normalized to cents, the README is updated, and the tests include a concurrency case. Its only weak spots are the str-only key policy and not isolating the decimal context."
+          },
+          {
+            "letter": "E",
+            "score": 6.5,
+            "confirmed_defects": [
+              "major: refund() has no lock. 8 threads with distinct keys over-refunded in 22 of 200 trials",
+              "major: same-key concurrent calls returned different Refund objects in 45 of 300 trials, breaking idempotency for callers",
+              "major: concurrent refunds raise a raw RuntimeError ('dictionary changed size during iteration') instead of RefundError",
+              "minor: misleading 'whole cents' message for astronomically large amounts"
+            ],
+            "refuted_defects": [],
+            "rationale": "Single-threaded behaviour is fully correct, with a private wide decimal context, amounts normalized to cents, and unhashable keys turned into RefundError. The README and docstrings are updated. But the money invariant and idempotency both break under concurrency, and a raw RuntimeError can escape."
+          },
+          {
+            "letter": "A",
+            "score": 6.5,
+            "confirmed_defects": [
+              "major: no lock. Concurrent distinct-key refunds over-refunded in 18 of 200 trials, and same-key calls returned distinct Refund objects in 54 of 300 trials",
+              "major (missed by inspector): concurrent calls raise a raw RuntimeError 'dictionary changed size during iteration' from refunded() (22 occurrences in 200 trials)",
+              "minor: 1E+30 is reported as 'not whole cents'; unhashable key raises TypeError; None key accepted"
+            ],
+            "refuted_defects": [],
+            "rationale": "It meets the spec single-threaded and is careful with the decimal context. The tests are good, Refund is frozen, and the README gets a one-line mention. It has the same concurrency failures as E, including the raw RuntimeError the inspector did not report. It stores amounts unnormalized and validates keys slightly less well than E."
+          },
+          {
+            "letter": "C",
+            "score": 6,
+            "confirmed_defects": [
+              "major: no lock. Over-refunded in 5 of 200 trials and recorded duplicate same-key refunds in 11 of 200 trials (22 of 300 returned distinct objects)",
+              "minor: README not updated",
+              "minor (missed by inspector): with a low-precision caller context (prec=2), valid refunds are rejected with the 'amount must be...' message and refundable() returns 52 for a 51.79 order",
+              "minor: public mutable refunds/refund_keys fields; no docstrings"
+            ],
+            "refuted_defects": [],
+            "rationale": "It is spec-correct single-threaded, compact, and turns unhashable keys into RefundError, with good boundary tests. But it has no concurrency protection, does not isolate the decimal context, does not update the README, and has no docstrings."
+          },
+          {
+            "letter": "F",
+            "score": 6,
+            "confirmed_defects": [
+              "major: no lock. Over-refunded in 30 of 200 trials and recorded duplicate same-key refunds in 48 of 200 trials (71 of 300 returned distinct objects), the worst rate of the unlocked builds",
+              "minor: list and None keys accepted (linear scan with ==)",
+              "minor: README not updated; no docstrings",
+              "minor: public refunded() and refundable() round under a low-precision caller context (refunded 24 vs 24.69), although the cap check in refund() is isolated"
+            ],
+            "refuted_defects": [],
+            "rationale": "Single-threaded behaviour and validation are good, and the cap check runs in a fixed context. But it has the same unguarded check-then-act, the worst duplicate rate in my probe, an unvalidated key type, and no README update."
+          }
+        ],
+        "verdict": "All six builds pass ./check.sh and meet every functional point of the spec in single-threaded use: validation, the snapshot of the total, the over-refund guard and per-order idempotency all behave correctly in my probes. What separates them is whether refund() is atomic. B (a global lock) and D (a per-order lock) showed no over-refunds, duplicate same-key refunds or stray exceptions under contention. A, C, E and F all over-refunded orders and broke idempotency, and A and E also leaked a raw RuntimeError. Below that, the differences are about isolating the decimal context (A, B and E do it, C and D do not), key validation, and whether the README was updated (C and F did not)."
+      },
+      {
+        "ranking": [
+          {
+            "letter": "B",
+            "score": 8.5,
+            "confirmed_defects": [
+              "minor: None key accepted and an unhashable key raises a bare TypeError instead of RefundError (reproduced)",
+              "minor: one global lock for all orders, and a public mutable refunds dict"
+            ],
+            "refuted_defects": [],
+            "rationale": "Its single-threaded behaviour matches the spec in every probe. My 8-thread barrier race over 300 trials gave 0 over-refunds and 0 duplicate refunds, because the module lock covers the key lookup, the cap check and the insert. Under a caller context with prec=3 it still computed refunds and the cap exactly. Amounts are normalized to cents. Tests are solid and the README is updated. Its issues are small: keys are not validated, and some defensive code goes beyond what this small module needs."
+          },
+          {
+            "letter": "D",
+            "score": 8,
+            "confirmed_defects": [
+              "minor: keys must be non-empty str, so int, None and list keys raise RefundError. That is stricter than the spec",
+              "minor: the module calls the private Order._refund from outside the class, and total can be reassigned"
+            ],
+            "refuted_defects": [],
+            "rationale": "A per-order lock covers both the idempotency lookup and the balance check, and the race probe gave 0 over-refunds and 0 duplicates. Validation and idempotency are correct: 1.1 and 1.10 count as the same amount. The README is updated. One gap the inspector missed: under a caller decimal context with prec=3, to_cents runs in the caller's context, so a valid 12.34 refund is rejected as 'amount is out of range'. The error is safe and the case is exotic, since cart.total() itself fails in such a context. Slightly below B because of that and the str-only key restriction."
+          },
+          {
+            "letter": "A",
+            "score": 6.5,
+            "confirmed_defects": [
+              "major: refund() checks and then writes with no lock. The race probe with 8 threads x 300 trials over-refunded in 14 trials",
+              "missed by inspector, major: concurrent refunds can raise a raw RuntimeError ('dictionary changed size during iteration') from refunded() iterating _refunds while another thread inserts",
+              "minor: an unhashable key raises TypeError, and a None key is accepted",
+              "minor: amounts are stored without normalizing (Decimal('5') is stored as '5', not '5.00')"
+            ],
+            "refuted_defects": [],
+            "rationale": "Correct in single-threaded use. It isolates the decimal context (exact under a caller's prec=3), Refund is frozen, replay works and the README is updated. But the over-refund cap, the spec's key invariant, breaks under concurrent calls, and it can leak a non-RefundError exception."
+          },
+          {
+            "letter": "E",
+            "score": 6.5,
+            "confirmed_defects": [
+              "major: no lock, so the race probe over-refunded in 13 of 300 trials",
+              "major: raw RuntimeError from iterating the dict during concurrent inserts (reproduced)",
+              "major (as claimed): duplicate refunds for the same key under concurrency. My probe did not reproduce it (0 of 150), but the code has the same unguarded check-then-insert, so I count it as plausible",
+              "minor: misleading 'whole cents' message for huge amounts; keys 1 and True collide"
+            ],
+            "refuted_defects": [],
+            "rationale": "Its strengths and weaknesses match A's: careful validation, isolation from the caller's context, normalized amounts, an updated README and 27 tests, but no concurrency protection on the money path."
+          },
+          {
+            "letter": "C",
+            "score": 6,
+            "confirmed_defects": [
+              "major: no lock. The race probe over-refunded in 3 of 300 trials and recorded duplicate same-key refunds in 11 of 150",
+              "minor: README not updated, and no docstrings",
+              "minor: Order internals and Refund are public and mutable",
+              "missed by inspector, minor: no decimal-context isolation. Under a caller with prec=3, valid refunds are rejected and refundable() returns 55.6, a rounded value"
+            ],
+            "refuted_defects": [],
+            "rationale": "Correct in single-threaded use, with good boundary tests and an unhashable key turned into RefundError. But it has the same race as A, E and F, depends on the caller's decimal context, has mutable public state and leaves the README unchanged."
+          },
+          {
+            "letter": "F",
+            "score": 6,
+            "confirmed_defects": [
+              "major: no lock. The race probe over-refunded in 22 of 300 trials and recorded duplicate same-key refunds in 27 of 150 (the worst rate)",
+              "minor: no key validation. A list key is accepted, because the idempotency lookup is a linear == scan",
+              "minor: README not updated, and no docstrings",
+              "minor: refunded() and refundable() run in the caller's context, so they return rounded values (12.3) under a low-precision context. The refund check itself runs in the fixed context"
+            ],
+            "refuted_defects": [],
+            "rationale": "Correct in single-threaded use with good tests. It has the most visible race of all the builds, an O(n) key scan, a mutable Order and no documentation update."
+          }
+        ],
+        "verdict": "The ranking turns on concurrency in the refund path. Only B (a module lock) and D (a per-order lock) make the key lookup, the cap check and the insert atomic. Both held up in a barrier race with 8 threads over 300 trials. A, C, E and F all over-refunded, and C and F recorded duplicate refunds for one idempotency key. A and E could also raise a raw RuntimeError from iterating the dict while another thread changed it. Among the unlocked builds, A and E edge out C and F through decimal-context isolation and README updates. B ranks above D because D restricts keys to str and runs to_cents in the caller's decimal context."
+      }
+    ]
+  }
+]

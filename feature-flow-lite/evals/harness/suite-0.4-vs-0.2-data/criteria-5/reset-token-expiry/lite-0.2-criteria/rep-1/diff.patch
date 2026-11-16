@@ -1,0 +1,194 @@
+diff --git a/README.md b/README.md
+index 620cc9b..0497356 100644
+--- a/README.md
++++ b/README.md
+@@ -8,3 +8,4 @@ and password-reset tokens. Standard library only.
+ Money is `Decimal` dollars, rounded to cents half-up (`shop/money.py`).
+ Shipping is a flat $7.95, free once the merchandise subtotal reaches $75.
+ Sales tax is 8.25% of merchandise only; shipping is not taxed.
++Password-reset tokens expire 30 minutes after issue and can be redeemed only once.
+diff --git a/shop/auth.py b/shop/auth.py
+index d159a6c..0fa8a24 100644
+--- a/shop/auth.py
++++ b/shop/auth.py
+@@ -1,24 +1,45 @@
+ """Password-reset tokens (in-memory store)."""
+ 
+ import secrets
++import time
+ 
+-_TOKENS = {}  # token -> username
++RESET_WINDOW = 1800  # seconds a token stays redeemable after issue
++
++_TOKENS = {}  # token -> {"username", "issued_at", "used"}
+ 
+ 
+ class InvalidToken(Exception):
+     pass
+ 
+ 
+-def issue_reset_token(username):
+-    """Create a reset token for username."""
++class TokenExpired(InvalidToken):
++    pass
++
++
++class TokenUsed(InvalidToken):
++    pass
++
++
++def issue_reset_token(username, now=None):
++    """Create a reset token for username, issued at now (default: time.time())."""
++    if now is None:
++        now = time.time()
+     token = secrets.token_urlsafe(16)
+-    _TOKENS[token] = username
++    _TOKENS[token] = {"username": username, "issued_at": now, "used": False}
+     return token
+ 
+ 
+-def redeem_reset_token(token):
+-    """Return the username a token was issued for."""
+-    username = _TOKENS.get(token)
+-    if username is None:
++def redeem_reset_token(token, now=None):
++    """Return the username a token was issued for; a token redeems only once."""
++    if now is None:
++        now = time.time()
++    record = _TOKENS.get(token)
++    if record is None:
+         raise InvalidToken("unknown token")
+-    return username
++    if record["used"]:
++        raise TokenUsed("token already used")
++    # Written as "not <=" so NaN timestamps compare false and fail closed.
++    if not now - record["issued_at"] <= RESET_WINDOW:
++        raise TokenExpired("token expired")
++    record["used"] = True
++    return record["username"]
+diff --git a/tests/test_auth.py b/tests/test_auth.py
+index 7e9882c..433c35c 100644
+--- a/tests/test_auth.py
++++ b/tests/test_auth.py
+@@ -1,13 +1,119 @@
+ import unittest
++from unittest import mock
+ 
+-from shop.auth import InvalidToken, issue_reset_token, redeem_reset_token
++from shop import auth
++from shop.auth import InvalidToken, TokenExpired, TokenUsed, issue_reset_token, redeem_reset_token
+ 
+ 
+ class ResetTokenTest(unittest.TestCase):
++    def setUp(self):
++        auth._TOKENS.clear()
++
+     def test_round_trip(self):
+         token = issue_reset_token("ada")
+         self.assertEqual(redeem_reset_token(token), "ada")
+ 
+     def test_unknown_token(self):
+-        with self.assertRaises(InvalidToken):
++        with self.assertRaises(InvalidToken) as cm:
+             redeem_reset_token("not-a-token")
++        self.assertIs(type(cm.exception), InvalidToken)
++        self.assertEqual(str(cm.exception), "unknown token")
++
++    def test_empty_token_is_plain_invalid(self):
++        with self.assertRaises(InvalidToken) as cm:
++            redeem_reset_token("")
++        self.assertIs(type(cm.exception), InvalidToken)
++        self.assertEqual(str(cm.exception), "unknown token")
++
++    def test_zero_timestamp_is_real_at_issue_and_redeem(self):
++        token = issue_reset_token("ada", now=0)
++        self.assertEqual(redeem_reset_token(token, now=0), "ada")
++
++    def test_zero_issue_time_is_not_defaulted(self):
++        token = issue_reset_token("ada", now=0)
++        with self.assertRaises(TokenExpired):
++            redeem_reset_token(token, now=1801)
++
++    def test_zero_redeem_time_is_not_defaulted(self):
++        token = issue_reset_token("ada", now=5)
++        self.assertEqual(redeem_reset_token(token, now=0), "ada")
++
++    def test_exactly_window_succeeds(self):
++        token = issue_reset_token("ada", now=1000)
++        self.assertEqual(redeem_reset_token(token, now=2800), "ada")
++
++    def test_just_past_window_expires(self):
++        token = issue_reset_token("ada", now=1000)
++        with self.assertRaises(TokenExpired) as cm:
++            redeem_reset_token(token, now=2800.001)
++        self.assertEqual(str(cm.exception), "token expired")
++
++    def test_well_past_window_expires(self):
++        token = issue_reset_token("ada", now=1000)
++        with self.assertRaises(TokenExpired):
++            redeem_reset_token(token, now=2801)
++
++    def test_float_timestamps_at_window_edge(self):
++        token = issue_reset_token("ada", now=1000.5)
++        self.assertEqual(redeem_reset_token(token, now=2800.5), "ada")
++        other = issue_reset_token("ada", now=1000.5)
++        with self.assertRaises(TokenExpired):
++            redeem_reset_token(other, now=2800.501)
++
++    def test_redeem_before_issue_time_succeeds(self):
++        token = issue_reset_token("ada", now=1000)
++        self.assertEqual(redeem_reset_token(token, now=500), "ada")
++
++    def test_second_redeem_raises_used(self):
++        token = issue_reset_token("ada", now=0)
++        self.assertEqual(redeem_reset_token(token, now=100), "ada")
++        with self.assertRaises(TokenUsed) as cm:
++            redeem_reset_token(token, now=100)
++        self.assertEqual(str(cm.exception), "token already used")
++
++    def test_used_wins_over_expired(self):
++        token = issue_reset_token("ada", now=0)
++        self.assertEqual(redeem_reset_token(token, now=100), "ada")
++        with self.assertRaises(TokenUsed):
++            redeem_reset_token(token, now=5000)
++
++    def test_expired_redeem_does_not_consume(self):
++        token = issue_reset_token("ada", now=0)
++        with self.assertRaises(TokenExpired):
++            redeem_reset_token(token, now=1801)
++        with self.assertRaises(TokenExpired) as cm:
++            redeem_reset_token(token, now=1802)
++        self.assertIs(type(cm.exception), TokenExpired)
++
++    def test_subclasses_of_invalid_token(self):
++        self.assertTrue(issubclass(TokenExpired, InvalidToken))
++        self.assertTrue(issubclass(TokenUsed, InvalidToken))
++
++    def test_except_invalid_token_catches_all(self):
++        token = issue_reset_token("ada", now=0)
++        redeem_reset_token(token, now=0)
++        for now in (1, 5000):
++            with self.assertRaises(InvalidToken):
++                redeem_reset_token(token, now=now)
++
++    def test_nan_redeem_time_fails_closed(self):
++        token = issue_reset_token("ada", now=1000)
++        with self.assertRaises(TokenExpired) as cm:
++            redeem_reset_token(token, now=float("nan"))
++        self.assertEqual(str(cm.exception), "token expired")
++
++    def test_nan_issue_time_fails_closed(self):
++        token = issue_reset_token("ada", now=float("nan"))
++        with self.assertRaises(TokenExpired):
++            redeem_reset_token(token, now=1000)
++
++    def test_default_now_reads_clock_at_call_time(self):
++        with mock.patch.object(auth.time, "time", return_value=1000):
++            token = issue_reset_token("ada")
++        with mock.patch.object(auth.time, "time", return_value=2800):
++            self.assertEqual(redeem_reset_token(token), "ada")
++        with mock.patch.object(auth.time, "time", return_value=1000):
++            stale = issue_reset_token("ada")
++        with mock.patch.object(auth.time, "time", return_value=2801):
++            with self.assertRaises(TokenExpired):
++                redeem_reset_token(stale)

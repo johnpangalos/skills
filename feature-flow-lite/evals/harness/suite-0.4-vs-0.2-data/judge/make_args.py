@@ -24,11 +24,9 @@ KIND = {
     "fd-count": ("feature", "In your copy: cargo build && cargo test, cargo clippy and cargo fmt --check. Then run the built fd with --count against a temp tree: with and without matches, with filters, --max-results, --exec conflicts, broken pipes, and check the man page, the zsh completion and the changelog."),
     "rac-shadow-hide": ("feature", "This build's folder holds only the touched files; build the full tree instead: rm -rf <your copy> && cp -r /tmp/ffj/rac-base <your copy> && cd <your copy> && git apply <the .diff next to the build>. Then run yarn jest packages/@react-aria/overlays and the repo's lint and type check on the touched files, and write throwaway jest tests for ariaHideOutside across shadow DOM: targets inside one or several shadow roots, a target nested in a shadow root inside another target, slotted light-DOM content, elements and shadow roots added after the call, live regions and top-layer elements, and undo restoring everything."),
 }
-out = []
-root = pathlib.Path(sys.argv[1]).resolve()
-for task in sys.argv[2:]:
+def challenge(task, d):
     kind, probe = KIND.get(task, ("feature", SHOP))
-    d = root / task
+    d = pathlib.Path(d)
     builds = []
     for p in sorted(x for x in d.iterdir() if x.is_dir() and not x.name.endswith("-shots")):
         b = {"letter": p.name, "dir": str(p)}
@@ -40,5 +38,9 @@ for task in sys.argv[2:]:
     ch = {"id": task, "kind": kind, "prompt": SCEN[task]["prompt"], "builds": builds, "judges": 2}
     if probe:
         ch["probe"] = probe
-    out.append(ch)
-json.dump(out, sys.stdout, indent=1)
+    return ch
+
+
+if __name__ == "__main__":
+    root = pathlib.Path(sys.argv[1]).resolve()
+    json.dump([challenge(t, root / t) for t in sys.argv[2:]], sys.stdout, indent=1)
