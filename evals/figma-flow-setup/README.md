@@ -36,16 +36,19 @@ changed; each round's fixes are the next section's list.
 
 ## Results
 
-| Round | App | `test:figma` at the end | Fix rounds on the page | Improvised |
-|---|---|---|---|---|
-| 1 | No Tailwind | 3 of 4: Continue 38px tall, Figma 36 | 2 | port clash, body margin, Vite reload, fonts, Continue blamed on the library |
-| 1 | Tailwind v4 | 3 of 4: the same | 2 | text properties, finding instance roots, Continue blamed on the library |
-| 2 | No Tailwind | **4 of 4** | 0 | none of substance |
-| 2 | Tailwind v4 | **4 of 4** | 0 | `w-full` on the library's fields (they set 320px) |
-| 3 | No Tailwind | **4 of 4** | 1 | `box-sizing: border-box` |
-| 3 | Tailwind v4 | **4 of 4** | 1 | Select options and drawn text (Figma has neither) |
-| 4 | No Tailwind | **4 of 4** | 0 | none |
-| 4 | Tailwind v4 | **4 of 4** | 0 | none |
+| Round | App | `test:figma` at the end | Fix rounds on the page | Improvised | Time, tool calls |
+|---|---|---|---|---|---|
+| 1 | No Tailwind | 3 of 4: Continue 38px tall, Figma 36 | 2 | port clash, body margin, Vite reload, fonts, Continue blamed on the library | 6.4 min, 48 |
+| 1 | Tailwind v4 | 3 of 4: the same | 2 | text properties, finding instance roots, Continue blamed on the library | 5.6 min, 40 |
+| 2 | No Tailwind | **4 of 4** | 0 | none of substance | 5.2 min, 43 |
+| 2 | Tailwind v4 | **4 of 4** | 0 | `w-full` on the library's fields (they set 320px) | 5.3 min, 40 |
+| 3 | No Tailwind | **4 of 4** | 1 | `box-sizing: border-box` | 4.9 min, 40 |
+| 3 | Tailwind v4 | **4 of 4** | 1 | Select options and drawn text (Figma has neither) | 4.6 min, 35 |
+| 4 | No Tailwind | **4 of 4** | 0 | none | 4.8 min, 37 |
+| 4 | Tailwind v4 | **4 of 4** | 0 | none (a find-and-replace also rewrote the config's comment; fixed after) | 6.0 min, 54 |
+
+Time and tool calls are the agent harness's count for each agent; the agents' own estimates in
+their logs are rougher and some much longer.
 
 Every run: typecheck and build pass; the token snapshot comes from the library's file and matches
 Figma by `--hash` (17735 characters, `76d14f68`); the lint of `3:311` has no findings (`e1233206`);
@@ -53,9 +56,10 @@ the export has 12 entries (`5c4a70bd`); `print.ts check` passes both. The four `
 are the lint check (2), the token check (every one of the library's variables resolved in the
 running app, no drift), and the page spec: all 12 entries measured with `expectPageToMatchFigma`,
 none skipped. The 12 are the page, the card, the header and its two texts, the four fields and the
-actions row with its two Buttons, each with its position in its parent. Runs took 4.5 to 6.5 minutes
-and 35 to 54 tool calls (from the agent harness, not the agents' own estimates). Logs: `runs/round<N>-<app>.md`. Round 4's apps, as the agents left them,
+actions row with its two Buttons, each with its position in its parent. Logs: `runs/round<N>-<app>.md`. Round 4's apps, as the agents left them,
 are in `apps/` (`PW_CHROMIUM=/opt/pw-browsers/chromium pnpm test:figma` in either passes 4 of 4).
+Their tests are the templates as they were for that round; the token spec template has since
+learned to report a value CSS rejects as invalid, not as drift (from the review).
 
 ### Round 1
 
@@ -70,7 +74,7 @@ Also found: the two apps shared port 5174, and `reuseExistingServer` measured th
 eval's mistake, but nothing in the skill warned of it); the export has no text property values, so
 building the fields needed a read of `componentProperties`; finding a library instance's outermost
 element took a DOM dump; the browser's 8px body margin; a first run failing on Vite's dependency
-reload; one font weight loaded where the page uses three.
+reload; the page template loading one font weight where the page uses three (the agent loaded two).
 
 Fixed for round 2: step 9 says Figma doesn't stretch and CSS does, to check a parent's alignment
 before blaming the library, to read text properties, and to remove the body margin; the config
@@ -91,8 +95,11 @@ the agent had to decide what to show where an instance's `value` property differ
 frame draws (a placeholder), and invent the Select's options, which Figma doesn't have. Fixed:
 border-box in step 9; build what the frame draws, and use named sample data where Figma has none.
 
-Round 4 passed in both on the first run, with no fix rounds. Neither log lists a step improvised.
-What they list is the cost of the no-mod path, which the skill describes: 3 to 8 KB of printed
+Round 4 passed in both on the first run, with no fix rounds, and neither agent had to improvise a
+step. The Tailwind log notes that filling the config's placeholders with a find-and-replace also
+rewrote the config's comment, which named them (the comment no longer does), and that it took
+"what the frame draws" to be its visible text layers (the skill now says so). The rest is the cost
+of the no-mod path, which the skill describes: 3 to 8 KB of printed
 script pasted per call and the 17 KB token snapshot written by hand, with only the hashes to show
 it exact (they matched every time, in every round).
 

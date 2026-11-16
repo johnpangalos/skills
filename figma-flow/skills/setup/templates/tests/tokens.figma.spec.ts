@@ -39,29 +39,32 @@ test("every Figma variable resolves in the app to Figma's value", async ({ page 
       if (undefinedProps.length > 0) return { name, problem: `${web}: the app's CSS doesn't define ${undefinedProps.join(", ")}` };
       const probe = document.createElement("div");
       document.body.append(probe);
+      // A value CSS rejects for the property leaves it unset: report that, not a false drift.
+      const set = (property: "color" | "fontWeight" | "fontFamily" | "fontSize" | "lineHeight" | "width", css: string) => {
+        probe.style[property] = css;
+        return probe.style[property] !== "";
+      };
+      const rejected = (as: string) => ({ name, problem: `${web} isn't a valid ${as}; compare it by hand` });
       try {
         if (typeof value === "string" && value.startsWith("#")) {
-          probe.style.color = web;
+          if (!set("color", web)) return rejected("colour");
           return { name, value, actual: hex(getComputedStyle(probe).color), kind: "color" };
         }
         if (/--font-weight-/.test(web)) {
-          probe.style.fontWeight = web;
+          if (!set("fontWeight", web)) return rejected("font weight");
           return { name, value, actual: Number(getComputedStyle(probe).fontWeight), kind: "exact" };
         }
         if (typeof value === "string") {
           // A font family: Figma names one family, CSS a stack that starts with it.
-          probe.style.fontFamily = web;
+          if (!set("fontFamily", web)) return rejected("font family");
           return { name, value, actual: getComputedStyle(probe).fontFamily.split(",")[0]!.replaceAll(/["']/g, "").trim(), kind: "exact" };
         }
         if (lineHeight) {
           // Often a ratio of its font size (`calc(1.25 / 0.875)`), so it's resolved with that size.
-          probe.style.fontSize = `var(${lineHeight[1]})`;
-          probe.style.lineHeight = web;
+          if (!set("fontSize", `var(${lineHeight[1]})`) || !set("lineHeight", web)) return rejected("line height");
           return { name, value, actual: parseFloat(getComputedStyle(probe).lineHeight), kind: "length" };
         }
-        probe.style.width = web;
-        // A value that isn't a length (a bare ratio) leaves the width unset: say so, not a false drift.
-        if (probe.style.width === "") return { name, problem: `${web} isn't a length; compare it by hand` };
+        if (!set("width", web)) return rejected("length"); // a bare ratio, say
         return { name, value, actual: parseFloat(getComputedStyle(probe).width), kind: "length" };
       } finally {
         probe.remove();
