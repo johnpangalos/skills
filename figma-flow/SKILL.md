@@ -23,7 +23,9 @@ to finish; look to find what the measurement can't read.
 ## Which skill
 
 Pick by Figma's node type, checked with the Figma MCP's `get_metadata` (the same split
-`export-node` makes), and invoke that sub-skill:
+`export-node` makes), and invoke that sub-skill. `get_metadata` gives tags, not types: a
+COMPONENT is a `<symbol>`, an INSTANCE an `<instance>`, and a COMPONENT_SET is a `<frame>` whose
+children are all `<symbol>`s named `property=value`; only a `<frame>` that isn't that is a FRAME.
 
 - **`figma-flow:component`**: a COMPONENT or COMPONENT_SET, a single INSTANCE (`export-node`
   treats it like a component), or several ids that are parts of one component (Tabs:
