@@ -43,3 +43,54 @@ Run on 7 cloud sessions with 4 CPUs each, two builds at a time. Each was graded 
 - Process checks in `grade.py` still expect a `reviewer` role, so 0.4's gatekeepers fail them. Those don't count in the tables above.
 
 `runs.json` has one row per build: outcome pass, failing checks, audit verdict and must-fix count, cost, wall time, the roles spawned, and whether it's a rerun.
+
+# Three setups, blind-judged (added the same day)
+
+A third arm, `lite-0.2-criteria` (0.2 plus 0.4's Opus criteria-checker before the implementor; `harness/variants/criteria-check-0.2/`), ran on all 14 tasks, 3 builds each. Then every task's 9 builds were pooled under fresh shuffled letters and blind-judged: one inspector per build, then 2 judges ranking all 9 on one scale (`judge/combine.py`, `judge/prep_final.sh`, `judge/plan.tsv`). Inspector reports from an earlier 0.2-vs-0.4 pass were carried over for 8 tasks, with their letter references rewritten. Results are in `judge/final-f*.json` and are unblinded with `judge/remap-<task>.json`. Everything is also in D1 (`runs` and `judge_scores`; see `../store/README.md`).
+
+| Across 14 tasks, 42 builds each | 0.2 | 0.2 + criteria-checker | 0.4 |
+|---|---|---|---|
+| Passed every outcome check | 38 | 39 | 41 |
+| Audit would merge | 35 | 32 | 38 |
+| Mean judge score (2 judges × 42 builds) | **7.71** | 7.51 | 7.41 |
+| Mean cost per build | **$0.94** | $1.27 | $1.94 |
+| Mean time per build | 9.2 min | 11.0 min | 9.6 min |
+
+Mean judge score per task (average of both judges over the 3 builds):
+
+| Task | 0.2 | 0.2 + criteria-checker | 0.4 |
+|---|---|---|---|
+| chi-etag † | 8.00 | 7.17 | **8.25** |
+| chi-mount-routes | 7.82 | **8.13** | 7.30 |
+| click-duration | **8.17** | **8.17** | 7.83 |
+| click-param-spec ‡ | **7.83** | 7.62 | 7.80 |
+| discount-codes | **8.27** | 8.25 | 7.77 |
+| fd-count † | 8.05 | **8.22** | 7.93 |
+| rac-shadow-hide | 5.83 | 5.25 | **7.67** |
+| reset-token-expiry | 7.75 | **7.83** | 6.83 |
+| risky-auth | **7.83** | 7.33 | 6.67 |
+| risky-inventory | **8.38** | 7.85 | 7.63 |
+| risky-refunds | **7.62** | 7.10 | 6.03 |
+| tailwind-anchor | 7.67 | **7.92** | 7.33 |
+| ui-lib | 7.08 | 6.58 | **7.92** |
+| website-bookshop | **7.67** | **7.67** | 6.83 |
+
+† The judges and the hidden tests disagree. On chi-etag, the hidden `TestFlushDoesNotBypassTheBuffer` passes for 0 of 3 0.2 builds, 2 of 3 criteria-checker builds and 3 of 3 0.4 builds. The judges ran only the repo's own tests, and one of them credited a 0.2 build because "Flush really streams", which the request rules out. On fd-count, one criteria-checker build fails the hidden flag-conflict test, and the judges scored it 8.3 anyway.
+‡ The two judges disagreed on whether to move `get_help_spec` literally as the request says, or to keep `--help` overrides working. One rewarded the literal builds and the other penalised them.
+
+## What it shows
+
+- **Plain 0.2 is the best value.** It has the highest mean judge score at the lowest cost, and it leads or ties on 7 of 14 tasks.
+- **0.4's review panel pays off on deep behaviour.** It wins on rac-shadow-hide (nested shadow roots, 7.67 against 5.83) and ui-lib (Dialog and Combobox behaviour, 7.92 against 7.08), and on chi-etag by the hidden test.
+- **0.4 loses in three places:**
+  - Concurrency. On risky-refunds, 0 of 3 0.4 builds lock the refund path, against 2 of 3 for each 0.2 setup.
+  - Product polish. On website-bookshop it has the plainest sites, even though the audit would merge all three.
+  - Tasks where its orchestrator skips its own flow (chi-mount-routes, reset-token-expiry), which leaves thinner tests and docs.
+- **The criteria-checker fixes misread requirements, not behaviour.** It wins on chi-mount-routes (the only builds that reported the mount's wildcard route), tailwind-anchor and fd-count, and recovers 2 of 3 chi-etag Flush passes. It doesn't help on ui-lib, rac-shadow-hide or website-bookshop. It costs about $0.33 more per build than 0.2.
+- **The checks miss real bugs.** The judges reproduced races on risky-refunds and risky-auth that every hidden test and audit had passed. Those hidden tests need stress cases.
+
+## Caveats
+
+- 3 builds per setup per task. A difference of about 0.5 points on one task is within noise. The suite-wide means are steadier, but they're one day's builds.
+- Judges and hidden tests measure different things (see † and ‡). Read the judge column together with the outcome checks, not instead of them.
+- One blind mapping had a wrong rep number: the chi-etag 0.2 rerun in slice-5 was recorded as rep 2 instead of rep 3. It's fixed in `slice-5/blind-mapping.json` and `judge/remap-chi-etag.json`.
