@@ -31,6 +31,8 @@ const PAGE = `<!doctype html>
   #sdsringed, #sdsafter, #sdsbordered { position: relative; outline: none; }
   #sdsringed::before, #sdsafter::after, #sdsbordered::before { content: ""; position: absolute; inset: -2px; border-radius: 8px; box-shadow: 0 0 0 2px #c800de; }
   #sdsbordered::before { inset: -3px; }
+  #r { position: relative; outline: none; }
+  #r::before { content: ""; position: absolute; inset: -2px; border-radius: 8px; box-shadow: 0 0 0 2px #c800de; }
 </style>
 </head>
 <body>
@@ -41,6 +43,8 @@ const PAGE = `<!doctype html>
   <div id="sdsringed" style="width: 120px; height: 40px; background: #ffffff; border-radius: 6px;"></div>
   <div id="sdsafter" style="width: 120px; height: 40px; background: #ffffff; border-radius: 6px;"></div>
   <div id="sdsbordered" style="width: 120px; height: 40px; background: #ffffff; border: 1px solid #111111; border-radius: 6px;"></div>
+  <div id="r" style="width: 120px; height: 40px; background: #ffffff; border-radius: 6px;"><span>Save</span></div>
+  <div id="tailwind" style="width: 120px; height: 40px; background: #ffffff; border-radius: 6px; box-shadow: 0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 #0000, 0 0 0 2px #c800de;"></div>
   <div id="labelled" style="width: 160px; height: 36px; padding: 8px 16px; border-radius: 6px; background: #a800b7; color: #ffffff; font-family: Inter, sans-serif; font-size: 14px; font-weight: 600; line-height: 20px; letter-spacing: 0.5px; text-transform: uppercase;"><span style="text-decoration: underline;">Save</span></div>
   <div id="small-caps" style="width: 160px; height: 36px; padding: 8px 16px; border-radius: 6px; background: #a800b7; color: #ffffff; font-family: Inter, sans-serif; font-size: 14px; font-weight: 600; line-height: 20px; font-variant-caps: small-caps; letter-spacing: normal;"><span>Save</span></div>
   <div id="placeholder" style="width: 120px; height: 40px; background: #ffffff; border-radius: 8px; box-shadow: 0 0 transparent, 0 2px 4px rgba(0, 0, 0, 0.2);"></div>
@@ -678,6 +682,8 @@ test.describe("the browser helper", () => {
     ],
     ["an elliptical corner, 8px / 2px", "sdsringed", "#sdsringed::before { border-radius: 8px / 2px !important }", ringed],
     ["contain: paint on the element", "sdsringed", "#sdsringed { contain: paint !important }", ringed],
+    ["a colour on the ring", "r", "#r::before { color: red !important }", ringed],
+    ["a font-weight on the ring", "r", "#r::before { font-weight: 700 !important }", ringed],
   ];
   for (const [label, id, css, figma] of ringHostiles) {
     test(`#${id}: a ring with ${label} fails against Figma's ring`, async ({ page }) => {
@@ -694,6 +700,54 @@ test.describe("the browser helper", () => {
     expect(test.info().annotations).toContainEqual({
       type: "figma: not measured",
       description: "focus ring: absolutely positioned, and not an outline the export can read, so it wasn't compared",
+    });
+  });
+
+  // Page CSS that styles the ring's children and inherited values: the ring is measured against a
+  // reference that inherits as the ring does, so none of these move it.
+  const childCss: [label: string, css: string][] = [
+    ["span styled", "span { color: red; font-weight: 700; }"],
+    ["every child styled", "#r > * { color: red; line-height: 3; }"],
+    ["the last child resized", "#r > span:last-child { font-size: 30px; }"],
+  ];
+  for (const [label, css] of childCss) {
+    test(`#r: the ring passes under page CSS, ${label}`, async ({ page }) => {
+      await open(page);
+      await page.addStyleTag({ content: css });
+      await expectToMatchFigma(page.locator("#r"), ringed);
+    });
+  }
+
+  test("#r: the ring passes under all three of that page CSS at once", async ({ page }) => {
+    await open(page);
+    await page.addStyleTag({ content: childCss.map(([, css]) => css).join("\n") });
+    await expectToMatchFigma(page.locator("#r"), ringed);
+  });
+
+  test("#r: a ring that takes no pointer, and transitions, passes", async ({ page }) => {
+    await open(page);
+    await page.addStyleTag({
+      content:
+        "#r::before { pointer-events: none; user-select: none; cursor: default; will-change: box-shadow; transition: box-shadow 0.2s; }",
+    });
+    await expectToMatchFigma(page.locator("#r"), ringed);
+  });
+
+  test("#r: the reference the ring is measured against is removed again", async ({ page }) => {
+    await open(page);
+    await expectToMatchFigma(page.locator("#r"), ringed);
+    await expect(page.locator("#r > *")).toHaveCount(1);
+    await expect(page.locator("figma-ring-ref")).toHaveCount(0);
+    await expect(page.locator("style")).toHaveCount(1);
+  });
+
+  // Tailwind 4 writes its ring as one box-shadow among four transparent layers (its empty offset and
+  // ring variables), so the ring is the one layer that paints.
+  test("#tailwind: a ring among four transparent box-shadows, as Tailwind 4 writes it, passes", async ({ page }) => {
+    await open(page);
+    await expectToMatchFigma(page.locator("#tailwind"), {
+      ...box(120, 40, { fill: "#ffffff", radius: 6 }),
+      rings: [["#c800de", 2]],
     });
   });
 

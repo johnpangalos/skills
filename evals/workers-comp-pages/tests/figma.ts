@@ -284,7 +284,10 @@ type Pseudo = {
   shadows: Shadow[];
   /** A corner whose horizontal and vertical radii differ (an ellipse, not a circle). */
   elliptical: boolean;
-  /** Each property (custom ones aside) that differs from an empty reference pseudo on the element. */
+  /**
+   * Each property (custom ones aside) that differs from the same pseudo on a reference child of the
+   * element, which inherits as the pseudo does (ringPseudos).
+   */
   changed: string[];
 };
 
@@ -298,21 +301,25 @@ type Painted = {
   contain: string;
   clipPath: string;
   maskImage: string;
-  before: Pseudo;
-  after: Pseudo;
+  /** Null when the element has no Figma outline, so neither pseudo is read. */
+  before: Pseudo | null;
+  after: Pseudo | null;
 };
 
 /*
  * What a ring may differ from the reference pseudo on: where its box sits and how big it is, its
- * corners and its box-shadow. transform-origin and perspective-origin resolve against the box, so
- * they differ with its size; they move nothing unless transform or perspective is set, which is
- * checked. Every other property must match the reference, unless its own check below names it.
+ * corners and its box-shadow, and the properties that paint nothing (where the pointer lands, how it
+ * is selected or changed, and transitions, which settle before a measure). transform-origin and
+ * perspective-origin resolve against the box, so they differ with its size; they move nothing unless
+ * transform or perspective is set, which is checked. Every other property must match the reference,
+ * unless its own check below names it.
  */
 const placement =
   "position|top|right|bottom|left|inset(-.+)?|width|height|inline-size|block-size|z-index|display|transform-origin|perspective-origin";
 const cornerRadius = "border-((top|bottom)-(left|right)|(start|end)-(start|end))-radius";
-const ringKeeps = new RegExp(`^(${placement}|${cornerRadius}|box-shadow)$`);
-const strayKeeps = new RegExp(`^(${placement}|box-shadow)$`);
+const idle = "pointer-events|(-webkit-)?user-select|cursor|will-change|transition-[a-z-]+";
+const ringKeeps = new RegExp(`^(${placement}|${cornerRadius}|box-shadow|${idle})$`);
+const strayKeeps = new RegExp(`^(${placement}|box-shadow|${idle})$`);
 const sideName = "(top|right|bottom|left|block-start|block-end|inline-start|inline-end)";
 const ringChecked = new RegExp(
   `^(content|background-image|background-color|opacity|transform|translate|scale|rotate|filter|clip-path|margin-${sideName}|border-${sideName}-width|outline-(width|style|color))$`,
@@ -423,13 +430,13 @@ function focusRingProblems(painted: Painted, box: Region, figma: Outline): strin
     ["::before", painted.before],
     ["::after", painted.after],
   ] as const;
-  const found = pseudos
-    .filter(([, pseudo]) => pseudo.shown)
-    .map(([name, pseudo]) => ({ name, problems: ringProblems(name, pseudo, painted, box, figma) }));
+  const found = pseudos.flatMap(([name, pseudo]) =>
+    pseudo?.shown ? [{ name, problems: ringProblems(name, pseudo, painted, box, figma) }] : [],
+  );
   const rings = found.filter((ring) => ring.problems.length === 0).map((ring) => ring.name);
   if (rings.length === 0) return [...own, ...found.flatMap((ring) => ring.problems)];
   const stray = pseudos.flatMap(([name, pseudo]) => {
-    const paint = pseudo.drawn && !rings.includes(name) ? strayPaint(pseudo) : [];
+    const paint = pseudo?.drawn && !rings.includes(name) ? strayPaint(pseudo) : [];
     return paint.length > 0 ? [`${name} draws too: ${paint.join(", ")}`] : [];
   });
   const both = rings.length > 1 ? ["::before and ::after are both rings, Figma's draws one"] : [];
@@ -797,7 +804,7 @@ export async function expectToMatchFigma(
   }
   if (sizing && figma.sizing && !figma.root) await expectFillMatches(element, figma.sizing);
 
-  const rendered = await element.evaluate((el) => {
+  const rendered = await element.evaluate((el, outlined: boolean) => {
     // A CSS colour → "#rrggbb", or "#rrggbbaa" below alpha 1, or null when fully transparent. The
     // channels come from an opaque fill of the colour's own RGB (exact); the alpha from the colour.
     const context = document.createElement("canvas").getContext("2d", { willReadFrequently: true })!;
@@ -854,32 +861,13 @@ export async function expectToMatchFigma(
     };
     const { rings, shadows } = layers(style);
 
-    // A ::before or ::after as it is drawn: a focus ring Figma's Simple Design System draws as one.
-    // `changed` is read against the same pseudo on an empty child of the element (so inherited values
-    // match), which is removed again: it names every property the author set, not only the ones
-    // checked by name.
-    const pseudo = (which: "::before" | "::after"): Pseudo => {
+    // A ::before or ::after as it is drawn, read as it is now: the values a focus ring is made of.
+    // `values` keeps every property's value, for ringPseudos to compare against the reference.
+    const readPseudo = (which: "::before" | "::after") => {
       const computed = getComputedStyle(el, which);
-      const reference = document.createElement("span");
-      reference.setAttribute("data-figma-ref", "");
-      const sheet = document.createElement("style");
-      sheet.textContent = `[data-figma-ref]${which}{content:"";position:absolute}`;
-      el.append(reference);
-      document.head.append(sheet);
-      let changed: string[] = [];
-      try {
-        const expected = getComputedStyle(reference, which);
-        const names = Array.from({ length: computed.length }, (_, i) => computed[i]!);
-        changed = names.filter(
-          (name) => !name.startsWith("--") && computed.getPropertyValue(name) !== expected.getPropertyValue(name),
-        );
-      } finally {
-        reference.remove();
-        sheet.remove();
-      }
-      const painted = layers(computed);
+      const layered = layers(computed);
       const drawn = computed.display !== "none" && computed.content !== "none" && computed.content !== "normal";
-      return {
+      const pseudo: Pseudo = {
         drawn,
         shown: drawn && computed.position === "absolute" && computed.visibility === "visible",
         content: computed.content,
@@ -897,14 +885,48 @@ export async function expectToMatchFigma(
         fill: hex(computed.backgroundColor),
         borders: sides.map((side) => px(computed[`border${side}Width`])),
         opacity: parseFloat(computed.opacity),
-        rings: painted.rings,
-        shadows: painted.shadows,
+        rings: layered.rings,
+        shadows: layered.shadows,
         elliptical: corners.some((corner) => {
           const [across, down = across] = computed[`border${corner}Radius`].split(" ");
           return parseFloat(across!) !== parseFloat(down!);
         }),
-        changed,
+        changed: [],
       };
+      const values = Object.fromEntries(
+        Array.from({ length: computed.length }, (_, i) => computed[i]!)
+          .filter((name) => !name.startsWith("--"))
+          .map((name) => [name, computed.getPropertyValue(name)]),
+      );
+      return { pseudo, values };
+    };
+
+    // The ::before and ::after as drawn, with `changed` naming every property the author set, not
+    // only the ones checked by name. The reference is a custom element that matches no page selector
+    // and has `all: unset`, so it inherits from the element exactly as a pseudo does, whatever the
+    // page's CSS sets on children. Its pseudos get only the box the ring is drawn in. It is added last,
+    // after every read above, so a child it adds can't change what those read (:last-child, :empty),
+    // and it is removed again.
+    const ringPseudos = () => {
+      const read = { "::before": readPseudo("::before"), "::after": readPseudo("::after") };
+      const reference = document.createElement("figma-ring-ref");
+      reference.setAttribute("data-figma-ring-ref", "");
+      reference.style.setProperty("all", "unset", "important");
+      const sheet = document.createElement("style");
+      sheet.textContent = `[data-figma-ring-ref]::before,[data-figma-ring-ref]::after{content:"";position:absolute}`;
+      el.append(reference);
+      document.head.append(sheet);
+      try {
+        for (const which of ["::before", "::after"] as const) {
+          const expected = getComputedStyle(reference, which);
+          const { pseudo, values } = read[which];
+          pseudo.changed = Object.keys(values).filter((name) => values[name] !== expected.getPropertyValue(name));
+        }
+      } finally {
+        reference.remove();
+        sheet.remove();
+      }
+      return { before: read["::before"].pseudo, after: read["::after"].pseudo };
     };
 
     // Where the label's text starts, measured from the element's left edge. Not the padding: after
@@ -975,7 +997,7 @@ export async function expectToMatchFigma(
     if (style.letterSpacing !== "normal") letterSpacing = px(style.letterSpacing);
     let stroke: string | null = null;
     if (borders.some((width) => width > 0)) stroke = hex(style.borderTopColor);
-    return {
+    const painted = {
       opacity: parseFloat(style.opacity),
       fill: hex(style.backgroundColor),
       stroke,
@@ -994,8 +1016,6 @@ export async function expectToMatchFigma(
       contain: style.contain,
       clipPath: style.clipPath,
       maskImage: style.maskImage,
-      before: pseudo("::before"),
-      after: pseudo("::after"),
       rings,
       shadows,
       minWidth: size(style.minWidth),
@@ -1030,7 +1050,10 @@ export async function expectToMatchFigma(
         textAlign: aligns[style.textAlign] ?? style.textAlign,
       },
     };
-  });
+    // Read last: a reference child, added for a focus ring, would change what the reads above match.
+    const pseudos = outlined ? ringPseudos() : { before: null, after: null };
+    return { ...painted, ...pseudos };
+  }, Boolean(figma.outline));
 
   expectFields(rendered, { opacity: figma.opacity }, "element");
 
