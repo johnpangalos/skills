@@ -199,8 +199,9 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
   // across or already spans the box's content across (within 1px, as the fill check is).
   const sizingAlong = (child: SceneNode, horizontal: boolean) =>
     "layoutSizingHorizontal" in child ? (horizontal ? child.layoutSizingHorizontal : child.layoutSizingVertical) : "FIXED";
-  function alignment(node: Box, laidOut: SceneNode[], stroked: boolean) {
+  function alignment(node: Box, laidOut: SceneNode[]) {
     const horizontal = node.layoutMode === "HORIZONTAL";
+    const stroked = solid(node.strokes) !== null;
     const justify = css({ MIN: "start", CENTER: "center", MAX: "end", SPACE_BETWEEN: "space-between" }, node.primaryAxisAlignItems);
     const align = css({ MIN: "start", CENTER: "center", MAX: "end", BASELINE: "baseline" }, node.counterAxisAlignItems);
     // The box's content across the children: less its padding, and less the stroke when auto
@@ -280,7 +281,7 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
           // its own and the padding starts inside it, as padding does inside a CSS border. Only
           // recorded for a node with a stroke, where it changes where the children start.
           ...(stroke !== null && { strokesIncludedInLayout: node.strokesIncludedInLayout }),
-          ...alignment(node, laidOut, stroke !== null),
+          ...alignment(node, laidOut),
           // Children that wrap onto more lines, with the gap between the lines.
           ...(node.layoutWrap === "WRAP" && { wrap: true, rowGap: node.counterAxisSpacing ?? 0 }),
         },

@@ -121,7 +121,7 @@ function fillIn(object: Json, defaults: Json) {
 }
 
 /** The typography a label or a text leaves out at its default. */
-const typography = (): Json => ({ letterSpacing: 0, textCase: "none", textDecoration: "none" });
+const TYPOGRAPHY: Json = { letterSpacing: 0, textCase: "none", textDecoration: "none" };
 
 /**
  * Puts back, on a copy, what a format-2 export left out at its default. A text on a page gets its
@@ -129,7 +129,7 @@ const typography = (): Json => ({ letterSpacing: 0, textCase: "none", textDecora
  * label, and a strokeAlign of inside where there is a stroke.
  */
 function restore(node: Json): Json {
-  if (node.type === "TEXT") return fillIn(node, { opacity: 1, ...typography() });
+  if (node.type === "TEXT") return fillIn(node, { opacity: 1, ...TYPOGRAPHY });
   fillIn(node, {
     fill: null,
     stroke: null,
@@ -140,7 +140,7 @@ function restore(node: Json): Json {
     opacity: 1,
     shadows: [],
   });
-  if (node.label !== null) fillIn(node.label as Json, typography());
+  if (node.label !== null) fillIn(node.label as Json, TYPOGRAPHY);
   if (node.stroke !== null && !("strokeAlign" in node)) node.strokeAlign = "inside";
   return node;
 }
@@ -588,8 +588,7 @@ export async function expectToMatchFigma(
     // spread], outermost first; every other layer is a shadow, an inset ring included. Fully
     // transparent layers are neither.
     const rings: [string, number][] = [];
-    const shadows: { x: number; y: number; blur: number; spread: number; color: string; inset: boolean }[] =
-      [];
+    const shadows: Shadow[] = [];
     for (const layer of style.boxShadow.split(/,(?![^(]*\))/).map((part) => part.trim())) {
       const ring = layer.match(/^(.+?) 0px 0px 0px (-?[\d.]+)px$/);
       const ringColor = ring && hex(ring[1]!);
