@@ -24,6 +24,9 @@ ROLE_PATTERNS = [
     ("test_writer", r"test[ -]?writer|write (the )?tests|tests? author"),
     ("planner", r"plann"),
     ("looker", r"looker|compare two images"),
+    ("council", r"councill?or|council"),
+    ("criteria_check", r"criteria[ -]?check"),
+    ("gate", r"gatekeep|merge gate"),
     ("investigator", r"investigat"),
     ("explorer", r"explor|mapper|locat"),
     ("implementor", r"implement"),
@@ -52,6 +55,9 @@ ROSTER = {
     "security": {"sonnet"},
     "migration": {"sonnet"},
     "looker": {"opus"},  # figma-flow's fresh pair of eyes: weaker models miss subtle differences
+    "council": {"haiku"},  # the council variant's ten councillors
+    "gate": {"opus", "fable", "sonnet", "haiku"},  # haiku and sonnet: the panel-model arms  # the merge-gate variant's gatekeeper decides whether the change is mergeable
+    "criteria_check": {"opus"},  # the review-gate variant's check of the criteria before the implementor runs
     "other": {"haiku", "sonnet"},
 }
 
@@ -71,6 +77,9 @@ ROLE_WORDS = {
     "security": r"security",
     "migration": r"migrat",
     "looker": r"looker|looked|screenshot",
+    "gate": r"gatekeep|merge gate",
+    "council": r"council",
+    "criteria_check": r"criteria[ -]?check",
 }
 
 STAGE_WORDS = r"investigat|explor|implement|verif|simplif|review|test.?writer|debug|docs"
@@ -182,6 +191,10 @@ AGENT_ROLES = {
     "docs-writer": "docs", "summarizer": "summarizer", "security-reviewer": "security",
     "migration": "migration", "planner": "planner",
     "looker": "looker",  # figma-flow's agent
+    "gatekeeper": "gate",  # the merge-gate variant's agent
+    "panelist": "gate",  # the review-panel-split variant's panel agent
+    "councillor": "council",  # the council variant's agent
+    "criteria-checker": "criteria_check",  # the review-gate variant's agent
 }
 
 
@@ -231,8 +244,8 @@ def roles_use_roster_models(t, sc, rule):
     bad = []
     for s in t.main_spawns:
         allowed = set(ROSTER.get(s["role"], ROSTER["other"]))
-        if sc.get("_pinned_model") and s["role"] != "looker":
-            allowed = {sc["_pinned_model"]}  # the arm pins every agent to one model (the looker keeps its own)
+        if sc.get("_pinned_model") and s["role"] not in ("looker", "gate", "criteria_check"):
+            allowed = {sc["_pinned_model"]}  # the arm pins every agent to one model (the looker and gate keep their own)
         if sc.get("risky") and s["role"] == "reviewer":
             allowed.add("opus")
         earlier = [p for p in t.of_role(s["role"]) if p["idx"] < s["idx"]]
@@ -289,7 +302,7 @@ def stages_announced_first(t, sc, rule):
 
 
 def checks_before_review(t, sc, rule):
-    reviews = t.of_role("reviewer")
+    reviews = t.of_role("reviewer") or t.of_role("gate")
     if not reviews:
         return True, "no reviewer spawned (n/a)"
     bad = []
@@ -317,8 +330,10 @@ def fix_rounds_capped(t, sc, rule):
         return True, "no reviewer spawned (n/a)"
     first = reviews[0]["idx"]
     fixes = [s for s in t.main_spawns if s["role"] in ("implementor", "debugger") and s["idx"] > first]
-    ok = len(fixes) <= 2 and len(reviews) <= 3
-    return ok, f"{len(fixes)} fix spawns after first review, {len(reviews)} reviews"
+    counts = f"{len(fixes)} fix spawns after first review, {len(reviews)} reviews"
+    if sc.get("_uncapped"):
+        return True, f"{counts} (uncapped arm, n/a)"
+    return len(fixes) <= 2 and len(reviews) <= 3, counts
 
 
 def debugger_at_most_once(t, sc, rule):
@@ -425,7 +440,7 @@ PIPELINE_RULES = [
     {"name": "no spawns refused at the depth limit", "rule": "no_depth_refusals"},
     {"name": "main conversation leaves edits to subagents", "rule": "main_does_not_edit"},
     # for a design, figma-flow's looker is the review
-    {"name": "a reviewer checked the result", "rule": "role_count", "role": "reviewer", "or": ["looker"], "min": 1},
+    {"name": "a reviewer checked the result", "rule": "role_count", "role": "reviewer", "or": ["looker", "gate"], "min": 1},
     {"name": "final report lists the agents that ran", "rule": "report_lists_agents"},
 ]
 
@@ -472,7 +487,8 @@ def grade(run_dir, scenario, arm):
     loaded = any(re.fullmatch(r"((feature-flow(-lite)?|figma-flow):)?(feature-flow(-lite)?|figma-flow)", name) for name in (t.init or {}).get("skills") or [])
     if bool(arm["skill"]) != loaded:
         checks.append(("setup", "arm loaded the skill as configured", False, f"skill loaded={loaded}, expected {arm['skill']}"))
-    scenario = dict(scenario, _pinned_model=(arm.get("agents") or {}).get("model") or arm.get("roster_model"))
+    scenario = dict(scenario, _pinned_model=(arm.get("agents") or {}).get("model") or arm.get("roster_model"),
+                    _uncapped=arm.get("uncapped", False))
     if not t.result:
         checks.append(("setup", "run reported a result", False, "the trace has no result event, so cost and timing are unknown; re-run it"))
     stats = t.result.get("subagent_stats") or {}

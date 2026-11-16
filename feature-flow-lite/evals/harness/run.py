@@ -111,9 +111,10 @@ def command(scenario, arm, prompt):
         "claude", "-p", prefix + prompt, *plugin,
         "--model", arm["model"], "--effort", arm["effort"],
         "--output-format", "stream-json", "--verbose", "--forward-subagent-text",
-        "--permission-mode", "acceptEdits", "--allowedTools", TOOLS, "--permission-prompts", "none",
-        "--max-budget-usd", str(scenario.get("budget_usd", 5)),
-        "--no-session-persistence",
+        "--permission-mode", "acceptEdits", "--allowedTools", ",".join([TOOLS, *arm.get("extra_tools", ())]), "--permission-prompts", "none",
+        "--max-budget-usd", str(arm.get("budget_usd") or scenario.get("budget_usd", 5)),
+        # continuing a finished subagent (SendMessage) needs its transcript on disk
+        *(() if arm.get("persist_session") else ("--no-session-persistence",)),
     ]
 
 
@@ -130,10 +131,14 @@ def run_one(out, scenario, arm_name, arm, rep, prompt, dry_run):
     env = {k: v for k, v in os.environ.items() if k not in SCRUB}
     env["CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH"] = str(scenario.get("depth", 3))
     env["FEATURE_FLOW_USAGE_LOG"] = str(run_dir / "usage.jsonl")  # read by the plugin's mod, when loaded
+    # claude -p stops background subagents 10 minutes after the last turn by default, which cut off
+    # slow gatekeepers mid-review. Wait for them; the timeout below still bounds the run.
+    env["CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS"] = "0"
+    env.update(arm.get("env") or {})  # an arm's own variables, e.g. to turn on a mod feature for an A/B
     started = time.time()
     with open(run_dir / "trace.jsonl", "w") as trace, open(run_dir / "stderr.txt", "w") as err:
         try:
-            subprocess.run(cmd, cwd=workspace, env=env, stdout=trace, stderr=err, timeout=scenario.get("timeout_s", 2400))
+            subprocess.run(cmd, cwd=workspace, env=env, stdout=trace, stderr=err, timeout=arm.get("timeout_s") or scenario.get("timeout_s", 2400))
         except subprocess.TimeoutExpired:
             err.write("\nharness: timed out\n")
     # the skill's per-repo project file is kept with the run, out of the build a judge sees
@@ -149,6 +154,8 @@ def run_one(out, scenario, arm_name, arm, rep, prompt, dry_run):
         "scenario": scenario["id"], "arm": arm_name, "rep": rep, "command": cmd,
         "wall_s": round(time.time() - started, 1), "workspace": str(workspace),
     }, indent=2))
+    if "Background tasks still running" in (run_dir / "stderr.txt").read_text(errors="replace"):
+        print(f"WARNING {scenario['id']} {arm_name} rep {rep}: background agents were stopped before they finished", flush=True)
     result = grade.grade(run_dir, scenario, arm)
     summary = result["summary"]
     print(f"{scenario['id']:<22} {arm_name:<12} rep {rep}: {summary['passed']}/{summary['total']} checks, ${result['metrics']['cost_usd']}", flush=True)
@@ -227,7 +234,7 @@ def main():
         for arm_name in args.arms.split(","):
             for rep in range(1, args.reps + 1):
                 jobs.append((scenario, arm_name, config["arms"][arm_name], rep, prompt))
-    budget = sum(s.get("budget_usd", 5) for s, *_ in jobs)
+    budget = sum(a.get("budget_usd") or s.get("budget_usd", 5) for s, _, a, *_ in jobs)
     print(f"{len(jobs)} runs, worst-case spend ${budget} (sum of --max-budget-usd caps) -> {args.out}", file=sys.stderr)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:

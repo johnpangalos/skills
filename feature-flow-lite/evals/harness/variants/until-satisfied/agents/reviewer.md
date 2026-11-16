@@ -46,7 +46,7 @@ attack with the list below and step 3.
   serve the change is [blocking] (the diff is the evidence); smaller cases are [minor]. Copied
   code is not a finding.
 
-Tag each finding [blocking] (reproduced: correctness, security, a failing acceptance criterion) or [minor] (style, naming, nits, unreproduced suspicions). In a round-2 review you get the changed hunks and your round-1 findings: re-run the probes behind each blocking finding, say which now pass, and attack only what changed.
+Tag each finding [blocking] (reproduced: correctness, security, a failing acceptance criterion) or [minor] (style, naming, nits, unreproduced suspicions). In a later round you get the whole diff and the earlier findings: re-run the probes behind each earlier blocking finding, say which now pass, then attack the whole change again, not only what changed since.
 
 Return only this, in under ~30 lines:
 
