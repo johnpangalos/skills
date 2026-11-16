@@ -1,0 +1,316 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 258c5d1..ccbee78 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -1,7 +1,7 @@
+ # Upcoming Release
+ 
+ ## Features
+--
++- Add `--count` option to print the number of matching entries instead of the entries themselves
+ 
+ ## Bugfixes
+ - Accept `--format` templates that start with `-` when passed as a separate argument, see #2126 (@vulragrag-star)
+diff --git a/contrib/completion/_fd b/contrib/completion/_fd
+index 8055467..ea13ae8 100644
+--- a/contrib/completion/_fd
++++ b/contrib/completion/_fd
+@@ -85,15 +85,18 @@ _fd() {
+     '(long-listing)'{-a,--absolute-path}'[show absolute paths instead of relative paths]'
+ 
+     + '(null-sep)' # use null separator for output
+-    '(long-listing)'{-0,--print0}'[separate search results by the null character]'
++    '(long-listing count)'{-0,--print0}'[separate search results by the null character]'
+ 
+     + '(long-listing)' # long-listing output
+-    '(abs-path null-sep max-results exec-cmds)'{-l,--list-details}'[use a long listing format with file metadata]'
++    '(abs-path null-sep max-results count exec-cmds)'{-l,--list-details}'[use a long listing format with file metadata]'
+ 
+     + '(max-results)' # max number of results
+     '(long-listing exec-cmds)--max-results=[limit number of search results to given count and quit]:count'
+     '(long-listing exec-cmds)-1[limit to a single search result and quit]'
+ 
++    + '(count)' # print the number of results
++    '(long-listing exec-cmds null-sep)--count[print the number of matching entries instead of the entries]'
++
+     + '(fs-errors)' # file-system errors
+     $no'--show-errors[enable the display of filesystem errors]'
+ 
+@@ -145,8 +148,8 @@ _fd() {
+     {-j+,--threads=}'[set the number of threads for searching and executing]:number of threads'
+ 
+     + '(exec-cmds)' # execute command
+-    '(long-listing max-results)'{-x+,--exec=}'[execute command for each search result]:command: _command_names -e:*\;::program arguments: _normal'
+-    '(long-listing max-results)'{-X+,--exec-batch=}'[execute command for all search results at once]:command: _command_names -e:*\;::program arguments: _normal'
++    '(long-listing max-results count)'{-x+,--exec=}'[execute command for each search result]:command: _command_names -e:*\;::program arguments: _normal'
++    '(long-listing max-results count)'{-X+,--exec-batch=}'[execute command for all search results at once]:command: _command_names -e:*\;::program arguments: _normal'
+     '(long-listing max-results)--batch-size=[max number of args for each -X call]:size'
+ 
+     + other
+diff --git a/doc/fd.1 b/doc/fd.1
+index 83b7948..c61857c 100644
+--- a/doc/fd.1
++++ b/doc/fd.1
+@@ -165,6 +165,11 @@ This is mainly for usage in scripts and can be faster than checking for output b
+ .B \-\-has\-results
+ can be used as an alias.
+ .TP
++.B \-\-count
++Print the number of matching entries instead of the entries themselves. The output is a single integer followed by a newline,
++and is '0' if nothing matches (the exit code is 0 in that case). Use --max-results or -1 to cap the count.
++This option cannot be combined with -x/--exec, -X/--exec-batch, -l/--list-details, --format, -0/--print0 or -q/--quiet.
++.TP
+ .B \-\-show-errors
+ Enable the display of filesystem errors for situations such as insufficient
+ permissions or dead symlinks.
+diff --git a/src/cli.rs b/src/cli.rs
+index 2cb9d67..f9d14eb 100644
+--- a/src/cli.rs
++++ b/src/cli.rs
+@@ -600,6 +600,18 @@ pub struct Opts {
+     )]
+     pub quiet: bool,
+ 
++    /// Print the number of matching entries instead of the entries themselves. The count is
++    /// printed as a single integer followed by a newline, and is `0` if nothing matches.
++    /// Use --max-results or -1 to cap the count.
++    #[arg(
++        long,
++        hide_short_help = true,
++        conflicts_with_all(&["exec", "exec_batch", "list_details", "format", "null_separator", "quiet"]),
++        help = "Print the number of matching entries",
++        long_help
++    )]
++    pub count: bool,
++
+     /// Enable the display of filesystem errors for situations such as
+     /// insufficient permissions or dead symlinks.
+     #[arg(
+diff --git a/src/config.rs b/src/config.rs
+index a027812..ab7f7e2 100644
+--- a/src/config.rs
++++ b/src/config.rs
+@@ -65,6 +65,9 @@ pub struct Config {
+     /// if there's at least one match. Otherwise, the exit code will be 1.
+     pub quiet: bool,
+ 
++    /// If true, the program prints only the number of matching entries, instead of the entries.
++    pub count: bool,
++
+     /// Time to buffer results internally before streaming to the console. This is useful to
+     /// provide a sorted output, in case the total execution time is shorter than
+     /// `max_buffer_time`.
+diff --git a/src/main.rs b/src/main.rs
+index edb59ff..5d5ff2e 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -327,6 +327,7 @@ fn construct_config(mut opts: Opts, pattern_regexps: &[String]) -> Result<Config
+         one_file_system: opts.one_file_system,
+         null_separator: opts.null_separator,
+         quiet: opts.quiet,
++        count: opts.count,
+         max_depth: opts.max_depth(),
+         min_depth: opts.min_depth(),
+         prune: opts.prune,
+diff --git a/src/walk.rs b/src/walk.rs
+index 88683d7..938122b 100644
+--- a/src/walk.rs
++++ b/src/walk.rs
+@@ -204,16 +204,18 @@ impl<'a, W: Write> ReceiverBuffer<'a, W> {
+                                 return Err(ExitCode::HasResults(true));
+                             }
+ 
+-                            match self.mode {
+-                                ReceiverMode::Buffering => {
+-                                    self.buffer.push(dir_entry);
+-                                    if self.buffer.len() > MAX_BUFFER_LENGTH {
+-                                        self.stream()?;
+-                                    }
++                            if self.config.count {
++                                // Only the total is printed, so entries are neither buffered nor printed
++                                if self.interrupt_flag.load(Ordering::Relaxed) {
++                                    return Err(ExitCode::KilledBySigint);
+                                 }
+-                                ReceiverMode::Streaming => {
+-                                    self.print(&dir_entry)?;
++                            } else if self.mode == ReceiverMode::Buffering {
++                                self.buffer.push(dir_entry);
++                                if self.buffer.len() > MAX_BUFFER_LENGTH {
++                                    self.stream()?;
+                                 }
++                            } else {
++                                self.print(&dir_entry)?;
+                             }
+ 
+                             self.num_results += 1;
+@@ -277,6 +279,18 @@ impl<'a, W: Write> ReceiverBuffer<'a, W> {
+         self.flush()
+     }
+ 
++    /// Output the number of results.
++    fn print_count(&mut self) -> Result<(), ExitCode> {
++        if let Err(e) = writeln!(self.stdout, "{}", self.num_results)
++            && e.kind() != ::std::io::ErrorKind::BrokenPipe
++        {
++            print_error!("Could not write to output: {}", e);
++            return Err(ExitCode::GeneralError);
++        }
++
++        self.flush()
++    }
++
+     /// Stop looping.
+     fn stop(&mut self) -> Result<(), ExitCode> {
+         if self.mode == ReceiverMode::Buffering {
+@@ -284,6 +298,11 @@ impl<'a, W: Write> ReceiverBuffer<'a, W> {
+             self.stream()?;
+         }
+ 
++        if self.config.count {
++            self.print_count()?;
++            return Err(ExitCode::Success);
++        }
++
+         if self.config.quiet {
+             Err(ExitCode::HasResults(self.num_results > 0))
+         } else {
+diff --git a/tests/tests.rs b/tests/tests.rs
+index c24545f..cd1e860 100644
+--- a/tests/tests.rs
++++ b/tests/tests.rs
+@@ -2806,6 +2806,135 @@ fn test_max_results() {
+     te.assert_failure(&["thing", "--max-results=1", "-1", "--exec=cat"]);
+ }
+ 
++/// Run *fd* and return its raw stdout, so the exact trailing newline is checked
++fn count_output(te: &TestEnv, args: &[&str]) -> String {
++    let output = te.assert_success_and_get_output(".", args);
++    String::from_utf8_lossy(&output.stdout).into_owned()
++}
++
++/// Number of matching entries (--count)
++#[test]
++fn test_count() {
++    let te = TestEnv::new(DEFAULT_DIRS, DEFAULT_FILES);
++
++    assert_eq!(count_output(&te, &["--count", "c.foo"]), "2\n");
++    assert_eq!(
++        count_output(&te, &["--count", "--color=always", "c.foo"]),
++        "2\n"
++    );
++    assert_eq!(
++        count_output(&te, &["--count", "--hyperlink=always", "c.foo"]),
++        "2\n"
++    );
++
++    // Max results caps the count
++    assert_eq!(
++        count_output(&te, &["--count", "--max-results=1", "c.foo"]),
++        "1\n"
++    );
++    assert_eq!(count_output(&te, &["--count", "-1", "c.foo"]), "1\n");
++    assert_eq!(
++        count_output(&te, &["--count", "--max-results=5", "c.foo"]),
++        "2\n"
++    );
++    assert_eq!(
++        count_output(&te, &["--count", "--max-results=0", "c.foo"]),
++        "2\n"
++    );
++}
++
++/// Filters apply to the count, and several paths give a single total (--count)
++#[test]
++fn test_count_filters_and_paths() {
++    let dirs = &["dir_a", "dir_b"];
++    let files = &[
++        "a.foo",
++        "b.foo",
++        "dir_a/c.foo",
++        "dir_b/d.bar",
++        ".hidden.foo",
++    ];
++    let te = TestEnv::new(dirs, files);
++
++    assert_eq!(count_output(&te, &["--count", "-e", "foo"]), "3\n");
++    assert_eq!(count_output(&te, &["--count", "-H", "-e", "foo"]), "4\n");
++    assert_eq!(
++        count_output(&te, &["--count", "-t", "f", "-e", "bar"]),
++        "1\n"
++    );
++    assert_eq!(count_output(&te, &["--count", "-t", "empty"]), "4\n");
++    assert_eq!(
++        count_output(&te, &["--count", "-d", "1", "-e", "foo"]),
++        "2\n"
++    );
++    assert_eq!(count_output(&te, &["--count", "--exclude", "*"]), "0\n");
++    assert_eq!(
++        count_output(&te, &["--count", "foo", "--and", "bar"]),
++        "0\n"
++    );
++
++    // One total across paths, overlapping paths are counted as plain fd prints them
++    assert_eq!(
++        count_output(&te, &["--count", "-e", "foo", ".", "dir_a", "dir_b"]),
++        "1\n"
++    );
++    assert_eq!(
++        count_output(&te, &["--count", "-e", "foo", ".", "dir_a", "dir_a"]),
++        "2\n"
++    );
++}
++
++/// Entries are counted once, even when their names contain newlines (--count)
++#[test]
++fn test_count_newline_in_name() {
++    let te = TestEnv::new(&[], &["new\nline.foo", "other.foo"]);
++
++    assert_eq!(count_output(&te, &["--count", "-e", "foo"]), "2\n");
++}
++
++/// Zero matches print 0 and succeed (--count)
++#[test]
++fn test_count_no_matches() {
++    let te = TestEnv::new(&["empty"], &[".hidden.foo"]);
++
++    assert_eq!(count_output(&te, &["--count", "nomatch-xyz"]), "0\n");
++    assert_eq!(count_output(&te, &["--count", "-e", "foo"]), "0\n");
++    assert_eq!(
++        count_output(&te, &["--count", "--max-results=1", "nomatch-xyz"]),
++        "0\n"
++    );
++    assert_eq!(count_output(&te, &["--count", "-1", "nomatch-xyz"]), "0\n");
++
++    let output = te.assert_success_and_get_output("empty", &["--count"]);
++    assert_eq!(String::from_utf8_lossy(&output.stdout), "0\n");
++}
++
++/// --count conflicts with output and search modes, in either argument order (exit code 2)
++#[test]
++fn test_count_conflicts() {
++    let te = TestEnv::new(&[], &["a.foo"]);
++
++    // (option, name clap reports for it)
++    let conflicts = [
++        ("-0", "'--print0'"),
++        ("-l", "'--list-details'"),
++        ("--format={}", "'--format <fmt>'"),
++        ("--exec=cat", "'--exec <cmd>...'"),
++        ("--exec-batch=cat", "'--exec-batch <cmd>...'"),
++        ("-q", "'--quiet'"),
++        ("--has-results", "'--quiet'"),
++    ];
++    for (option, name) in conflicts {
++        let expected = format!("error: the argument '--count' cannot be used with {name}");
++        let status = te.assert_error(&["--count", option], &expected);
++        assert_eq!(status.code(), Some(2));
++
++        let expected = format!("error: the argument {name} cannot be used with '--count'");
++        let status = te.assert_error(&[option, "--count"], &expected);
++        assert_eq!(status.code(), Some(2));
++    }
++}
++
+ /// Filenames with non-utf8 paths are passed to the executed program unchanged
+ ///
+ /// Note:
