@@ -20,6 +20,19 @@
 // `parent` entry, and its x and y are inside that parent. A frame's `label` is null here, because
 // its text has entries of its own.
 //
+// What a box records: its size and position, `fill`, `stroke` and `strokeWeight` (a number, or
+// top, right, bottom, left when the sides differ), `strokeAlign` and `dashed` (with a stroke only),
+// `radius` (a number, or top-left, top-right, bottom-right, bottom-left when the corners differ),
+// `rings` (spread-only shadows, a focus ring: colour and spread), `shadows` (the others, with blur:
+// x, y, blur, spread, colour, inset), `opacity`, `sizing` (hug, fill or fixed, across then down),
+// and `minWidth`/`maxWidth`/`minHeight`/`maxHeight` where set. Colours are "#rrggbb", or
+// "#rrggbbaa" when see-through. `layout` (two or more laid-out children) adds `justify` and `align`
+// in CSS's words, left out where a child fills that axis, and `wrap` with `rowGap` when it wraps.
+// `label` (a component's first text) and a page's text entries carry the type: `fontFamily`,
+// `fontSize`, `fontWeight`, `lineHeight`, `letterSpacing` (px), `textCase`, `textDecoration`, and
+// `textAlign` where the text has a set width. `tokens`, where anything is bound to a variable or
+// style, names them: a variable by its web code syntax, a style by its name.
+//
 // Every entry has the node's `id`. Keys are unique: a repeated key is numbered (`Row`,
 // `Row (2)`), since a JSON object keeps only the last of two equal keys and the first would go
 // unmeasured.
@@ -30,9 +43,11 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
   // Figma stores numbers as 32-bit floats (0.35 reads back as 0.3499999940…): round what is computed.
   const round = (value: number) => Math.round(value * 100) / 100;
   // "#rrggbb", or "#rrggbbaa" when the colour is see-through (a paint's opacity, a colour's alpha).
-  const hex = ({ r, g, b }: RGB, alpha = 1) =>
-    "#" +
-    [r, g, b, ...(alpha < 1 ? [alpha] : [])].map((c) => Math.round(c * 255).toString(16).padStart(2, "0")).join("");
+  // The alpha byte is printed only when it isn't 255 once rounded, so 0.999 is "#ffffff", not "#ffffffff".
+  const hex = ({ r, g, b }: RGB, alpha = 1) => {
+    const byte = (c: number) => Math.round(c * 255).toString(16).padStart(2, "0");
+    return "#" + [r, g, b].map(byte).join("") + (Math.round(alpha * 255) < 255 ? byte(alpha) : "");
+  };
   const firstSolid = (paints: readonly Paint[] | typeof figma.mixed) =>
     Array.isArray(paints) ? paints.find((p): p is SolidPaint => p.type === "SOLID" && p.visible !== false) : undefined;
   const solid = (paints: readonly Paint[] | typeof figma.mixed) => {
@@ -229,7 +244,7 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
       ...(stroke !== null && node.dashPattern.length > 0 && { dashed: true }),
       // Shadows with blur, in the order CSS lists them: what isn't a ring.
       shadows: shadows
-        .filter((effect) => !(effect.type === "DROP_SHADOW" && effect.radius === 0))
+        .filter((effect) => effect.radius > 0)
         .map((effect) => ({
           x: effect.offset.x,
           y: effect.offset.y,

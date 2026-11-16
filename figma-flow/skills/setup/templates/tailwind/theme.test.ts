@@ -6,17 +6,29 @@ import tailwindTheme from "tailwindcss/theme.css?raw";
 import ourTheme from "./theme.css?raw";
 
 /**
- * Figma must not drift from the Tailwind theme. tokens.json is a snapshot of the
+ * Figma must not drift from the Tailwind theme. figma-tokens.json is a snapshot of the
  * Figma file's variables and styles (refresh it with the figma-flow skill's export-tokens); every one
  * has to resolve to a token in the theme the components are compiled against, with the
  * same value. A Figma variable that isn't a Tailwind default fails here until it is added
  * to the project's `@theme` block under the same name.
  */
 type Variable = { value: string | number; web: string | null };
-type Shadow = { x: number; y: number; blur: number; spread: number; color: string; alpha: number };
+// One layer of an effect style: a shadow (DROP_SHADOW or INNER_SHADOW) or a blur.
+type Effect = { type: string; x?: number; y?: number; blur: number; spread?: number; color?: string; alpha?: number };
 const { textStyles, effectStyles, ...collections } = JSON.parse(tokens) as {
-  textStyles: Record<string, { family: string; style: string; size: number; lineHeight: number }>;
-  effectStyles: Record<string, Shadow[]>;
+  textStyles: Record<
+    string,
+    {
+      family: string;
+      style: string;
+      size: number;
+      lineHeight: number;
+      // Absent from a snapshot exported before these were recorded.
+      weight?: number;
+      letterSpacing?: number;
+    }
+  >;
+  effectStyles: Record<string, Effect[]>;
 } & Record<string, Record<string, Variable>>;
 const variables = Object.values(collections).flatMap((collection) => Object.entries(collection));
 
@@ -28,12 +40,34 @@ for (const css of [tailwindTheme, ourTheme]) {
   }
 }
 
-const px = (value: string) => (value.endsWith("rem") ? parseFloat(value) * 16 : parseFloat(value));
+const px = (value: string) => {
+  if (value.endsWith("rem")) return parseFloat(value) * 16;
+  return parseFloat(value);
+};
+
+// A length as pixels, where an em is a multiple of the text's size.
+const inPixels = (value: string, fontSize: number) => {
+  if (value.endsWith("em")) return parseFloat(value) * fontSize;
+  return px(value);
+};
+
+// A CSS shadow list as the theme writes it, in the export's shape: `inset` layers are INNER_SHADOW.
+const shadowLayers = (css: string): Effect[] =>
+  css.split(/,\s*/).map((layer) => {
+    let type = "DROP_SHADOW";
+    if (layer.startsWith("inset ")) type = "INNER_SHADOW";
+    const [lengths = "", colour = ""] = layer.replace("inset ", "").split(" rgb(");
+    const [x, y, blur = 0, spread = 0] = lengths.split(" ").map(parseFloat);
+    const [r = 0, g = 0, b = 0, alpha] = colour.match(/[\d.]+/g)!.map(Number);
+    const color = "#" + [r, g, b].map((c) => c.toString(16).padStart(2, "0")).join("");
+    return { type, x, y, blur, spread, color, alpha };
+  });
 
 // CSS Color 4: oklch → sRGB, as 0–255 channels.
 function rgb(color: string): number[] {
   if (color.startsWith("#")) {
-    const hex = color.length === 4 ? color.replace(/[\da-f]/gi, "$&$&") : color;
+    let hex = color;
+    if (color.length === 4) hex = color.replace(/[\da-f]/gi, "$&$&");
     return [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
   }
   const [l = 0, c = 0, h = 0] = color.match(/[\d.]+/g)!.map(Number);
@@ -49,7 +83,8 @@ function rgb(color: string): number[] {
     -1.2684380046 * L + 2.6097574011 * M - 0.3413193965 * S,
     -0.0041960863 * L - 0.7034186147 * M + 1.707614701 * S,
   ].map((linear) => {
-    const v = linear <= 0.0031308 ? 12.92 * linear : 1.055 * linear ** (1 / 2.4) - 0.055;
+    let v = 1.055 * linear ** (1 / 2.4) - 0.055;
+    if (linear <= 0.0031308) v = 12.92 * linear;
     return Math.round(Math.min(1, Math.max(0, v)) * 255);
   });
 }
@@ -99,20 +134,41 @@ describe("Figma styles", () => {
     expect(variables.find(([n]) => n === `${size.replace("-", "/")}--line-height`)?.[1].value).toBe(
       style.lineHeight,
     );
-    const weights: Record<string, string> = { Regular: "400", Medium: "500", "Semi Bold": "600", Bold: "700" };
+    const weights: Record<string, string> = {
+      Regular: "400",
+      Medium: "500",
+      "Semi Bold": "600",
+      Bold: "700",
+    };
     expect(theme.get(`--font-weight-${weight}`)).toBe(weights[style.style]);
     expect(theme.get("--font-sans")).toContain(style.family);
   });
 
-  // "shadow-md" is the utility `shadow-md`: the same layers as --shadow-md.
-  it.each(Object.entries(effectStyles))("%s is the theme's shadow", (name, layers) => {
-    const themed = theme.get(`--${name}`)!.split(/,\s*/).map((layer) => {
-      const [lengths = "", colour = ""] = layer.split(" rgb(");
-      const [x, y, blur = 0, spread = 0] = lengths.split(" ").map(parseFloat);
-      const [r = 0, g = 0, b = 0, alpha] = colour.match(/[\d.]+/g)!.map(Number);
-      const color = "#" + [r, g, b].map((c) => c.toString(16).padStart(2, "0")).join("");
-      return { type: "DROP_SHADOW", x, y, blur, spread, color, alpha };
-    });
-    expect(layers).toEqual(themed);
+  // A text style's weight and letter spacing, where the snapshot has them. The weight is the
+  // theme's font weight of the style's name; letter spacing is the theme's tracking for the size
+  // (a theme without one has none), in pixels.
+  it.each(Object.entries(textStyles))("%s has the theme's weight and letter spacing", (name, style) => {
+    const [size = "", weight = ""] = name.split("/");
+    if (style.weight !== undefined) {
+      expect(Number(theme.get(`--font-weight-${weight}`)), `${name} weight`).toBe(style.weight);
+    }
+    if (style.letterSpacing !== undefined) {
+      const fontSize = px(theme.get(`--${size}`)!);
+      const tracking = theme.get(`--${size}--letter-spacing`) ?? "0px";
+      expect(inPixels(tracking, fontSize), `${name} letter spacing`).toBeCloseTo(style.letterSpacing, 2);
+    }
+  });
+
+  // "shadow-md" is the utility `shadow-md`: the same layers as --shadow-md. "inset-shadow-sm" is
+  // the same for `inset-shadow-sm`, its layers INNER_SHADOW. "blur-md" is `blur-md`: a blur of the
+  // theme's length.
+  it.each(Object.entries(effectStyles))("%s is the theme's effect", (name, layers) => {
+    const themed = theme.get(`--${name}`);
+    expect(themed, `--${name} is not in the theme: add it to src/theme.css`).toBeDefined();
+    if (layers.every((layer) => layer.type === "LAYER_BLUR" || layer.type === "BACKGROUND_BLUR")) {
+      for (const layer of layers) expect(layer.blur).toBe(px(themed!));
+      return;
+    }
+    expect(layers).toEqual(shadowLayers(themed!));
   });
 });
