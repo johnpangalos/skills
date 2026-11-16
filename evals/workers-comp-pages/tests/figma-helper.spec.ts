@@ -28,6 +28,9 @@ const PAGE = `<!doctype html>
   body { margin: 0; }
   div, p, span, i { box-sizing: border-box; }
   .row { display: flex; width: 200px; height: 40px; }
+  #sdsringed, #sdsafter, #sdsbordered { position: relative; outline: none; }
+  #sdsringed::before, #sdsafter::after, #sdsbordered::before { content: ""; position: absolute; inset: -2px; border-radius: 8px; box-shadow: 0 0 0 2px #c800de; }
+  #sdsbordered::before { inset: -3px; }
 </style>
 </head>
 <body>
@@ -35,6 +38,9 @@ const PAGE = `<!doctype html>
   <div id="dashed" style="width: 120px; height: 40px; border: 2px dashed #222222;"></div>
   <div id="outlined" style="width: 120px; height: 40px; outline: 2px solid #0000ff; outline-offset: 0;"></div>
   <div id="ringed" style="width: 120px; height: 40px; background: #ffffff; border-radius: 6px; outline: 2px solid #c800de; outline-offset: 2px;"></div>
+  <div id="sdsringed" style="width: 120px; height: 40px; background: #ffffff; border-radius: 6px;"></div>
+  <div id="sdsafter" style="width: 120px; height: 40px; background: #ffffff; border-radius: 6px;"></div>
+  <div id="sdsbordered" style="width: 120px; height: 40px; background: #ffffff; border: 1px solid #111111; border-radius: 6px;"></div>
   <div id="labelled" style="width: 160px; height: 36px; padding: 8px 16px; border-radius: 6px; background: #a800b7; color: #ffffff; font-family: Inter, sans-serif; font-size: 14px; font-weight: 600; line-height: 20px; letter-spacing: 0.5px; text-transform: uppercase;"><span style="text-decoration: underline;">Save</span></div>
   <div id="small-caps" style="width: 160px; height: 36px; padding: 8px 16px; border-radius: 6px; background: #a800b7; color: #ffffff; font-family: Inter, sans-serif; font-size: 14px; font-weight: 600; line-height: 20px; font-variant-caps: small-caps; letter-spacing: normal;"><span>Save</span></div>
   <div id="placeholder" style="width: 120px; height: 40px; background: #ffffff; border-radius: 8px; box-shadow: 0 0 transparent, 0 2px 4px rgba(0, 0, 0, 0.2);"></div>
@@ -109,6 +115,16 @@ const outlined: FigmaNode = box(120, 40, {
 const ringed: FigmaNode = box(120, 40, {
   fill: "#ffffff",
   radius: 6,
+  outline: { width: 2, offset: 2, color: "#c800de" },
+});
+
+// The same ring as Figma's Simple Design System draws it: the element draws no outline, and an inset ::before (or ::after) does.
+const sdsBordered: FigmaNode = box(120, 40, {
+  fill: "#ffffff",
+  radius: 6,
+  stroke: "#111111",
+  strokeWeight: 1,
+  strokeAlign: "inside",
   outline: { width: 2, offset: 2, color: "#c800de" },
 });
 
@@ -428,6 +444,9 @@ test.describe("the browser helper", () => {
     ["dashed", dashed],
     ["outlined", outlined],
     ["ringed", ringed],
+    ["sdsringed", ringed],
+    ["sdsafter", ringed],
+    ["sdsbordered", sdsBordered],
     ["labelled", labelled],
     ["small-caps", smallCaps],
     ["placeholder", placeholder],
@@ -563,6 +582,40 @@ test.describe("the browser helper", () => {
     });
     await expectToMatchFigma(page.locator("#ringed"), ringed);
   });
+
+  // Figma's ring drawn on a ::before, each way of getting it wrong (the fixtures above pass).
+  const ringHostiles: [label: string, id: string, css: string, figma: FigmaNode][] = [
+    ["an inset of 0", "sdsringed", "#sdsringed::before { inset: 0 !important }", ringed],
+    [
+      "the element's own outline as well",
+      "sdsringed",
+      "#sdsringed { outline: 2px solid #0000ff !important; outline-offset: 0 !important }",
+      ringed,
+    ],
+    ["a blur of 1px", "sdsringed", "#sdsringed::before { box-shadow: 0 0 1px 2px #c800de !important }", ringed],
+    [
+      "two box-shadows",
+      "sdsringed",
+      "#sdsringed::before { box-shadow: 0 0 0 2px #c800de, 0 0 0 4px #c800de !important }",
+      ringed,
+    ],
+    ["a radius of r, not r + offset", "sdsringed", "#sdsringed::before { border-radius: 6px !important }", ringed],
+    ["display: none", "sdsringed", "#sdsringed::before { display: none !important }", ringed],
+    ["content: none", "sdsringed", "#sdsringed::before { content: none !important }", ringed],
+    ["a margin-top of 1px", "sdsringed", "#sdsringed::before { margin-top: 1px !important }", ringed],
+    ["a width 1px short", "sdsringed", "#sdsringed::before { width: 123px !important }", ringed],
+    ["overflow: hidden on the element", "sdsringed", "#sdsringed { overflow: hidden !important }", ringed],
+    ["a white background", "sdsringed", "#sdsringed::before { background: #ffffff !important }", ringed],
+    ["a 1px border and top at -offset", "sdsbordered", "#sdsbordered::before { top: -2px !important }", sdsBordered],
+  ];
+  for (const [label, id, css, figma] of ringHostiles) {
+    test(`#${id}: a ring with ${label} fails against Figma's ring`, async ({ page }) => {
+      test.fail();
+      await open(page);
+      await page.addStyleTag({ content: css });
+      await expectToMatchFigma(page.locator(`#${id}`), figma);
+    });
+  }
 
   test("a child the export couldn't read as an outline is reported as not measured", async ({ page }) => {
     await open(page);

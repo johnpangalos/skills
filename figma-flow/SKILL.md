@@ -67,7 +67,9 @@ They are in this skill's `scripts/` folder, not in the project:
   spread draws nothing and is left out. Colours are `#rrggbb`, or `#rrggbbaa` when see-through.
   On a component's entry, `outline` is a focus ring Figma draws as a separate frame around the box
   (an even, solid, fill-less stroke; `{ width, offset, color }` as CSS draws an outline, its
-  colour and weight named as `outline` and `outlineWidth` in `tokens`), and `unmeasured` names by
+  colour and weight named as `outline` and `outlineWidth` in `tokens`; the measurement accepts it as
+  a CSS outline, or as an offset `::before` or `::after` with one spread-only box-shadow, which is how
+  Figma's Simple Design System draws focus), and `unmeasured` names by
   layer every other absolutely positioned child the export can't read as one (a ring CSS can't
   draw exactly, such as a width or offset that isn't whole pixels, and a text that isn't the
   label), which the helper reports rather than drops. A ring whose stroke draws nothing is left out.

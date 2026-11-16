@@ -42,8 +42,9 @@ export type FigmaNode = Region & {
   rings: [color: string, spread: number][];
   /**
    * A focus ring Figma draws as a separate frame around the box, which CSS draws as the box's
-   * outline: the ring's width, the gap from the box's edge to its inner edge, and its colour. Null
-   * when there is none (and in an older export, which has none to compare).
+   * outline, or as an offset ::before or ::after (see focusRingProblems): the ring's width, the gap
+   * from the box's edge to its inner edge, and its colour. Null when there is none (and in an older
+   * export, which has none to compare).
    */
   outline?: { width: number; offset: number; color: string } | null;
   /** Absolutely positioned children that the export couldn't read as the outline, by layer name. Reported, not compared. */
@@ -236,23 +237,134 @@ function lineStyle(dashed: true | undefined) {
 const shadowShape = ({ x, y, blur, spread, inset }: Shadow) => ({ x, y, blur, spread, inset });
 
 /**
- * Two colours, each channel within 1 of 255. An 8-digit colour (with alpha) against an opaque one is a
- * mismatch, even when its alpha rounds to 255.
+ * Whether two colours match: each channel within 1 of 255. An 8-digit colour (with alpha) against an
+ * opaque one is a mismatch, even when its alpha rounds to 255. Null matches only null.
  */
-function expectSameColor(actual: string | null, expected: string | null, what: string) {
-  if (actual === null || expected === null) {
-    expect.soft(actual, what).toBe(expected);
-    return;
-  }
+function sameColor(actual: string | null, expected: string | null): boolean {
+  if (actual === null || expected === null) return actual === expected;
   const channels = (color: string) =>
     [1, 3, 5, 7].slice(0, 3 + Number(color.length === 9)).map((i) => parseInt(color.slice(i, i + 2), 16));
   const [rendered, figma] = [channels(actual), channels(expected)];
-  if (rendered.length !== figma.length) {
-    expect.soft(actual, `${what} is ${actual}, Figma's is ${expected}`).toBe(expected);
-    return;
+  return rendered.length === figma.length && rendered.every((c, i) => Math.abs(c - figma[i]!) <= 1);
+}
+
+function expectSameColor(actual: string | null, expected: string | null, what: string) {
+  expect.soft(sameColor(actual, expected), `${what} is ${actual}, Figma's is ${expected}`).toBe(true);
+}
+
+/**
+ * A radius past half the box is drawn as half the box: rounded-full computes to a huge value where
+ * Figma says 9999. Both sides are clamped to the box each is drawn in, which is exact.
+ */
+const drawn = (radius: number, { width, height }: { width: number; height: number }) =>
+  Math.min(radius, Math.min(width, height) / 2);
+
+type Outline = NonNullable<FigmaNode["outline"]>;
+
+/** A ::before or ::after as it is drawn: the values a focus ring is made of. */
+type Pseudo = {
+  /** Absolutely positioned, with content and a display and visibility that draw it. */
+  shown: boolean;
+  inset: number[];
+  margin: number[];
+  size: number[];
+  radius: number[];
+  fill: string | null;
+  borders: number[];
+  opacity: number;
+  rings: [string, number][];
+  shadows: Shadow[];
+};
+
+/** The element as it is drawn, for its focus ring. */
+type Painted = {
+  borders: number[];
+  radius: number[];
+  outline: { width: number; color: string | null; offset: number; style: string };
+  position: string;
+  overflow: string[];
+  before: Pseudo;
+  after: Pseudo;
+};
+
+/** Each way the outline differs from Figma's, named. */
+function outlineProblems(outline: Painted["outline"], figma: Outline) {
+  const problems: string[] = [];
+  if (outline.style !== "solid") problems.push(`outline-style is ${outline.style}, Figma's is solid`);
+  if (outline.width !== figma.width) problems.push(`outline-width is ${outline.width}px, Figma's is ${figma.width}px`);
+  if (outline.offset !== figma.offset)
+    problems.push(`outline-offset is ${outline.offset}px, Figma's is ${figma.offset}px`);
+  if (!sameColor(outline.color, figma.color)) problems.push(`outline-color is ${outline.color}, Figma's is ${figma.color}`);
+  return problems;
+}
+
+/**
+ * Each way a ::before or ::after differs from the ring Figma draws, named: an absolute box inset by
+ * the offset from the element's border box on every side, with no margin, a border or a fill, of the
+ * border box grown by the offset on each side, its corners the element's grown by the offset, and one
+ * spread-only ring of the outline's width and colour, with nothing else painted on it.
+ */
+function ringProblems(name: string, ring: Pseudo, painted: Painted, box: Region, figma: Outline) {
+  const { width, offset, color } = figma;
+  const problems: string[] = [];
+  if (painted.position === "static") problems.push("the element is position: static, so the ring isn't placed on it");
+  if (painted.overflow.some((axis) => axis !== "visible"))
+    problems.push(`the element clips its overflow (overflow-x ${painted.overflow[0]}, overflow-y ${painted.overflow[1]}), which clips a ring`);
+  const sides = ["top", "right", "bottom", "left"] as const;
+  const wrong = new Set(sides.map((_, i) => -ring.inset[i]! - painted.borders[i]!).filter((d) => d !== offset));
+  for (const drawnOffset of wrong) problems.push(`${name} ring offset is ${drawnOffset}px, Figma's is ${offset}px`);
+  ring.margin.forEach((margin, i) => {
+    if (margin !== 0) problems.push(`${name} margin-${sides[i]} is ${margin}px, Figma's is 0px`);
+  });
+  const [expectedWidth, expectedHeight] = [box.width + 2 * offset, box.height + 2 * offset];
+  if (Math.abs(ring.size[0]! - expectedWidth) >= 1)
+    problems.push(`${name} ring width is ${ring.size[0]}px, its box plus the offset is ${expectedWidth}px`);
+  if (Math.abs(ring.size[1]! - expectedHeight) >= 1)
+    problems.push(`${name} ring height is ${ring.size[1]}px, its box plus the offset is ${expectedHeight}px`);
+  const ringBox = { width: ring.size[0]!, height: ring.size[1]! };
+  const expectedRadii = painted.radius.map((radius) => {
+    const clamped = drawn(radius, box);
+    return clamped === 0 ? 0 : Math.max(clamped + offset, 0);
+  });
+  const radii = ring.radius.map((radius) => drawn(radius, ringBox));
+  if (radii.some((radius, i) => radius !== expectedRadii[i]))
+    problems.push(`${name} ring radius (top left, top right, bottom right, bottom left) is ${radii}, Figma's is ${expectedRadii}`);
+  if (ring.fill !== null) problems.push(`${name} background is ${ring.fill}, the ring must be see-through`);
+  if (ring.borders.some((border) => border > 0)) problems.push(`${name} has a border, the ring has none`);
+  if (ring.opacity !== 1) problems.push(`${name} opacity is ${ring.opacity}, Figma's is 1`);
+  if (ring.shadows.length > 0) problems.push(`${name} has a shadow that isn't a ring (a blur, an offset or an inset)`);
+  if (ring.rings.length !== 1) {
+    problems.push(`${name} has ${ring.rings.length} rings, Figma's has one`);
+  } else {
+    const [ringColor, spread] = ring.rings[0]!;
+    if (spread !== width) problems.push(`${name} ring width is ${spread}px, Figma's is ${width}px`);
+    if (!sameColor(ringColor, color)) problems.push(`${name} ring colour is ${ringColor}, Figma's is ${color}`);
   }
-  const drift = rendered.map((c, i) => Math.abs(c - figma[i]!));
-  expect.soft(Math.max(...drift), `${what} is ${actual}, Figma's is ${expected}`).toBeLessThanOrEqual(1);
+  return problems;
+}
+
+/**
+ * The focus ring Figma draws, against the element as it is drawn. It holds as the element's own CSS
+ * outline (a solid line at the ring's width, offset and colour), or, where the element draws no
+ * outline of its own, as a ::before or ::after that is the ring (ringProblems): the way Figma's
+ * Simple Design System draws focus. When neither holds, the list has every mismatch on each path
+ * that has one, so a failure says what was found on each.
+ */
+function focusRingProblems(painted: Painted, box: Region, figma: Outline): string[] {
+  const own = outlineProblems(painted.outline, figma);
+  if (own.length === 0) return [];
+  const drawsOwn = painted.outline.width > 0 && painted.outline.color !== null;
+  const pseudos = [
+    ["::before", painted.before],
+    ["::after", painted.after],
+  ] as const;
+  const rings = pseudos
+    .filter(([, ring]) => ring.shown)
+    .map(([name, ring]) => ringProblems(name, ring, painted, box, figma));
+  const clean = rings.some((problems) => problems.length === 0);
+  if (clean && !drawsOwn) return [];
+  const second = clean ? ["the element draws its own outline too, so the ring would be a second one"] : [];
+  return [...own, ...rings.flat(), ...second];
 }
 
 /**
@@ -573,7 +685,7 @@ async function expectFillMatches(element: Locator, sizing: [Sizing, Sizing]) {
  * fill, border (or outline), radius, shadows, focus rings, the layout's justify, align, wrap and
  * padding, the min and max sizes, and the label's colour and type. Screenshots are for a person or
  * a model to look at; this is the part that can't be fuzzy. A focus ring Figma draws as a separate
- * frame is compared as the element's outline (`outline`). A child the export couldn't read as one
+ * frame is compared as the element's outline, or as its ::before or ::after ring (`outline`). A child the export couldn't read as one
  * (`unmeasured`) is named in a "figma: not measured" annotation; the test still passes on the rest.
  *
  * Two allowances. The box may be under a pixel off: Figma snaps a text box to whole pixels
@@ -645,26 +757,53 @@ export async function expectToMatchFigma(
     // box-shadow layers: a spread-only layer (no blur, no offset, not inset) is a ring, [colour,
     // spread], outermost first; every other layer is a shadow, an inset ring included. Fully
     // transparent layers are neither.
-    const rings: [string, number][] = [];
-    const shadows: Shadow[] = [];
-    for (const layer of style.boxShadow.split(/,(?![^(]*\))/).map((part) => part.trim())) {
-      const ring = layer.match(/^(.+?) 0px 0px 0px (-?[\d.]+)px$/);
-      const ringColor = ring && hex(ring[1]!);
-      if (ring && ringColor && Number(ring[2]) !== 0) rings.push([ringColor, Number(ring[2])]);
-      const shadow = layer.match(/^(.+?) (-?[\d.]+)px (-?[\d.]+)px (-?[\d.]+)px (-?[\d.]+)px( inset)?$/);
-      const shadowColor = shadow && hex(shadow[1]!);
-      if (shadow && shadowColor && !ring) {
-        shadows.push({
-          x: Number(shadow[2]),
-          y: Number(shadow[3]),
-          blur: Number(shadow[4]),
-          spread: Number(shadow[5]),
-          color: shadowColor,
-          inset: shadow[6] !== undefined,
-        });
+    const layers = (computed: CSSStyleDeclaration) => {
+      const rings: [string, number][] = [];
+      const shadows: Shadow[] = [];
+      for (const layer of computed.boxShadow.split(/,(?![^(]*\))/).map((part) => part.trim())) {
+        const ring = layer.match(/^(.+?) 0px 0px 0px (-?[\d.]+)px$/);
+        const ringColor = ring && hex(ring[1]!);
+        if (ring && ringColor && Number(ring[2]) !== 0) rings.push([ringColor, Number(ring[2])]);
+        const shadow = layer.match(/^(.+?) (-?[\d.]+)px (-?[\d.]+)px (-?[\d.]+)px (-?[\d.]+)px( inset)?$/);
+        const shadowColor = shadow && hex(shadow[1]!);
+        if (shadow && shadowColor && !ring) {
+          shadows.push({
+            x: Number(shadow[2]),
+            y: Number(shadow[3]),
+            blur: Number(shadow[4]),
+            spread: Number(shadow[5]),
+            color: shadowColor,
+            inset: shadow[6] !== undefined,
+          });
+        }
       }
-    }
-    rings.sort((a, b) => b[1] - a[1]);
+      rings.sort((a, b) => b[1] - a[1]);
+      return { rings, shadows };
+    };
+    const { rings, shadows } = layers(style);
+
+    // A ::before or ::after as it is drawn: a focus ring Figma's Simple Design System draws as one.
+    const pseudo = (which: "::before" | "::after"): Pseudo => {
+      const computed = getComputedStyle(el, which);
+      const painted = layers(computed);
+      return {
+        shown:
+          computed.position === "absolute" &&
+          computed.content !== "none" &&
+          computed.content !== "normal" &&
+          computed.display !== "none" &&
+          computed.visibility === "visible",
+        inset: [computed.top, computed.right, computed.bottom, computed.left].map((value) => px(value)),
+        margin: sides.map((side) => px(computed[`margin${side}`])),
+        size: [px(computed.width), px(computed.height)],
+        radius: corners.map((corner) => parseFloat(computed[`border${corner}Radius`])),
+        fill: hex(computed.backgroundColor),
+        borders: sides.map((side) => px(computed[`border${side}Width`])),
+        opacity: parseFloat(computed.opacity),
+        rings: painted.rings,
+        shadows: painted.shadows,
+      };
+    };
 
     // Where the label's text starts, measured from the element's left edge. Not the padding: after
     // a leading child (a dot, with its gap) the text starts further in.
@@ -748,6 +887,10 @@ export async function expectToMatchFigma(
         style: style.outlineStyle,
       },
       radius: corners.map((corner) => parseFloat(style[`border${corner}Radius`])),
+      position: style.position,
+      overflow: [style.overflowX, style.overflowY],
+      before: pseudo("::before"),
+      after: pseudo("::after"),
       rings,
       shadows,
       minWidth: size(style.minWidth),
@@ -815,17 +958,17 @@ export async function expectToMatchFigma(
     if (styled) expect.soft(rendered.borderStyle, "border style").toBe(lineStyle(figma.dashed));
   }
 
-  // A focus ring Figma draws as a separate frame: CSS draws it as the outline, a solid line at the
-  // ring's width, offset and colour. Compared only where Figma has one.
+  // A focus ring Figma draws as a separate frame. CSS draws it as the element's own outline (a solid
+  // line at the ring's width, offset and colour), or, where the element draws no outline of its own,
+  // as an offset ::before or ::after with one spread-only box-shadow: how Figma's Simple Design
+  // System draws focus. Compared only where Figma has one (focusRingProblems says how).
   if (figma.outline) {
-    expect.soft(rendered.outline.style, `outline-style is ${rendered.outline.style}, Figma's is solid`).toBe("solid");
     expect
-      .soft(rendered.outline.width, `outline-width is ${rendered.outline.width}px, Figma's is ${figma.outline.width}px`)
-      .toBe(figma.outline.width);
-    expect
-      .soft(rendered.outline.offset, `outline-offset is ${rendered.outline.offset}px, Figma's is ${figma.outline.offset}px`)
-      .toBe(figma.outline.offset);
-    expectSameColor(rendered.outline.color, figma.outline.color, "outline-color");
+      .soft(
+        focusRingProblems(rendered, box!, figma.outline),
+        "focus ring: the element's outline, or its ::before or ::after, isn't Figma's",
+      )
+      .toEqual([]);
   }
   for (const name of figma.unmeasured ?? []) {
     test.info().annotations.push({
@@ -836,9 +979,7 @@ export async function expectToMatchFigma(
 
   expectSameColor(rendered.fill, figma.fill, "fill");
 
-  // A radius past half the box is drawn as half the box: rounded-full computes to a huge value
-  // where Figma says 9999. Both sides are clamped to the box each is drawn in, which is exact.
-  const drawn = (radius: number, { width, height }: Region) => Math.min(radius, Math.min(width, height) / 2);
+  // Both sides are clamped to the box each is drawn in (drawn).
   if (figma.radius === null) {
     expect
       .soft(figma.radius, "Figma's corners have different radii; the export can't describe them")

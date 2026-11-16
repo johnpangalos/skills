@@ -67,5 +67,7 @@ Rules:
 
 What the measurement can't read here: <e.g. a vector, positions across text-hugging siblings; or
 "nothing known yet">. An even, stroke-only ring drawn as a separate shape around a component is
-measured as its outline (a focus ring drawn as a Figma shadow is read). Any other separate shape
+measured as its outline, whether the code draws it as a CSS outline or as an offset `::before` or
+`::after` with one spread-only box-shadow (how Figma's Simple Design System draws focus); a focus
+ring drawn as a Figma shadow is read. Any other separate shape
 isn't (the export lists it in `unmeasured`), and neither is any ring on a page.
