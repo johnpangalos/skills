@@ -1,6 +1,6 @@
 ---
 name: figma-flow
-description: Use when turning a Figma component or frame into React that has to match the design exactly, when checking existing React against its Figma source, or when a Figma export needs refreshing. Routes by the node's type: figma-flow:component for a component or component set, figma-flow:page for a frame built from components. This skill holds what both share: Figma's exact values from the scripts it carries, the project's own components and tokens, a measurement against those values, then a fresh agent's look at screenshots.
+description: Use when turning a Figma component or frame into React that must match the design exactly, checking existing React against its Figma source, or refreshing a Figma export. Routes to figma-flow:component (a component or component set) or figma-flow:page (a frame built from components); this skill holds the steps both share.
 ---
 
 # Figma Flow
@@ -31,9 +31,8 @@ Pick by the node's type, as `export-node` reports it, and invoke that sub-skill:
 Unclear type: check it with the Figma MCP's `get_metadata` rather than asking. Checking existing
 React against Figma, and refreshing an export, take the same route.
 
-Each sub-skill has its whole flow: read, lint, stop on gaps, export, build, measure, look, act on
-the looker, stop after two rounds. The sections below are shared by both, and the sub-skills
-point here for them.
+Each sub-skill has the whole flow. The sections below are shared, and the sub-skills point here
+for them.
 
 ## What the project provides
 
