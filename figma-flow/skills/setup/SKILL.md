@@ -83,6 +83,10 @@ is expected, and the hashes below show whether what ran and what was saved are e
    - `tests/tokens.figma.spec.ts`: the token check (step 7). Fill in its two placeholders: the
      path to the exports folder, and a page whose CSS includes the app's global styles (`/`
      usually).
+   - `tests/figma-tokens.figma.spec.ts`: checks every export's `tokens` against `tokens.json`
+     (step 5), with no page: each name must be a variable, text style or effect style in the
+     snapshot, and each variable's value must equal the value the export records for it. Fill in
+     its one placeholder, the path to the exports folder.
    - The other templates come later: `fonts.css` in step 6, the page or component spec in step 9.
      The specs' placeholders don't parse, so don't copy them before then.
    - Add a `test:figma` script that runs `playwright test` (with `--config` if the config isn't

@@ -37,14 +37,29 @@ They are in this skill's `scripts/` folder, not in the project:
 - `lint-node.ts`: what code would have to guess at in those same nodes (values not bound to a
   variable or style, text not linked to its property, detached frames), with a hash as its last
   line.
-- `export-node.ts`: the exact values of one or more nodes, with a hash as its last line. A
-  component set gives an entry per variant. A frame that isn't a component (a page, or part of
-  one) gives an entry for every frame and text under it, including under groups, which get no
-  entry of their own. Each library instance gets one entry and isn't opened: the design system
-  measures its components. An instance of a component made in the file is opened, since the app
-  builds it. Each entry has the node's `id`, and a repeated key is numbered (`ClaimRow (2)`), so
-  no entry overwrites another.
-- `export-tokens.ts`: the file's own variables, text styles and effect styles. Run it on the file
+- `export-node.ts`: the exact values of one or more nodes, with a hash as its last line: size and
+  position; fills, strokes (with their align and dash), radius and stroke weight, each a number or
+  per side or corner when those differ; rings (spread-only drop shadows) and every other shadow;
+  opacity; sizing and min/max; auto layout's justify, align and wrap, each left out where it
+  can't show (justify on a box that hugs its direction with no min size on that axis, or where a
+  child fills it; align where every child fills or spans the box's content across); text type
+  (family, size, weight, line height in px, letter spacing, case, decoration, alignment); and
+  `tokens`, the names of the variables and styles each value is bound to (a text style's own font
+  is not repeated; a stroke's only where there is a stroke). A shadow with no blur, offset or
+  spread draws nothing and is left out. Colours are `#rrggbb`, or `#rrggbbaa` when see-through.
+  The file is format 2 (`"format": 2` after `node`): a field at its default (`fill`, `stroke` and
+  `label` null, `strokeWeight` and `radius` 0, `opacity` 1, empty `rings` and `shadows`, letter
+  spacing 0, case and decoration "none", inside stroke align) is left out, and the reader puts it
+  back. A component set gives an entry per variant. A frame that isn't a component (a page, or
+  part of one) gives an entry for every frame and text under it, including under groups,
+  which get no entry of their own. Each library instance gets one entry and isn't opened: the
+  design system measures its components. An instance of a component made in the file is opened,
+  since the app builds it. Each entry has the node's `id`, and a repeated key is numbered
+  (`ClaimRow (2)`), so no entry overwrites another.
+- `export-tokens.ts`: the file's own variables, text styles and effect styles. An alias is resolved
+  to its value and names what it points at; a collection with several modes gives each mode's
+  value; a text style gives its weight, letter spacing (px), case and decoration; an effect style
+  gives its shadows and blurs, hidden effects left out. Run it on the file
   that defines them: a library's, for a design built from one. On a file with none of its own it
   throws, naming the library collections the file uses.
 - `print.ts`: prints any of them as plain JavaScript for the Figma MCP's `use_figma`. The scripts
