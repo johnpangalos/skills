@@ -135,6 +135,8 @@ it exact (they matched every time, in every round).
   removes the first.
 - **The page measures library instances as boxes.** What is inside a TextField or a Button is the
   library's to measure.
-- **Found in passing, not fixed here:** with the plugin loaded (`claude --plugin-dir figma-flow`),
-  the mod's `session.start` can't register `/figma-flow`: "refused: it is the plugin's
-  /figma-flow:figma-flow". The same happens on `main`, before this change.
+- **Found in passing, and fixed:** with the plugin loaded (`claude --plugin-dir figma-flow`), the
+  mod's `session.start` couldn't register `/figma-flow`: "refused: it is the plugin's
+  /figma-flow:figma-flow" (on `main` too). The skill holds that name. A test plugin showed which
+  names a mod may take there: `figma-hold`, `hold` and `figma-flow-hold` registered; `figma-flow`
+  and `figma-flow:hold` were refused. The command is now `/figma-hold` (`/figma-hold release`).

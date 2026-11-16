@@ -127,12 +127,12 @@ The plugin's mod does two things a skill can't:
 - **Holds `git commit` and `git push`** once this skill or a Figma tool has been used and a
   source file has changed, until the measurement command passes. It counts edits by subagents
   too. If you are held, run the measurement and fix what it reports. Only the person can lift
-  the hold, with `/figma-flow release`; don't ask them to unless the measurement itself is
+  the hold, with `/figma-hold release`; don't ask them to unless the measurement itself is
   broken.
 
 The mod recognises the measurement as a shell command containing `test:figma`, so name the
 project's script that, in the `package.json` at its root. A project without that script is never
-held, since nothing in it could pass. `/figma-flow` shows what is being held.
+held, since nothing in it could pass. `/figma-hold` shows what is being held.
 
 ## Not for
 
