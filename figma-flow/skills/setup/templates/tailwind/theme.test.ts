@@ -23,8 +23,8 @@ const { textStyles, effectStyles, ...collections } = JSON.parse(tokens) as {
       style: string;
       size: number;
       lineHeight: number;
-      // Absent from a snapshot exported before these were recorded.
-      weight?: number;
+      // Absent from a snapshot exported before these were recorded; null where the font has no weight word.
+      weight?: number | null;
       letterSpacing?: number;
     }
   >;
@@ -149,7 +149,7 @@ describe("Figma styles", () => {
   // (a theme without one has none), in pixels.
   it.each(Object.entries(textStyles))("%s has the theme's weight and letter spacing", (name, style) => {
     const [size = "", weight = ""] = name.split("/");
-    if (style.weight !== undefined) {
+    if (typeof style.weight === "number") {
       expect(Number(theme.get(`--font-weight-${weight}`)), `${name} weight`).toBe(style.weight);
     }
     if (style.letterSpacing !== undefined) {

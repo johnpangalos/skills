@@ -65,5 +65,6 @@ Rules:
    every key (copy `<the worked example's spec>`). Then run `<TEST COMMAND>` and fix the code until
    it passes. Never loosen the comparison, delete a case, or edit an export by hand.
 
-What the measurement can't read here: <e.g. shadows with blur, a ring drawn as a separate
-shape, positions across text-hugging siblings; or "nothing known yet">.
+What the measurement can't read here: <e.g. a vector, or a ring drawn as a separate shape
+(a focus ring drawn as a Figma shadow is read), positions across text-hugging siblings; or "nothing
+known yet">.
