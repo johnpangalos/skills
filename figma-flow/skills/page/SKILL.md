@@ -53,8 +53,8 @@ rules or no measurement. The scripts are in `<this skill's folder>/../../scripts
 7. **Look**, once the measurement passes. Take a screenshot of the Figma node and one of the
    rendered page in the same states and at the same scale. Spawn `figma-flow:looker` with the
    two image paths and a one-line description of the layout, and nothing about what was built.
-   If that agent type isn't listed, use the prompt in `<this skill's folder>/../../agents/looker.md`
-   instead.
+   If that agent type isn't listed, use a general-purpose agent with the prompt in
+   `<this skill's folder>/../../agents/looker.md`, on the most capable model available.
 8. **Act on the looker.** A `likely` finding the measurement didn't catch means the export or
    the test is missing a value: add it, then fix the code. Turn each `unsure` finding into a
    measurement, or say why it can't be measured. Don't argue with a finding from memory: check

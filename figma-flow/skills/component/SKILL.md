@@ -25,7 +25,8 @@ rules or no measurement. The scripts are in `<this skill's folder>/../../scripts
    right as it is gets accepted where the project keeps accepted findings, with a reason. Don't
    export or build around an open finding.
 3. **Stop on gaps, before building.** Report these to the person now: open lint findings, a
-   library component used inside this one that has no code counterpart (don't build around it),
+   component instance inside this design that isn't one of the ids being exported (a library
+   component, or one made in the same file) and has no code counterpart (don't build around it),
    and a font the project doesn't serve. Don't fill a gap with an arbitrary value. For each lint
    finding, give what the variants it should match have in that layer and field, read from Figma,
    never guessed. Sort the findings into two groups: those that change what is drawn (a value
@@ -44,15 +45,14 @@ rules or no measurement. The scripts are in `<this skill's folder>/../../scripts
    components and theme utilities only. Render the result on a page the measurement can open.
    The page doesn't have to look like the Figma file: it has to show every variant, with each
    state reachable the way a person reaches it.
-6. **Measure.** Add a spec that calls `expectToMatchFigma` for each entry in the export
-   (`skip("why")` is for an entry that can't be measured, and the report lists it), then run the
-   project's measurement and its other checks. Fix the code until they pass. Never loosen the
+6. **Measure.** Add a spec that calls `expectToMatchFigma` for each entry in the export, then run
+   the project's measurement and its other checks. Fix the code until they pass. Never loosen the
    comparison, delete a case, or edit an export to make it pass.
 7. **Look**, once the measurement passes. Take a screenshot of the Figma node and one of the
    rendered page in the same states and at the same scale. Spawn `figma-flow:looker` with the
    two image paths and a one-line description of the layout, and nothing about what was built.
-   If that agent type isn't listed, use the prompt in `<this skill's folder>/../../agents/looker.md`
-   instead.
+   If that agent type isn't listed, use a general-purpose agent with the prompt in
+   `<this skill's folder>/../../agents/looker.md`, on the most capable model available.
 8. **Act on the looker.** A `likely` finding the measurement didn't catch means the export or
    the test is missing a value: add it, then fix the code. Turn each `unsure` finding into a
    measurement, or say why it can't be measured. Don't argue with a finding from memory: check

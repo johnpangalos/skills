@@ -22,13 +22,15 @@ to finish; look to find what the measurement can't read.
 
 ## Which skill
 
-Pick by the node's type, as `export-node` reports it, and invoke that sub-skill:
+Pick by Figma's node type, checked with the Figma MCP's `get_metadata` (the same split
+`export-node` makes), and invoke that sub-skill:
 
-- **`figma-flow:component`**: a COMPONENT or COMPONENT_SET, or several ids that are parts of one
-  component (Tabs: `18:13 18:14 18:23`).
+- **`figma-flow:component`**: a COMPONENT or COMPONENT_SET, a single INSTANCE (`export-node`
+  treats it like a component), or several ids that are parts of one component (Tabs:
+  `18:13 18:14 18:23`).
 - **`figma-flow:page`**: a FRAME that isn't a component: a page, or a section of one.
 
-Unclear type: check it with the Figma MCP's `get_metadata` rather than asking. Checking existing
+A mix of a FRAME and component ids is exported separately, one skill each. Checking existing
 React against Figma, and refreshing an export, take the same route.
 
 Each sub-skill has the whole flow. The sections below are shared, and the sub-skills point here
@@ -82,6 +84,9 @@ node <this skill's folder>/scripts/print.ts lint-node <node id> [<node id>…]
 node <this skill's folder>/scripts/print.ts export-node <node id> [<node id>…]
 node <this skill's folder>/scripts/print.ts export-tokens
 ```
+
+From a sub-skill, that folder is `<sub-skill folder>/../../scripts/`, not
+`<this skill's folder>/scripts/`.
 
 To keep the printed code in a file, give it a name of its own (`mktemp`), never a fixed name
 like `$TMPDIR/lint.js`: the temp folder is shared, so other sessions overwrite and read it.
