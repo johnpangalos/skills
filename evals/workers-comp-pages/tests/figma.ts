@@ -321,12 +321,11 @@ function ringProblems(name: string, ring: Pseudo, painted: Painted, box: Region,
     problems.push(`${name} ring width is ${ring.size[0]}px, its box plus the offset is ${expectedWidth}px`);
   if (Math.abs(ring.size[1]! - expectedHeight) >= 1)
     problems.push(`${name} ring height is ${ring.size[1]}px, its box plus the offset is ${expectedHeight}px`);
-  const ringBox = { width: ring.size[0]!, height: ring.size[1]! };
   const expectedRadii = painted.radius.map((radius) => {
     const clamped = drawn(radius, box);
     return clamped === 0 ? 0 : Math.max(clamped + offset, 0);
   });
-  const radii = ring.radius.map((radius) => drawn(radius, ringBox));
+  const radii = ring.radius.map((radius) => drawn(radius, { width: ring.size[0]!, height: ring.size[1]! }));
   if (radii.some((radius, i) => radius !== expectedRadii[i]))
     problems.push(`${name} ring radius (top left, top right, bottom right, bottom left) is ${radii}, Figma's is ${expectedRadii}`);
   if (ring.fill !== null) problems.push(`${name} background is ${ring.fill}, the ring must be see-through`);
@@ -793,7 +792,7 @@ export async function expectToMatchFigma(
           computed.content !== "normal" &&
           computed.display !== "none" &&
           computed.visibility === "visible",
-        inset: [computed.top, computed.right, computed.bottom, computed.left].map((value) => px(value)),
+        inset: [computed.top, computed.right, computed.bottom, computed.left].map(px),
         margin: sides.map((side) => px(computed[`margin${side}`])),
         size: [px(computed.width), px(computed.height)],
         radius: corners.map((corner) => parseFloat(computed[`border${corner}Radius`])),
