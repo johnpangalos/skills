@@ -68,8 +68,9 @@ They are in this skill's `scripts/` folder, not in the project:
   On a component's entry, `outline` is a focus ring Figma draws as a separate frame around the box
   (an even, solid, fill-less stroke; `{ width, offset, color }` as CSS draws an outline, its
   colour and weight named as `outline` and `outlineWidth` in `tokens`), and `unmeasured` names by
-  layer every other absolutely positioned child the export can't read as one, which the helper
-  reports rather than drops.
+  layer every other absolutely positioned child the export can't read as one (a ring CSS can't
+  draw exactly, such as a width or offset that isn't whole pixels, and a text that isn't the
+  label), which the helper reports rather than drops. A ring whose stroke draws nothing is left out.
   The file is format 2 (`"format": 2` after `node`): a field at its default (`fill`, `stroke` and
   `label` null, `strokeWeight` and `radius` 0, `opacity` 1, empty `rings`, `shadows` and `unmeasured`, `outline` null, letter
   spacing 0, case and decoration "none", inside stroke align) is left out, and the reader puts it

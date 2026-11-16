@@ -692,20 +692,55 @@ test("A2: every other absolutely positioned child is named in unmeasured; two ri
   assert.equal("unmeasured" in hidden, false);
 });
 
-test("A2: in a box with no auto layout every child is absolutely positioned, so a text there is unmeasured", async () => {
+test("A2: in a box with no auto layout every child is absolutely positioned: the label is measured, another text is unmeasured", async () => {
   const plain = box("51:2", "COMPONENT", "Plain", {
     layoutMode: "NONE", width: 40, height: 20, topLeftRadius: 4, topRightRadius: 4, bottomRightRadius: 4, bottomLeftRadius: 4,
-    children: [text("51:3", "Hello"), ring("51:4", "focus ring", 40, 20, 2)],
+    children: [text("51:3", "Hello"), text("51:5", "Note"), ring("51:4", "focus ring", 40, 20, 2)],
   });
   const entry = await entryOf(plain);
   assert.equal((entry.outline as { width: number }).width, 2);
-  assert.deepEqual(entry.unmeasured, ["Hello"]);
+  assert.equal((entry.label as { fontSize: number }).fontSize, 14);
+  assert.deepEqual(entry.unmeasured, ["Note"]);
 });
 
-test("A2: an absolutely positioned text in an auto layout box is unmeasured by its name", async () => {
-  const entry = await entryOf(withChild(text("52:3", "Badge", { layoutPositioning: "ABSOLUTE" })));
+test("A2: an absolutely positioned text in an auto layout box is the label, so only the other texts are unmeasured", async () => {
+  const entry = await entryOf(withChild(text("52:3", "Badge", { layoutPositioning: "ABSOLUTE" }), text("52:4", "Note", { layoutPositioning: "ABSOLUTE" })));
   assert.equal("outline" in entry, false);
-  assert.deepEqual(entry.unmeasured, ["Badge"]);
+  assert.notEqual(entry.label, null);
+  assert.deepEqual(entry.unmeasured, ["Note"]);
+  const label = await entryOf(withChild(text("52:5", "Badge", { layoutPositioning: "ABSOLUTE" })));
+  assert.equal("unmeasured" in label, false);
+});
+
+test("A1: a ring CSS can't draw exactly is unmeasured: a width or offset that isn't whole pixels", async () => {
+  // Centred, a 3px stroke at 2px out sits 0.5px in from the box's edge: Chromium snaps outlines to whole pixels.
+  const centred = await entryOf(withChild(ring("55:3", "focus ring", 40, 20, 2, { strokeWeight: 3, strokeAlign: "CENTER" })));
+  assert.equal("outline" in centred, false);
+  assert.deepEqual(centred.unmeasured, ["focus ring"]);
+  const fractional = await entryOf(withChild(ring("55:4", "focus ring", 40, 20, 2, { strokeWeight: 1.5 })));
+  assert.equal("outline" in fractional, false);
+  assert.deepEqual(fractional.unmeasured, ["focus ring"]);
+  const whole = await entryOf(withChild(ring("55:5", "focus ring", 40, 20, 2, { strokeWeight: 3 })));
+  assert.deepEqual(whole.outline, { width: 3, offset: 2, color: "#0066ff" });
+});
+
+test("A1: a ring whose stroke draws nothing is left out, as a hidden child is; a filled one is still unmeasured", async () => {
+  const cases: [string, Partial<Fake>][] = [
+    ["weight 0", { strokeWeight: 0 }],
+    ["stroke at 0% opacity", { strokes: [{ ...bluePaint, opacity: 0 }] }],
+  ];
+  for (const [name, change] of cases) {
+    const entry = await entryOf(withChild(ring("56:3", "focus ring", 40, 20, 2, change)));
+    assert.equal("outline" in entry, false, name);
+    assert.equal("unmeasured" in entry, false, name);
+  }
+  // Beside a real ring, the silent one changes nothing: the real ring is the outline.
+  const beside = await entryOf(withChild(ring("56:4", "focus ring", 40, 20, 2), ring("56:5", "silent ring", 40, 20, 2, { strokeWeight: 0 })));
+  assert.deepEqual(beside.outline, { width: 2, offset: 2, color: "#0066ff" });
+  assert.equal("unmeasured" in beside, false);
+  // A fill draws something, so the ring is not silent.
+  const filled = await entryOf(withChild(ring("56:6", "focus ring", 40, 20, 2, { strokeWeight: 0, fills: white })));
+  assert.deepEqual(filled.unmeasured, ["focus ring"]);
 });
 
 test("A1: a ring on a laid-out child of a component is that child's outline, and a page's entries have none", async () => {

@@ -573,8 +573,8 @@ async function expectFillMatches(element: Locator, sizing: [Sizing, Sizing]) {
  * fill, border (or outline), radius, shadows, focus rings, the layout's justify, align, wrap and
  * padding, the min and max sizes, and the label's colour and type. Screenshots are for a person or
  * a model to look at; this is the part that can't be fuzzy. A focus ring Figma draws as a separate
- * frame is compared as the element's outline (`outline`); a child the export couldn't read as one
- * (`unmeasured`) is reported as not measured, never passed.
+ * frame is compared as the element's outline (`outline`). A child the export couldn't read as one
+ * (`unmeasured`) is named in a "figma: not measured" annotation; the test still passes on the rest.
  *
  * Two allowances. The box may be under a pixel off: Figma snaps a text box to whole pixels
  * and a browser doesn't, so anything that hugs text differs by a fraction. Colours may

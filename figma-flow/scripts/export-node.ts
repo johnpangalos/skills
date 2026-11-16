@@ -43,9 +43,12 @@
 // nothing else on it, is a focus ring, and it becomes the box's `outline`: `{ width, offset, color }`
 // as CSS draws an outline (`offset` is the gap from the box's edge to the outline's inner edge, and
 // the corners follow the box's). Its colour and weight are named in `tokens` as `outline` and
-// `outlineWidth`. Every other such child, a second ring, or a ring beside the box's own outside
-// stroke (CSS has one outline) is named by its layer in `unmeasured`, which the helper reports, so
-// nothing is dropped. A hidden child is ignored, as it is everywhere.
+// `outlineWidth`. Every other such child is named by its layer in `unmeasured`, which the helper
+// reports, so nothing is dropped: a second ring, a ring beside the box's own outside stroke (CSS has
+// one outline), a ring CSS can't draw exactly (a width or offset that isn't whole pixels, or corners
+// that differ), and a text that isn't the label (the label has its own entry). A hidden child is
+// ignored, as it is everywhere, and so is a ring whose stroke draws nothing (a weight of 0, or a
+// paint at 0% opacity).
 //
 // `label` (a component's first text) and a page's text entries carry the type: `fontFamily`,
 // `fontSize`, `fontWeight`, `lineHeight` (px; a percent is of the font size; null for AUTO),
@@ -246,8 +249,8 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
     };
   }
 
-  // Format 2: a field at its default is left out, and the reader puts it back. `rings` and `shadows`
-  // default to an empty list; the rest to the value here.
+  // Format 2: a field at its default is left out, and the reader puts it back. `rings` and
+  // `shadows` default to an empty list; the rest to the value here.
   const defaults: Record<string, unknown> = {
     fill: null, stroke: null, strokeWeight: 0, radius: 0, rings: [], label: null, opacity: 1, shadows: [],
     letterSpacing: 0, textCase: "none", textDecoration: "none", strokeAlign: "inside",
@@ -340,6 +343,18 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
   // A ring is a frame or a rectangle: the only kinds of child a focus ring is drawn as.
   const isRingShape = (child: SceneNode): child is FrameNode | RectangleNode =>
     child.type === "FRAME" || child.type === "RECTANGLE";
+  const visible = (items: readonly { visible?: boolean }[]) => items.filter((item) => item.visible !== false);
+  // A ring whose stroke draws nothing (a weight of 0, or a solid paint at 0% opacity), with no fill,
+  // effect or child of its own, draws nothing at all: it is left out, as a hidden child is.
+  const drawsNothing = (child: SceneNode) => {
+    if (!isRingShape(child) || !Array.isArray(child.strokes)) return false;
+    const paint = firstSolid(child.strokes);
+    const strokeDraws = paint !== undefined && (paint.opacity ?? 1) > 0 && single(child.strokeWeight) !== 0;
+    const filled = Array.isArray(child.fills) && visible(child.fills).length > 0;
+    const effected = visible(child.effects).length > 0;
+    const parted = "children" in child && child.children.some((grandchild) => grandchild.visible);
+    return paint !== undefined && !strokeDraws && !filled && !effected && !parted;
+  };
   // A box's corner radii as CSS draws them: where two adjacent radii are longer than the side between
   // them, all four are scaled by one factor (CSS's corner overlap rule), so a radius past half a side
   // comes out as half of it.
@@ -357,7 +372,6 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
   // square), since the outline's corners follow the box's. `offset` is the gap from the box's edge to
   // the outline's inner edge, which depends on where Figma puts the stroke.
   const ringOutline = (box: Box, child: FrameNode | RectangleNode) => {
-    const visible = (items: readonly { visible?: boolean }[]) => items.filter((item) => item.visible !== false);
     if (child.rotation !== 0 || round(child.opacity) !== 1) return null;
     if (!Array.isArray(child.fills) || visible(child.fills).length > 0) return null;
     if (!Array.isArray(child.strokes) || visible(child.strokes).length !== 1) return null;
@@ -377,16 +391,22 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
     const expected = cornersOf(box).map((radius) => (radius === 0 ? 0 : Math.max(radius + inset, 0)));
     if (cornersOf(child).some((radius, i) => Math.abs(radius - expected[i]!) > 0.01)) return null;
     const gap = child.strokeAlign === "OUTSIDE" ? inset : child.strokeAlign === "INSIDE" ? inset - weight : inset - weight / 2;
+    // Chromium snaps an outline's width and offset to whole pixels, so a ring that isn't whole can't be matched.
+    if (!Number.isInteger(round(weight)) || !Number.isInteger(round(gap))) return null;
     return { width: round(weight), offset: round(gap), color };
   };
   // A component's entry: its box, and its outline and unmeasured children. The absolutely positioned
   // children are those auto layout doesn't place, and every child of a box with no auto layout. A box
   // has one outline: a ring, when it is the only one and the box has no outside stroke of its own.
-  // Every other such child (a second ring included) is named in `unmeasured`, by layer.
+  // Every other such child (a second ring included) is named in `unmeasured`, by layer, except the
+  // label, which has its own entry.
   async function entryOf(node: Box) {
     const described: Record<string, unknown> = await describe(node, true);
     const placed = node.children.filter(
-      (child) => child.visible && (node.layoutMode === "NONE" || ("layoutPositioning" in child && child.layoutPositioning === "ABSOLUTE")),
+      (child) =>
+        child.visible &&
+        (node.layoutMode === "NONE" || ("layoutPositioning" in child && child.layoutPositioning === "ABSOLUTE")) &&
+        !drawsNothing(child),
     );
     const rings = placed.filter(isRingShape).flatMap((child) => {
       const outline = ringOutline(node, child);
@@ -394,7 +414,8 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
     });
     const ownOutline = solid(node.strokes) !== null && node.strokeAlign === "OUTSIDE";
     const ring = rings.length === 1 && !ownOutline ? rings[0] : undefined;
-    const unmeasured = placed.filter((child) => child !== ring?.child).map((child) => child.name);
+    const label = firstText(node);
+    const unmeasured = placed.filter((child) => child !== ring?.child && child !== label).map((child) => child.name);
     const outlineTokens: Record<string, unknown> = {};
     if (ring) {
       const colour = await paintToken(ring.child, "strokes");
