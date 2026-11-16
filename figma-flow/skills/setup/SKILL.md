@@ -149,8 +149,9 @@ is expected, and the hashes below show whether what ran and what was saved are e
      the test can open. If the page uses a library component with no code, stop and report it;
      don't build it. The export has sizes and styles but not the instances' text properties
      (labels, descriptions, placeholders, error messages): read those from the instances'
-     `componentProperties` with a read-only `use_figma` call. Build what the frame draws: where a
-     property and the drawn text differ (a `value` set, a placeholder shown), the drawn text;
+     `componentProperties` with a read-only `use_figma` call. Build what the frame draws (its visible text
+     layers): where a property and the drawn text differ (a `value` set, a placeholder shown),
+     the drawn text;
      where Figma has nothing to say (a Select's options), sample data, named as such in the
      report. Figma's auto layout doesn't
      stretch a child unless it is set to fill, and CSS flex does (`align-items: stretch`), so

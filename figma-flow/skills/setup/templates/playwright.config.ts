@@ -1,8 +1,8 @@
 import { defineConfig, devices } from "@playwright/test";
 
 // Renders pages in Chromium and compares the values they are drawn with against Figma's
-// (see the exports folder and tests/figma.ts). Replace the three placeholders: <PORT>,
-// <TESTS DIR> and <DEV SERVER COMMAND>.
+// (see the exports folder and tests/figma.ts). Replace the three placeholders below: the port,
+// the tests folder and the dev server command.
 const url = "http://localhost:<PORT>";
 
 export default defineConfig({
