@@ -34,6 +34,7 @@ const PAGE = `<!doctype html>
   <div id="tinted" style="width: 200px; height: 120px; min-width: 100px; max-width: 300px; min-height: 40px; opacity: 0.5; background: rgba(168, 0, 183, 0.5); border: solid #111111; border-width: 1px 2px 3px 4px; border-radius: 4px 8px 12px 16px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3), inset 0 0 0 2px #ff0000, 0 0 0 3px #00ff00;"></div>
   <div id="dashed" style="width: 120px; height: 40px; border: 2px dashed #222222;"></div>
   <div id="outlined" style="width: 120px; height: 40px; outline: 2px solid #0000ff; outline-offset: 0;"></div>
+  <div id="ringed" style="width: 120px; height: 40px; background: #ffffff; border-radius: 6px; outline: 2px solid #c800de; outline-offset: 2px;"></div>
   <div id="labelled" style="width: 160px; height: 36px; padding: 8px 16px; border-radius: 6px; background: #a800b7; color: #ffffff; font-family: Inter, sans-serif; font-size: 14px; font-weight: 600; line-height: 20px; letter-spacing: 0.5px; text-transform: uppercase;"><span style="text-decoration: underline;">Save</span></div>
   <div id="small-caps" style="width: 160px; height: 36px; padding: 8px 16px; border-radius: 6px; background: #a800b7; color: #ffffff; font-family: Inter, sans-serif; font-size: 14px; font-weight: 600; line-height: 20px; font-variant-caps: small-caps; letter-spacing: normal;"><span>Save</span></div>
   <div id="placeholder" style="width: 120px; height: 40px; background: #ffffff; border-radius: 8px; box-shadow: 0 0 transparent, 0 2px 4px rgba(0, 0, 0, 0.2);"></div>
@@ -67,6 +68,8 @@ function box(width: number, height: number, extra: Partial<FigmaNode> = {}): Fig
     rings: [],
     shadows: [],
     label: null,
+    outline: null,
+    unmeasured: [],
     ...extra,
   };
 }
@@ -100,6 +103,13 @@ const outlined: FigmaNode = box(120, 40, {
   stroke: "#0000ff",
   strokeWeight: 2,
   strokeAlign: "outside",
+});
+
+// A focus ring Figma draws as a frame around the box: the element's outline, 2px solid, 2px off it.
+const ringed: FigmaNode = box(120, 40, {
+  fill: "#ffffff",
+  radius: 6,
+  outline: { width: 2, offset: 2, color: "#c800de" },
 });
 
 const labelled: FigmaNode = box(160, 36, {
@@ -226,6 +236,8 @@ const defaults: Json = {
   letterSpacing: 0,
   textCase: "none",
   textDecoration: "none",
+  outline: null,
+  unmeasured: [],
 };
 
 /** A node in format 2: each field at its default left out, a label's typography too, strokeAlign where it is inside a stroke. */
@@ -289,7 +301,7 @@ test.describe("the loader", () => {
   });
 
   test("a format-2 node round-trips to the node it was written from", () => {
-    for (const node of [tinted, dashed, outlined, labelled, smallCaps, placeholder, flex, rootVariant]) {
+    for (const node of [tinted, dashed, outlined, ringed, labelled, smallCaps, placeholder, flex, rootVariant]) {
       // Keyed "a", so a root: the loader marks it.
       expect(restored<FigmaNode>("a", node)).toEqual({ ...node, root: true });
     }
@@ -415,6 +427,7 @@ test.describe("the browser helper", () => {
     ["tinted", tinted],
     ["dashed", dashed],
     ["outlined", outlined],
+    ["ringed", ringed],
     ["labelled", labelled],
     ["small-caps", smallCaps],
     ["placeholder", placeholder],
@@ -496,6 +509,9 @@ test.describe("the browser helper", () => {
     ["outlined", "strokeAlign", outlined, (node) => ({ ...node, strokeAlign: "inside" })],
     ["outlined", "stroke", outlined, (node) => ({ ...node, stroke: "#ff0000" })],
     ["outlined", "dashed", outlined, (node) => ({ ...node, dashed: true })],
+    ["ringed", "outline width", ringed, (node) => ({ ...node, outline: { ...node.outline!, width: 3 } })],
+    ["ringed", "outline offset", ringed, (node) => ({ ...node, outline: { ...node.outline!, offset: 3 } })],
+    ["ringed", "outline colour", ringed, (node) => ({ ...node, outline: { ...node.outline!, color: "#ff0000" } })],
     ["labelled", "label x", labelled, label({ x: 20 })],
     ["labelled", "label y", labelled, label({ y: 10 })],
     ["labelled", "label height", labelled, label({ height: 24 })],
@@ -529,6 +545,33 @@ test.describe("the browser helper", () => {
       await expectToMatchFigma(page.locator(`#${id}`), change(base));
     });
   }
+
+  test("#ringed: an outline drawn dashed fails, as Figma's ring is solid", async ({ page }) => {
+    test.fail();
+    await open(page);
+    await page.locator("#ringed").evaluate((el) => {
+      el.style.outlineStyle = "dashed";
+    });
+    await expectToMatchFigma(page.locator("#ringed"), ringed);
+  });
+
+  test("#ringed: an outline that is see-through fails against Figma's visible ring", async ({ page }) => {
+    test.fail();
+    await open(page);
+    await page.locator("#ringed").evaluate((el) => {
+      el.style.outlineColor = "transparent";
+    });
+    await expectToMatchFigma(page.locator("#ringed"), ringed);
+  });
+
+  test("a child the export couldn't read as an outline is reported as not measured", async ({ page }) => {
+    await open(page);
+    await expectToMatchFigma(page.locator("#ringed"), { ...ringed, unmeasured: ["focus ring"] });
+    expect(test.info().annotations).toContainEqual({
+      type: "figma: not measured",
+      description: "focus ring: absolutely positioned, and not an outline the export can read, so it wasn't compared",
+    });
+  });
 
   test("#flex: a wrapping layout drawn without wrap fails", async ({ page }) => {
     test.fail();

@@ -65,8 +65,13 @@ They are in this skill's `scripts/` folder, not in the project:
   `tokens`, the names of the variables and styles each value is bound to (a text style's own font
   is not repeated; a stroke's only where there is a stroke). A shadow with no blur, offset or
   spread draws nothing and is left out. Colours are `#rrggbb`, or `#rrggbbaa` when see-through.
+  On a component's entry, `outline` is a focus ring Figma draws as a separate frame around the box
+  (an even, solid, fill-less stroke; `{ width, offset, color }` as CSS draws an outline, its
+  colour and weight named as `outline` and `outlineWidth` in `tokens`), and `unmeasured` names by
+  layer every other absolutely positioned child the export can't read as one, which the helper
+  reports rather than drops.
   The file is format 2 (`"format": 2` after `node`): a field at its default (`fill`, `stroke` and
-  `label` null, `strokeWeight` and `radius` 0, `opacity` 1, empty `rings` and `shadows`, letter
+  `label` null, `strokeWeight` and `radius` 0, `opacity` 1, empty `rings`, `shadows` and `unmeasured`, `outline` null, letter
   spacing 0, case and decoration "none", inside stroke align) is left out, and the reader puts it
   back. Its entries are shaped by what the node is: a component set gives an entry per variant,
   and a frame that isn't a component gives an entry for every frame and text under it. Each entry

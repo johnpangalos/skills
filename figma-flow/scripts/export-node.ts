@@ -37,6 +37,16 @@
 // box less its padding and, when auto layout takes the stroke's room (`strokesIncludedInLayout`),
 // less the stroke.
 //
+// `outline` and `unmeasured` (component entries only, not a page's) describe a box's absolutely
+// positioned children: those auto layout doesn't place (layoutPositioning ABSOLUTE), and every
+// child of a box with no auto layout. An even, stroke-only frame or rectangle around the box, with
+// nothing else on it, is a focus ring, and it becomes the box's `outline`: `{ width, offset, color }`
+// as CSS draws an outline (`offset` is the gap from the box's edge to the outline's inner edge, and
+// the corners follow the box's). Its colour and weight are named in `tokens` as `outline` and
+// `outlineWidth`. Every other such child, a second ring, or a ring beside the box's own outside
+// stroke (CSS has one outline) is named by its layer in `unmeasured`, which the helper reports, so
+// nothing is dropped. A hidden child is ignored, as it is everywhere.
+//
 // `label` (a component's first text) and a page's text entries carry the type: `fontFamily`,
 // `fontSize`, `fontWeight`, `lineHeight` (px; a percent is of the font size; null for AUTO),
 // `letterSpacing` (px), `textCase`, `textDecoration`, and `textAlign` where the text has a set
@@ -47,7 +57,8 @@
 //
 // Format 2 (`"format": 2`, after `node`): a field at its default is left out. Those are `fill`,
 // `stroke` and `label` null; `strokeWeight` and `radius` 0; `rings` and `shadows` empty; `opacity`
-// 1; a text's `letterSpacing` 0; `textCase` and `textDecoration` "none"; `strokeAlign` "inside".
+// 1; a text's `letterSpacing` 0; `textCase` and `textDecoration` "none"; `strokeAlign` "inside";
+// `outline` null and `unmeasured` empty.
 // The reader (figma.ts, loadFigmaNodes) fills them back in, so a file without a `format` (written
 // before this) has its absent fields skipped instead.
 //
@@ -235,11 +246,11 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
     };
   }
 
-  // Format 2: a field at its default is left out, and the reader puts it back. `rings` and
-  // `shadows` default to an empty list; the rest to the value here.
+  // Format 2: a field at its default is left out, and the reader puts it back. `rings`, `shadows`
+  // and `unmeasured` default to an empty list; the rest to the value here.
   const defaults: Record<string, unknown> = {
     fill: null, stroke: null, strokeWeight: 0, radius: 0, rings: [], label: null, opacity: 1, shadows: [],
-    letterSpacing: 0, textCase: "none", textDecoration: "none", strokeAlign: "inside",
+    letterSpacing: 0, textCase: "none", textDecoration: "none", strokeAlign: "inside", outline: null, unmeasured: [],
   };
   const isDefault = (key: string, value: unknown) =>
     key in defaults && (Array.isArray(defaults[key]) ? Array.isArray(value) && value.length === 0 : value === defaults[key]);
@@ -326,6 +337,85 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
     });
   }
 
+  // A ring is a frame or a rectangle: the only kinds of child a focus ring is drawn as.
+  const isRing = (child: SceneNode): child is FrameNode | RectangleNode =>
+    child.type === "FRAME" || child.type === "RECTANGLE";
+  // A box's corner radii as CSS draws them: where two adjacent radii are longer than the side between
+  // them, all four are scaled by one factor (CSS's corner overlap rule), so a radius past half a side
+  // comes out as half of it.
+  const cornersOf = (node: RectangleCornerMixin & { width: number; height: number }) => {
+    const radii = [node.topLeftRadius, node.topRightRadius, node.bottomRightRadius, node.bottomLeftRadius];
+    const [tl, tr, br, bl] = radii as [number, number, number, number];
+    const ratio = (side: number, sum: number) => (sum > 0 ? side / sum : Infinity);
+    const scale = Math.min(1, ratio(node.width, tl + tr), ratio(node.width, bl + br), ratio(node.height, tl + bl), ratio(node.height, tr + br));
+    return radii.map((radius) => radius * scale);
+  };
+  // The outline CSS would draw for a ring around its box, or null where the child isn't one. A ring
+  // is unrotated, has no fill, one visible solid stroke of one weight, no dash, no visible effect,
+  // no visible child and full opacity, and sits evenly round the box: its top-left is (-d, -d) and
+  // it is the box's size plus 2d. Its corners must be the box's grown by d (a square box's ring is
+  // square), since the outline's corners follow the box's. `offset` is the gap from the box's edge to
+  // the outline's inner edge, which depends on where Figma puts the stroke.
+  const ringOutline = (box: Box, child: FrameNode | RectangleNode) => {
+    const visible = (items: readonly { visible?: boolean }[]) => items.filter((item) => item.visible !== false);
+    if (child.rotation !== 0 || round(child.opacity) !== 1) return null;
+    if (!Array.isArray(child.fills) || visible(child.fills).length > 0) return null;
+    if (!Array.isArray(child.strokes) || visible(child.strokes).length !== 1) return null;
+    const color = solid(child.strokes);
+    const weight = single(child.strokeWeight);
+    if (color === null || weight === null || child.dashPattern.length > 0) return null;
+    if (visible(child.effects).length > 0) return null;
+    if ("children" in child && child.children.some((grandchild) => grandchild.visible)) return null;
+    const inset = -child.x;
+    if (
+      Math.abs(child.y - child.x) > 0.01 ||
+      Math.abs(child.width - (box.width + 2 * inset)) > 0.01 ||
+      Math.abs(child.height - (box.height + 2 * inset)) > 0.01
+    ) {
+      return null;
+    }
+    const expected = cornersOf(box).map((radius) => (radius === 0 ? 0 : Math.max(radius + inset, 0)));
+    if (cornersOf(child).some((radius, i) => Math.abs(radius - expected[i]!) > 0.01)) return null;
+    const gap = child.strokeAlign === "OUTSIDE" ? inset : child.strokeAlign === "INSIDE" ? inset - weight : inset - weight / 2;
+    return { width: round(weight), offset: round(gap), color };
+  };
+  // A box's outline, and the absolutely positioned children no entry can describe. A box has one
+  // outline: a ring, when it is the only one and the box has no outside stroke of its own. Every
+  // other such child (a second ring included) is named in `unmeasured`, by layer.
+  async function outlineOf(node: Box) {
+    const placed = node.children.filter(
+      (child) => child.visible && (node.layoutMode === "NONE" || ("layoutPositioning" in child && child.layoutPositioning === "ABSOLUTE")),
+    );
+    const rings = placed.filter(isRing).flatMap((child) => {
+      const outline = ringOutline(node, child);
+      return outline ? [{ child, outline }] : [];
+    });
+    const ownOutline = solid(node.strokes) !== null && node.strokeAlign === "OUTSIDE";
+    const ring = rings.length === 1 && !ownOutline ? rings[0] : undefined;
+    const unmeasured = placed.filter((child) => child !== ring?.child).map((child) => child.name);
+    const tokens: Record<string, unknown> = {};
+    if (!ring) return { outline: null, unmeasured, tokens };
+    const colour = await paintToken(ring.child, "strokes");
+    const weight = await fourNames((ring.child.boundVariables ?? {}) as Record<string, VariableAlias | undefined>, [
+      "strokeTopWeight", "strokeRightWeight", "strokeBottomWeight", "strokeLeftWeight",
+    ]);
+    if (colour !== null) tokens.outline = colour;
+    if (weight !== null) tokens.outlineWidth = weight;
+    return { outline: ring.outline, unmeasured, tokens };
+  }
+  // A component's entry: its box, its outline and unmeasured children, and the tokens of the outline.
+  async function entryOf(node: Box) {
+    const { outline, unmeasured, tokens } = await outlineOf(node);
+    const described: Record<string, unknown> = await describe(node, true);
+    const merged = {
+      ...described,
+      outline,
+      unmeasured,
+      ...(Object.keys(tokens).length > 0 && { tokens: { ...(described.tokens as object | undefined), ...tokens } }),
+    };
+    return withoutDefaults(merged);
+  }
+
   // A text node on a page: where it sits, its size, and its type. `wraps` is true when its width
   // is set (the text wraps to it) rather than hugging the text.
   const describeText = async (node: TextNode) =>
@@ -355,13 +445,13 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
   // Components: the node, and its laid-out children one level down.
   async function add(key: string, node: Box, isRoot = false) {
     const own = unique(key);
-    const described = await describe(node, true);
-    entries.push([own, isRoot ? { ...described, x: 0, y: 0 } : described]);
+    const entry = await entryOf(node);
+    entries.push([own, isRoot ? { ...entry, x: 0, y: 0 } : entry]);
     const laidOut = flow(node);
     if (laidOut.length < 2) return;
     for (const child of laidOut) {
       if (!isBox(child)) continue;
-      entries.push([unique(`${own} > ${firstText(child)?.characters ?? child.name}`), await describe(child, true)]);
+      entries.push([unique(`${own} > ${firstText(child)?.characters ?? child.name}`), await entryOf(child)]);
     }
   }
 
