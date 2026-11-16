@@ -1,6 +1,6 @@
 ---
 name: looker
-description: Figma-flow role, spawned by the figma-flow skill. Compares a screenshot of a Figma design with a screenshot of its implementation and lists what differs. Read-only.
+description: Figma-flow role, spawned by the figma-flow:component or figma-flow:page skill. Compares a screenshot of a Figma design with a screenshot of its implementation and lists what differs. Read-only.
 tools: Read
 model: opus
 ---

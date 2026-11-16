@@ -40,6 +40,14 @@ export type FigmaNode = Region & {
    */
   radius: number | [number, number, number, number] | null;
   rings: [color: string, spread: number][];
+  /**
+   * A focus ring Figma draws as a separate frame around the box, which CSS draws as the box's
+   * outline: the ring's width, the gap from the box's edge to its inner edge, and its colour. Null
+   * when there is none (and in an older export, which has none to compare).
+   */
+  outline?: { width: number; offset: number; color: string } | null;
+  /** Absolutely positioned children that the export couldn't read as the outline, by layer name. Reported, not compared. */
+  unmeasured?: string[];
   /** Set by loadFigmaNodes and loadFigmaPage on a root (see nodesOf). Copies of the node keep it. */
   root?: true;
   /** Every shadow that isn't a ring (a blur, an offset, an inset ring), in the order CSS lists them. */
@@ -122,8 +130,8 @@ const TYPOGRAPHY: Json = { letterSpacing: 0, textCase: "none", textDecoration: "
 
 /**
  * Puts back, on a copy, what a format-2 export left out at its default. A text on a page gets its
- * typography and opacity. A box gets the node defaults, its label's typography where there is a
- * label, and a strokeAlign of inside where there is a stroke.
+ * typography and opacity. A box gets the node defaults, its outline and unmeasured children, its
+ * label's typography where there is a label, and a strokeAlign of inside where there is a stroke.
  */
 function restore(node: Json): Json {
   if (node.type === "TEXT") return fillIn(node, { opacity: 1, ...TYPOGRAPHY });
@@ -136,6 +144,8 @@ function restore(node: Json): Json {
     label: null,
     opacity: 1,
     shadows: [],
+    outline: null,
+    unmeasured: [],
   });
   if (node.label !== null) fillIn(node.label as Json, TYPOGRAPHY);
   if (node.stroke !== null && !("strokeAlign" in node)) node.strokeAlign = "inside";
@@ -562,7 +572,9 @@ async function expectFillMatches(element: Locator, sizing: [Sizing, Sizing]) {
  * Compares the values an element is drawn with against its Figma node, exactly: size, opacity,
  * fill, border (or outline), radius, shadows, focus rings, the layout's justify, align, wrap and
  * padding, the min and max sizes, and the label's colour and type. Screenshots are for a person or
- * a model to look at; this is the part that can't be fuzzy.
+ * a model to look at; this is the part that can't be fuzzy. A focus ring Figma draws as a separate
+ * frame is compared as the element's outline (`outline`). A child the export couldn't read as one
+ * (`unmeasured`) is named in a "figma: not measured" annotation; the test still passes on the rest.
  *
  * Two allowances. The box may be under a pixel off: Figma snaps a text box to whole pixels
  * and a browser doesn't, so anything that hugs text differs by a fraction. Colours may
@@ -801,6 +813,25 @@ export async function expectToMatchFigma(
       .toEqual(fourOf<number>(figma.strokeWeight));
     expectSameColor(rendered.stroke, figma.stroke, "border");
     if (styled) expect.soft(rendered.borderStyle, "border style").toBe(lineStyle(figma.dashed));
+  }
+
+  // A focus ring Figma draws as a separate frame: CSS draws it as the outline, a solid line at the
+  // ring's width, offset and colour. Compared only where Figma has one.
+  if (figma.outline) {
+    expect.soft(rendered.outline.style, `outline-style is ${rendered.outline.style}, Figma's is solid`).toBe("solid");
+    expect
+      .soft(rendered.outline.width, `outline-width is ${rendered.outline.width}px, Figma's is ${figma.outline.width}px`)
+      .toBe(figma.outline.width);
+    expect
+      .soft(rendered.outline.offset, `outline-offset is ${rendered.outline.offset}px, Figma's is ${figma.outline.offset}px`)
+      .toBe(figma.outline.offset);
+    expectSameColor(rendered.outline.color, figma.outline.color, "outline-color");
+  }
+  for (const name of figma.unmeasured ?? []) {
+    test.info().annotations.push({
+      type: "figma: not measured",
+      description: `${name}: absolutely positioned, and not an outline the export can read, so it wasn't compared`,
+    });
   }
 
   expectSameColor(rendered.fill, figma.fill, "fill");

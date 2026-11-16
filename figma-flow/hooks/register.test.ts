@@ -179,6 +179,58 @@ test('invoking figma-flow:setup counts as Figma work', async ($, on) => {
   expect(held.deny).toContain('src/fonts.css')
 })
 
+test('invoking figma-flow:component counts as Figma work', async ($, on) => {
+  tools(on, {})
+  on('skill.prompt', (_$, e) => ({ text: e.text }) as never)
+  await $.skill.prompt({ skill: 'figma-flow:component', text: 'x' } as never)
+  await $.tool.call({ tool: 'Edit', file_path: 'src/button.tsx', old_string: 'a', new_string: 'b' })
+  const held = await $.tool.call({ tool: 'Bash', command: 'git commit -m "feat: x"' })
+
+  expect(held.deny).toContain('src/button.tsx')
+})
+
+test('invoking figma-flow:page counts as Figma work', async ($, on) => {
+  tools(on, {})
+  on('skill.prompt', (_$, e) => ({ text: e.text }) as never)
+  await $.skill.prompt({ skill: 'figma-flow:page', text: 'x' } as never)
+  await $.tool.call({ tool: 'Edit', file_path: 'src/page.tsx', old_string: 'a', new_string: 'b' })
+  const held = await $.tool.call({ tool: 'Bash', command: 'git commit -m "feat: x"' })
+
+  expect(held.deny).toContain('src/page.tsx')
+})
+
+test("another plugin's component skill is not Figma work", async ($, on) => {
+  tools(on, {})
+  on('skill.prompt', (_$, e) => ({ text: e.text }) as never)
+  await $.skill.prompt({ skill: 'other:component', text: 'x' } as never)
+  await $.tool.call({ tool: 'Edit', file_path: 'src/button.tsx', old_string: 'a', new_string: 'b' })
+  const ran = await $.tool.call({ tool: 'Bash', command: 'git commit -m "feat: x"' })
+
+  expect(ran.deny).toBe(undefined)
+})
+
+test("another plugin's page skill is not Figma work", async ($, on) => {
+  tools(on, {})
+  on('skill.prompt', (_$, e) => ({ text: e.text }) as never)
+  await $.skill.prompt({ skill: 'other:page', text: 'x' } as never)
+  await $.tool.call({ tool: 'Edit', file_path: 'src/page.tsx', old_string: 'a', new_string: 'b' })
+  const ran = await $.tool.call({ tool: 'Bash', command: 'git commit -m "feat: x"' })
+
+  expect(ran.deny).toBe(undefined)
+})
+
+test('figma-flow:components, figma-flow:pager and xfigma-flow:page are not Figma work', async ($, on) => {
+  tools(on, {})
+  on('skill.prompt', (_$, e) => ({ text: e.text }) as never)
+  for (const skill of ['figma-flow:components', 'figma-flow:pager', 'xfigma-flow:page']) {
+    await $.skill.prompt({ skill, text: 'x' } as never)
+  }
+  await $.tool.call({ tool: 'Edit', file_path: 'src/button.tsx', old_string: 'a', new_string: 'b' })
+  const ran = await $.tool.call({ tool: 'Bash', command: 'git commit -m "feat: x"' })
+
+  expect(ran.deny).toBe(undefined)
+})
+
 test("another plugin's skill named setup is not Figma work", async ($, on) => {
   tools(on, {})
   on('skill.prompt', (_$, e) => ({ text: e.text }) as never)

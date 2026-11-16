@@ -9,8 +9,8 @@ import { loadFigmaExport, nodesOf } from "./figma";
 //
 // A name in `var(...)` or `calc(...)` form is a variable's web code syntax. Any other name is a
 // variable's name (or its web, like `1px`), except `text` (a text style's name) and `effect` (an
-// effect style's name). A name that is none of these fails. A paint style (fill, stroke or
-// textColor bound to a colour style) isn't in the snapshot: its name is "figma: not measured".
+// effect style's name). A name that is none of these fails. A paint style (fill, stroke, outline,
+// or textColor bound to a colour style) isn't in the snapshot: its name is "figma: not measured".
 // `opacity` is not measured either: Figma's opacity variables may be in percent.
 //
 // A variable matches when the export's value equals its value or one of its modes' values. A colour
@@ -61,7 +61,7 @@ function readSnapshot(file: SnapshotFile): Snapshot {
 
 const TOLERANCE = 0.01; // the export rounds to 2 decimals; so does the snapshot's alpha
 const CSS_NAME = /^(var|calc)\(/;
-const PAINT = new Set(["fill", "stroke", "textColor"]);
+const PAINT = new Set(["fill", "stroke", "outline", "textColor"]);
 const SIDED = new Set(["strokeWeight", "radius", "padding"]);
 // Recorded only inside `layout`, which an entry has when two or more children are laid out.
 const LAYOUT = new Set(["gap", "rowGap", "padding"]);
@@ -162,6 +162,8 @@ const READ: Record<string, Read> = {
   fill: (entry) => entry.fill,
   stroke: (entry) => entry.stroke,
   strokeWeight: (entry) => entry.strokeWeight,
+  outline: (entry) => (entry.outline as Json | null)?.color,
+  outlineWidth: (entry) => (entry.outline as Json | null)?.width,
   radius: (entry) => entry.radius,
   opacity: (entry) => entry.opacity,
   width: (entry) => entry.width,
@@ -370,11 +372,12 @@ for (const file of exports) {
 const fixture = readSnapshot({
   Colors: {
     "blue/600": { value: "#155dfc", web: "var(--color-blue-600)" },
+    "fuchsia/600": { value: "#c800de", web: "var(--color-fuchsia-600)" },
     surface: { value: "#ffffff", web: "var(--color-surface)", modes: { Dark: "#101828" } },
   },
   Spacing: { "spacing/2": { value: 8, web: "calc(var(--spacing) * 2)" } },
   Sizing: { "size/80": { value: 320, web: "calc(var(--spacing) * 80)" } },
-  Border: { "border-width/default": { value: 1, web: "1px" } },
+  Border: { "border-width/default": { value: 1, web: "1px" }, "border-width/focus": { value: 2, web: "2px" } },
   Opacity: { "opacity/50": { value: 0.5, web: "var(--opacity-50)" } },
   Typography: {
     "font/sans": { value: "Inter", web: "var(--font-sans)" },
@@ -548,6 +551,14 @@ test.describe("the checker", () => {
   test("a ring matches the style's ring, and a shadow that draws nothing is left out", () => {
     expect(problemsOf({ rings: [["#155dfc", 2]], tokens: { effect: "focus-ring" } })).toEqual([]);
     expect(problemsOf({ tokens: { effect: "nothing" } })).toEqual([]);
+  });
+
+  test("an outline matches its ring's colour and width, and one with no outline fails", () => {
+    const outline = { width: 2, offset: 2, color: "#c800de" };
+    const tokens = { outline: "var(--color-fuchsia-600)", outlineWidth: "2px" };
+    expect(problemsOf({ outline, tokens })).toEqual([]);
+    expect(problemsOf({ outline: { ...outline, width: 3 }, tokens })).toHaveLength(1);
+    expect(problemsOf({ tokens }, 2)).toHaveLength(2);
   });
 
   test("a blur-only style has no shadows to match", () => {

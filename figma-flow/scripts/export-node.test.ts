@@ -46,7 +46,7 @@ const box = (id: string, type: string, name: string, extra: Partial<Fake> = {}):
   minWidth: null, maxWidth: null, minHeight: null, maxHeight: null, counterAxisSpacing: null,
   boundVariables: {}, effectStyleId: "", fillStyleId: "", strokeStyleId: "",
   topLeftRadius: 0, topRightRadius: 0, bottomRightRadius: 0, bottomLeftRadius: 0,
-  strokeTopWeight: 1, strokeRightWeight: 1, strokeBottomWeight: 1, strokeLeftWeight: 1, ...extra,
+  strokeTopWeight: 1, strokeRightWeight: 1, strokeBottomWeight: 1, strokeLeftWeight: 1, rotation: 0, ...extra,
 });
 const text = (id: string, characters: string, extra: Partial<Fake> = {}): Fake => ({
   id, type: "TEXT", name: characters, characters, visible: true, x: 0, y: 0, width: 80, height: 20,
@@ -592,4 +592,175 @@ test("A4: a percent line height is px of the font size; AUTO and a mixed size ar
   const label = text("31:8", "Save", { lineHeight: { unit: "PERCENT", value: 150 }, fontSize: 14 });
   const component = parse(await run([box("31:7", "COMPONENT", "Button", { children: [label] })], "31:7"));
   assert.equal((component["Button"]!.label as { lineHeight: number }).lineHeight, 21);
+});
+
+// A focus ring: an even outside stroke, d out on every side, so the frame is the box's size plus 2d.
+// Its corners default to the box's (radius 4, as in withChild) grown by d.
+const bluePaint = { type: "SOLID", visible: true, color: { r: 0, g: 0.4, b: 1 } };
+const ring = (id: string, name: string, w: number, h: number, d: number, extra: Partial<Fake> = {}): Fake =>
+  box(id, "FRAME", name, {
+    layoutPositioning: "ABSOLUTE", x: -d, y: -d, width: w + 2 * d, height: h + 2 * d,
+    fills: [], strokes: [bluePaint], strokeWeight: 2, strokeAlign: "OUTSIDE",
+    topLeftRadius: 4 + d, topRightRadius: 4 + d, bottomRightRadius: 4 + d, bottomLeftRadius: 4 + d, ...extra,
+  });
+// A 40 x 20 component with a radius of 4, holding the children given.
+const withChild = (...children: Fake[]) =>
+  box("40:2", "COMPONENT", "Button", {
+    width: 40, height: 20, topLeftRadius: 4, topRightRadius: 4, bottomRightRadius: 4, bottomLeftRadius: 4, children,
+  });
+const entryOf = async (node: Fake) => parse(await run([node], node.id))[node.name as string]!;
+
+test("A1: an even ring around a component is its outline, and its colour and weight are named in tokens", async () => {
+  const library: Library = {
+    variables: {
+      "v:fuchsia": { name: "fuchsia/600", codeSyntax: { WEB: "var(--color-fuchsia-600)" } },
+      "v:focus": { name: "border-width/focus", codeSyntax: { WEB: "2px" } },
+    },
+  };
+  const focus = ring("30:3", "focus ring", 40, 20, 2, {
+    strokes: [{ ...bluePaint, color: { r: 200 / 255, g: 0, b: 222 / 255 }, boundVariables: { color: alias("v:fuchsia") } }],
+    boundVariables: { strokeTopWeight: alias("v:focus"), strokeRightWeight: alias("v:focus"), strokeBottomWeight: alias("v:focus"), strokeLeftWeight: alias("v:focus") },
+  });
+  const entry = parse(await runIn(library, [withChild(focus)], ["40:2"]))["Button"]!;
+  assert.deepEqual(entry.outline, { width: 2, offset: 2, color: "#c800de" });
+  assert.deepEqual(entry.tokens, { outline: "var(--color-fuchsia-600)", outlineWidth: "2px" });
+  assert.equal("unmeasured" in entry, false);
+});
+
+test("A1: a Badge's focus ring, with full radii on both, is its outline: 2px outside, 2px apart", async () => {
+  const full = { topLeftRadius: 9999, topRightRadius: 9999, bottomRightRadius: 9999, bottomLeftRadius: 9999 };
+  const badge = box("47:2", "COMPONENT", "Badge", {
+    width: 71, height: 20, cornerRadius: 9999, ...full, children: [ring("47:3", "focus ring", 71, 20, 2, { ...full, strokes: [{ ...bluePaint, color: { r: 0, g: 0.5, b: 0.9 } }] })],
+  });
+  const entry = await entryOf(badge);
+  assert.deepEqual(entry.outline, { width: 2, offset: 2, color: "#0080e6" });
+});
+
+test("A1: the offset is the gap to the outline's inner edge: d outside, d - w inside (negative if d is small), d - w/2 centred", async () => {
+  const offsetOf = async (d: number, align: string) =>
+    (await entryOf(withChild(ring("48:3", "focus ring", 40, 20, d, { strokeAlign: align })))).outline as { offset: number; width: number };
+  assert.equal((await offsetOf(2, "OUTSIDE")).offset, 2);
+  assert.equal((await offsetOf(2, "INSIDE")).offset, 0);
+  assert.equal((await offsetOf(1, "INSIDE")).offset, -1);
+  assert.equal((await offsetOf(2, "CENTER")).offset, 1);
+  assert.equal((await offsetOf(0, "OUTSIDE")).offset, 0);
+  assert.equal((await offsetOf(2, "OUTSIDE")).width, 2);
+});
+
+test("A1 hostile: a ring that isn't an even, stroke-only ring is unmeasured, not an outline", async () => {
+  const cases: [string, Partial<Fake>][] = [
+    ["uneven, (-2,-3)", { x: -2, y: -3 }],
+    ["filled", { fills: white }],
+    ["dashed", { dashPattern: [4, 2] }],
+    ["per-side weights", { strokeWeight: mixed, strokeTopWeight: 1, strokeRightWeight: 2, strokeBottomWeight: 2, strokeLeftWeight: 2 }],
+    ["two stroke paints", { strokes: [bluePaint, bluePaint] }],
+    ["radius 4 where CSS draws 6", { topLeftRadius: 4, topRightRadius: 4, bottomRightRadius: 4, bottomLeftRadius: 4 }],
+    ["a square ring round a rounded box", { topLeftRadius: 0, topRightRadius: 0, bottomRightRadius: 0, bottomLeftRadius: 0 }],
+    ["rotated", { rotation: 45 }],
+    ["an ellipse", { type: "ELLIPSE" }],
+    ["a visible shadow", { effects: [{ type: "DROP_SHADOW", visible: true, radius: 4, spread: 0, offset: { x: 0, y: 1 }, color: { r: 0, g: 0, b: 0, a: 1 } }] }],
+    ["a visible child", { children: [text("48:9", "Dot")] }],
+    ["see-through", { opacity: 0.5 }],
+  ];
+  for (const [name, change] of cases) {
+    const entry = await entryOf(withChild(ring("48:3", "focus ring", 40, 20, 2, change)));
+    assert.equal("outline" in entry, false, name);
+    assert.deepEqual(entry.unmeasured, ["focus ring"], name);
+  }
+});
+
+test("A1: an inside stroke's ring is an outline with offset d - w", async () => {
+  // An inside stroke of 2 on a ring 2 out sits on the box's edge plus 0: offset d - w = 0.
+  const entry = await entryOf(withChild(ring("49:3", "focus ring", 40, 20, 2, { strokeAlign: "INSIDE" })));
+  assert.deepEqual(entry.outline, { width: 2, offset: 0, color: "#0066ff" });
+});
+
+test("A2: every other absolutely positioned child is named in unmeasured; two rings are both unmeasured", async () => {
+  const two = await entryOf(withChild(ring("50:3", "ring a", 40, 20, 2), ring("50:4", "ring b", 40, 20, 2)));
+  assert.equal("outline" in two, false);
+  assert.deepEqual(two.unmeasured, ["ring a", "ring b"]);
+  // A box with its own outside stroke has its outline already, so its ring is unmeasured.
+  const ownStroke = await entryOf(box("50:7", "COMPONENT", "Button", {
+    width: 40, height: 20, topLeftRadius: 4, topRightRadius: 4, bottomRightRadius: 4, bottomLeftRadius: 4,
+    strokes: [bluePaint], strokeWeight: 1, strokeAlign: "OUTSIDE", children: [ring("50:8", "focus ring", 40, 20, 2)],
+  }));
+  assert.equal("outline" in ownStroke, false);
+  assert.deepEqual(ownStroke.unmeasured, ["focus ring"]);
+  // Hidden children are ignored, as they are everywhere.
+  const hidden = await entryOf(withChild(ring("50:9", "focus ring", 40, 20, 2, { visible: false })));
+  assert.equal("outline" in hidden, false);
+  assert.equal("unmeasured" in hidden, false);
+});
+
+test("A2: in a box with no auto layout every child is absolutely positioned: the label is measured, another text is unmeasured", async () => {
+  const plain = box("51:2", "COMPONENT", "Plain", {
+    layoutMode: "NONE", width: 40, height: 20, topLeftRadius: 4, topRightRadius: 4, bottomRightRadius: 4, bottomLeftRadius: 4,
+    children: [text("51:3", "Hello"), text("51:5", "Note"), ring("51:4", "focus ring", 40, 20, 2)],
+  });
+  const entry = await entryOf(plain);
+  assert.equal((entry.outline as { width: number }).width, 2);
+  assert.equal((entry.label as { fontSize: number }).fontSize, 14);
+  assert.deepEqual(entry.unmeasured, ["Note"]);
+});
+
+test("A2: an absolutely positioned text in an auto layout box is the label, so only the other texts are unmeasured", async () => {
+  const entry = await entryOf(withChild(text("52:3", "Badge", { layoutPositioning: "ABSOLUTE" }), text("52:4", "Note", { layoutPositioning: "ABSOLUTE" })));
+  assert.equal("outline" in entry, false);
+  assert.notEqual(entry.label, null);
+  assert.deepEqual(entry.unmeasured, ["Note"]);
+  const label = await entryOf(withChild(text("52:5", "Badge", { layoutPositioning: "ABSOLUTE" })));
+  assert.equal("unmeasured" in label, false);
+});
+
+test("A1: a ring CSS can't draw exactly is unmeasured: a width or offset that isn't whole pixels", async () => {
+  // Centred, a 3px stroke at 2px out sits 0.5px in from the box's edge: Chromium snaps outlines to whole pixels.
+  const centred = await entryOf(withChild(ring("55:3", "focus ring", 40, 20, 2, { strokeWeight: 3, strokeAlign: "CENTER" })));
+  assert.equal("outline" in centred, false);
+  assert.deepEqual(centred.unmeasured, ["focus ring"]);
+  const fractional = await entryOf(withChild(ring("55:4", "focus ring", 40, 20, 2, { strokeWeight: 1.5 })));
+  assert.equal("outline" in fractional, false);
+  assert.deepEqual(fractional.unmeasured, ["focus ring"]);
+  const whole = await entryOf(withChild(ring("55:5", "focus ring", 40, 20, 2, { strokeWeight: 3 })));
+  assert.deepEqual(whole.outline, { width: 3, offset: 2, color: "#0066ff" });
+});
+
+test("A1: a ring whose stroke draws nothing is left out, as a hidden child is; a filled one is still unmeasured", async () => {
+  const cases: [string, Partial<Fake>][] = [
+    ["weight 0", { strokeWeight: 0 }],
+    ["stroke at 0% opacity", { strokes: [{ ...bluePaint, opacity: 0 }] }],
+  ];
+  for (const [name, change] of cases) {
+    const entry = await entryOf(withChild(ring("56:3", "focus ring", 40, 20, 2, change)));
+    assert.equal("outline" in entry, false, name);
+    assert.equal("unmeasured" in entry, false, name);
+  }
+  // Beside a real ring, the silent one changes nothing: the real ring is the outline.
+  const beside = await entryOf(withChild(ring("56:4", "focus ring", 40, 20, 2), ring("56:5", "silent ring", 40, 20, 2, { strokeWeight: 0 })));
+  assert.deepEqual(beside.outline, { width: 2, offset: 2, color: "#0066ff" });
+  assert.equal("unmeasured" in beside, false);
+  // A fill draws something, so the ring is not silent.
+  const filled = await entryOf(withChild(ring("56:6", "focus ring", 40, 20, 2, { strokeWeight: 0, fills: white })));
+  assert.deepEqual(filled.unmeasured, ["focus ring"]);
+});
+
+test("A1: a ring on a laid-out child of a component is that child's outline, and a page's entries have none", async () => {
+  const tab = box("53:3", "INSTANCE", "Tab", {
+    width: 40, height: 20, topLeftRadius: 4, topRightRadius: 4, bottomRightRadius: 4, bottomLeftRadius: 4,
+    children: [ring("53:4", "focus ring", 40, 20, 2)],
+  });
+  const other = box("53:5", "INSTANCE", "Other", { width: 40, height: 20, children: [text("53:6", "Other")] });
+  const row = box("53:2", "COMPONENT", "TabList", { layoutMode: "HORIZONTAL", children: [tab, other] });
+  const nodes = parse(await run([row], "53:2"));
+  assert.equal((nodes["TabList > Tab"]!.outline as { width: number }).width, 2);
+  assert.equal("outline" in nodes["TabList > Other"]!, false);
+  const page = parse(await run([frame("54:1", [box("54:2", "FRAME", "Button", { width: 40, height: 20, topLeftRadius: 4, topRightRadius: 4, bottomRightRadius: 4, bottomLeftRadius: 4, children: [ring("54:3", "focus ring", 40, 20, 2)] })])], "54:1"));
+  assert.equal("outline" in page["Page > Button"]!, false);
+  assert.equal("unmeasured" in page["Page > Button"]!, false);
+});
+
+test("format 2: a component with no absolutely positioned child has no outline or unmeasured fields", async () => {
+  const out = await run([box("55:2", "COMPONENT", "Plain", { children: [text("55:3", "Hi")] })], "55:2");
+  assert.equal("outline" in parse(out)["Plain"]!, false);
+  assert.equal("unmeasured" in parse(out)["Plain"]!, false);
+  assert.doesNotMatch(out, /"outline"|"unmeasured"/);
 });
