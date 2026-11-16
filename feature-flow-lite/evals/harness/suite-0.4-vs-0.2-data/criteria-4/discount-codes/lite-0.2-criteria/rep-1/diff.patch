@@ -1,0 +1,325 @@
+diff --git a/README.md b/README.md
+index 620cc9b..60aef38 100644
+--- a/README.md
++++ b/README.md
+@@ -8,3 +8,7 @@ and password-reset tokens. Standard library only.
+ Money is `Decimal` dollars, rounded to cents half-up (`shop/money.py`).
+ Shipping is a flat $7.95, free once the merchandise subtotal reaches $75.
+ Sales tax is 8.25% of merchandise only; shipping is not taxed.
++One discount code may be applied at a time: SAVE10 takes 10% off and FIVEOFF
++takes $5 off, both capped at the subtotal. Tax is charged on the merchandise
++subtotal after the discount, while the free-shipping threshold uses the
++subtotal before the discount.
+diff --git a/shop/cart.py b/shop/cart.py
+index e202e58..2440c18 100644
+--- a/shop/cart.py
++++ b/shop/cart.py
+@@ -3,6 +3,7 @@
+ from dataclasses import dataclass
+ from decimal import Decimal
+ 
++from shop import discounts
+ from shop.catalog import lookup
+ from shop.money import to_cents
+ 
+@@ -26,6 +27,7 @@ class LineItem:
+ class Cart:
+     def __init__(self):
+         self.items = {}
++        self.code = None
+ 
+     def add(self, sku, qty=1):
+         if qty < 1:
+@@ -47,8 +49,16 @@ class Cart:
+             return Decimal("0.00")
+         return SHIPPING_FLAT
+ 
++    def apply_code(self, code):
++        self.code = discounts.lookup(code)
++
++    def discount(self):
++        if self.code is None:
++            return Decimal("0.00")
++        return discounts.discount_for(self.code, self.subtotal())
++
+     def tax(self):
+-        return to_cents(self.subtotal() * TAX_RATE)
++        return to_cents((self.subtotal() - self.discount()) * TAX_RATE)
+ 
+     def total(self):
+-        return self.subtotal() + self.shipping() + self.tax()
++        return self.subtotal() - self.discount() + self.shipping() + self.tax()
+diff --git a/shop/discounts.py b/shop/discounts.py
+new file mode 100644
+index 0000000..516f99b
+--- /dev/null
++++ b/shop/discounts.py
+@@ -0,0 +1,31 @@
++"""Discount codes and the dollar amount each one takes off."""
++
++from decimal import Decimal
++
++from shop.money import to_cents
++
++
++class InvalidCode(ValueError):
++    pass
++
++
++# canonical code -> dollars off for a merchandise subtotal (not yet capped)
++CODES = {
++    "SAVE10": lambda subtotal: to_cents(subtotal * Decimal("0.10")),
++    "FIVEOFF": lambda subtotal: Decimal("5.00"),
++}
++
++
++def lookup(code):
++    """Return the canonical form of a code, ignoring case."""
++    # ASCII only, so lookalikes such as "ſave10" don't upper-case onto a real code
++    key = code.upper() if isinstance(code, str) and code.isascii() else None
++    if key not in CODES:
++        raise InvalidCode(code) from None
++    return key
++
++
++def discount_for(code, subtotal):
++    """Dollars off a merchandise subtotal, capped at the subtotal and never negative."""
++    amount = CODES[lookup(code)](subtotal)
++    return max(Decimal("0.00"), min(amount, subtotal))
+diff --git a/shop/receipt.py b/shop/receipt.py
+index 6cbbda8..dcbb279 100644
+--- a/shop/receipt.py
++++ b/shop/receipt.py
+@@ -5,11 +5,18 @@ from shop.money import format_money
+ WIDTH = 40
+ 
+ 
+-def _row(label, amount):
+-    value = format_money(amount)
++def _pad(label, value):
+     return label + value.rjust(WIDTH - len(label))
+ 
+ 
++def _row(label, amount):
++    return _pad(label, format_money(amount))
++
++
++def _discount_row(label, amount):
++    return _pad(label, "-" + format_money(amount))
++
++
+ def render(cart):
+     """Render a cart as a fixed-width receipt."""
+     lines = []
+@@ -17,6 +24,8 @@ def render(cart):
+         lines.append(_row(f"{item.qty} x {item.name}", item.total))
+     lines.append("-" * WIDTH)
+     lines.append(_row("Subtotal", cart.subtotal()))
++    if cart.code is not None:
++        lines.append(_discount_row(f"Discount ({cart.code})", cart.discount()))
+     lines.append(_row("Shipping", cart.shipping()))
+     lines.append(_row("Tax", cart.tax()))
+     lines.append(_row("Total", cart.total()))
+diff --git a/tests/test_cart.py b/tests/test_cart.py
+index dbbebdc..cfbbe1b 100644
+--- a/tests/test_cart.py
++++ b/tests/test_cart.py
+@@ -3,6 +3,7 @@ from decimal import Decimal
+ 
+ from shop.cart import Cart
+ from shop.catalog import UnknownProduct
++from shop.discounts import InvalidCode
+ 
+ 
+ class CartTest(unittest.TestCase):
+@@ -29,3 +30,84 @@ class CartTest(unittest.TestCase):
+     def test_unknown_sku(self):
+         with self.assertRaises(UnknownProduct):
+             Cart().add("NOPE")
++
++    def test_no_code_means_no_discount(self):
++        cart = Cart()
++        cart.add("BEAN-ETH", 2)
++        cart.add("FILTER")
++        self.assertIsNone(cart.code)
++        self.assertEqual(cart.discount(), Decimal("0.00"))
++
++    def test_apply_code_any_casing(self):
++        for code in ("save10", "Save10", "SAVE10"):
++            with self.subTest(code=code):
++                cart = Cart()
++                cart.apply_code(code)
++                self.assertEqual(cart.code, "SAVE10")
++
++    def test_second_code_replaces_first(self):
++        cart = Cart()
++        cart.add("BEAN-ETH", 2)
++        cart.add("FILTER")
++        cart.apply_code("SAVE10")
++        cart.apply_code("FIVEOFF")
++        self.assertEqual(cart.code, "FIVEOFF")
++        self.assertEqual(cart.discount(), Decimal("5.00"))
++
++    def test_invalid_code_keeps_previous_code(self):
++        cart = Cart()
++        cart.add("BEAN-ETH", 2)
++        cart.add("FILTER")
++        cart.apply_code("SAVE10")
++        for bad in ("", None, 10, "SAVE10 ", "SAVE1"):
++            with self.subTest(bad=bad), self.assertRaises(InvalidCode) as cm:
++                cart.apply_code(bad)
++            self.assertEqual(cm.exception.args, (bad,))
++            self.assertEqual(cart.code, "SAVE10")
++            self.assertEqual(cart.discount(), Decimal("4.33"))
++
++    def test_invalid_code_with_no_previous_code(self):
++        cart = Cart()
++        with self.assertRaises(InvalidCode) as cm:
++            cart.apply_code("NOPE")
++        self.assertEqual(cm.exception.args, ("NOPE",))
++        self.assertIsNone(cart.code)
++
++    def test_discount_recomputed_on_change(self):
++        cart = Cart()
++        cart.add("BEAN-ETH")
++        cart.apply_code("SAVE10")
++        self.assertEqual(cart.discount(), Decimal("1.85"))
++        cart.add("MUG")
++        self.assertEqual(cart.discount(), Decimal("4.05"))
++
++    def test_fiveoff_never_exceeds_subtotal(self):
++        cart = Cart()
++        cart.add("FILTER")
++        cart.apply_code("FIVEOFF")
++        self.assertEqual(cart.discount(), Decimal("5.00"))
++        cart.remove("FILTER")
++        self.assertEqual(cart.discount(), Decimal("0.00"))
++        self.assertEqual(cart.total(), Decimal("0.00"))
++
++    def test_save10_totals_at_threshold(self):
++        cart = Cart()
++        cart.add("MUG", 2)
++        cart.add("BEAN-ETH")
++        cart.add("FILTER", 2)
++        cart.apply_code("SAVE10")
++        self.assertEqual(cart.subtotal(), Decimal("75.00"))
++        self.assertEqual(cart.shipping(), Decimal("0.00"))
++        self.assertEqual(cart.discount(), Decimal("7.50"))
++        self.assertEqual(cart.tax(), Decimal("5.57"))
++        self.assertEqual(cart.total(), Decimal("73.07"))
++
++    def test_save10_totals_below_threshold(self):
++        cart = Cart()
++        cart.add("BEAN-ETH", 2)
++        cart.add("FILTER")
++        cart.apply_code("SAVE10")
++        self.assertEqual(cart.subtotal(), Decimal("43.25"))
++        self.assertEqual(cart.shipping(), Decimal("7.95"))
++        self.assertEqual(cart.tax(), Decimal("3.21"))
++        self.assertEqual(cart.total(), Decimal("50.08"))
+diff --git a/tests/test_discounts.py b/tests/test_discounts.py
+new file mode 100644
+index 0000000..57b5108
+--- /dev/null
++++ b/tests/test_discounts.py
+@@ -0,0 +1,63 @@
++import unittest
++from decimal import Decimal
++
++from shop import discounts
++from shop.discounts import InvalidCode, discount_for, lookup
++
++
++class LookupTest(unittest.TestCase):
++    def test_canonical_code_for_any_casing(self):
++        self.assertEqual(lookup("save10"), "SAVE10")
++        self.assertEqual(lookup("Save10"), "SAVE10")
++        self.assertEqual(lookup("fiveoff"), "FIVEOFF")
++
++    def test_empty_string_is_invalid(self):
++        with self.assertRaises(InvalidCode) as cm:
++            lookup("")
++        self.assertEqual(cm.exception.args, ("",))
++
++    def test_non_strings_are_invalid(self):
++        for bad in (None, 10, ["SAVE10"]):
++            with self.subTest(bad=bad), self.assertRaises(InvalidCode) as cm:
++                lookup(bad)
++            self.assertEqual(cm.exception.args, (bad,))
++
++    def test_no_fuzzy_matching(self):
++        for bad in ("SAVE10 ", "SAVE1"):
++            with self.subTest(bad=bad), self.assertRaises(InvalidCode) as cm:
++                lookup(bad)
++            self.assertEqual(cm.exception.args, (bad,))
++
++    def test_unicode_lookalikes_are_invalid(self):
++        for bad in ("ſave10", "fıveoff", "ﬁveoff"):
++            with self.subTest(bad=bad), self.assertRaises(InvalidCode):
++                lookup(bad)
++
++    def test_invalid_code_is_a_value_error(self):
++        self.assertTrue(issubclass(InvalidCode, ValueError))
++
++
++class DiscountForTest(unittest.TestCase):
++    def test_save10_rounds_half_up(self):
++        self.assertEqual(discount_for("SAVE10", Decimal("43.25")), Decimal("4.33"))
++
++    def test_fiveoff_on_empty_subtotal_is_zero(self):
++        self.assertEqual(discount_for("FIVEOFF", Decimal("0.00")), Decimal("0.00"))
++
++    def test_fiveoff_capped_at_subtotal(self):
++        self.assertEqual(discount_for("FIVEOFF", Decimal("3.00")), Decimal("3.00"))
++
++    def test_fiveoff_flat_amount(self):
++        self.assertEqual(discount_for("FIVEOFF", Decimal("43.25")), Decimal("5.00"))
++
++    def test_code_is_case_insensitive(self):
++        self.assertEqual(discount_for("save10", Decimal("75.00")), Decimal("7.50"))
++
++    def test_unknown_code_raises(self):
++        with self.assertRaises(InvalidCode) as cm:
++            discount_for("NOPE", Decimal("10.00"))
++        self.assertEqual(cm.exception.args, ("NOPE",))
++
++    def test_codes_table_is_keyed_by_upper_case(self):
++        for code in discounts.CODES:
++            self.assertEqual(code, code.upper())
+diff --git a/tests/test_receipt.py b/tests/test_receipt.py
+index 481ad10..ac1a1f7 100644
+--- a/tests/test_receipt.py
++++ b/tests/test_receipt.py
+@@ -12,3 +12,32 @@ class ReceiptTest(unittest.TestCase):
+         self.assertEqual(lines[0], "2 x Colombia Huila, 250 g" + "$32.00".rjust(15))
+         self.assertTrue(lines[-1].startswith("Total"))
+         self.assertTrue(lines[-1].endswith("$42.59"))
++
++    def test_discount_row_after_subtotal(self):
++        cart = Cart()
++        cart.add("BEAN-ETH", 2)
++        cart.add("FILTER")
++        cart.apply_code("save10")
++        lines = render(cart).splitlines()
++        index = next(i for i, line in enumerate(lines) if line.startswith("Subtotal"))
++        self.assertEqual(lines[index + 1], "Discount (SAVE10)" + "-$4.33".rjust(23))
++        self.assertTrue(lines[index + 2].startswith("Shipping"))
++
++    def test_no_discount_row_without_code(self):
++        cart = Cart()
++        cart.add("BEAN-ETH", 2)
++        self.assertNotIn("Discount", render(cart))
++
++    def test_fiveoff_on_empty_cart_shows_zero_discount(self):
++        cart = Cart()
++        cart.apply_code("FIVEOFF")
++        lines = render(cart).splitlines()
++        self.assertEqual(lines[2], "Discount (FIVEOFF)" + "-$0.00".rjust(22))
++
++    def test_every_line_is_receipt_width(self):
++        cart = Cart()
++        cart.add("BEAN-ETH", 2)
++        cart.add("FILTER")
++        cart.apply_code("SAVE10")
++        for line in render(cart).splitlines():
++            self.assertEqual(len(line), 40)
