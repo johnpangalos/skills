@@ -36,8 +36,8 @@ disagree, it reports the difference and leaves both alone.
 
 Print it with `node <scripts>/print.ts <script> [<node id>…]` and pass the printed code, whole and
 unchanged, as `use_figma`'s `code`. Keep the printed code in a file of its own (`mktemp`), never a
-fixed name in the shared temp folder. It is several KB, full of blanks left by type stripping;
-that is expected.
+fixed name in the shared temp folder. It is several KB, with blanks left by type stripping; that
+is expected, and the hashes below show whether what ran and what was saved are exact.
 
 - **With the plugin's mod running** (the plugin installed with its hooks), put
   `// figma-flow:save <exports folder>/<name>.json` as the code's first line: the mod writes the
@@ -63,8 +63,8 @@ that is expected.
    `@font-face`, a `<link>`, a package that ships the files; a font named in CSS is not served).
    Read CLAUDE.md if there is one.
 2. **Read the Figma files.** The design file's pages, frames and components, and whether its
-   components and variables come from a library (`get_libraries`, or an instance whose main
-   component is remote). From the file that defines them (the library's, when there is one): the
+   components and variables come from a library (an instance whose main component is remote;
+   `get_libraries` may not list a team's own library). From the file that defines them (the library's, when there is one): the
    components, the variables with their code syntax, the text and effect styles, and the font
    families. Note each library component the code doesn't have yet.
 3. **Copy the templates** from this skill's `templates/` folder, keeping the repo's own
@@ -83,10 +83,15 @@ that is expected.
    - `tests/tokens.figma.spec.ts`: the token check (step 7). Fill in its two placeholders: the
      path to the exports folder, and a page whose CSS includes the app's global styles (`/`
      usually).
+   - The other templates come later: `fonts.css` in step 6, the page or component spec in step 9.
+     Their placeholders don't parse, so don't copy them before then.
    - Add a `test:figma` script that runs `playwright test` (with `--config` if the config isn't
      the default one). Install `@playwright/test` and `@types/node` as dev dependencies with the
      repo's package manager, and add Playwright's output folders (`test-results`,
      `playwright-report`) to `.gitignore`.
+   - The config reuses a server already answering on its port (`reuseExistingServer`), whatever app
+     it is. Before the first run, check that nothing else holds the port; if something does, use
+     a free one (in the config and the dev server's own setting) rather than measuring another app.
    - Chromium for Playwright: run `playwright install chromium` with the repo's package runner.
      If that can't run here (no network, not allowed) and a Chromium is installed elsewhere, don't
      put its path in the config: the config already reads `PW_CHROMIUM`, so run the tests as
@@ -116,9 +121,10 @@ that is expected.
    the running app and compares it with Figma's value, whatever defines the custom properties (a
    design system package's CSS, a Tailwind theme, the app's own). It runs with `test:figma`.
    A failure is token drift, or a variable the app's CSS doesn't define: report each one; don't
-   change the tokens or the CSS to make it pass. One exception: on Tailwind v4, where nothing but
-   the theme defines the variables and Tailwind leaves unused ones out of the CSS, the check can't
-   see them. If the repo has Vitest, use `templates/tailwind/theme.test.ts` instead (next to the
+   change the tokens or the CSS to make it pass. Keep it with Tailwind too when something else
+   defines the variables on `:root` (a design system package's CSS). One exception: on Tailwind v4,
+   where nothing but the theme defines the variables and Tailwind leaves unused ones out of the
+   CSS, the check can't see them. If the repo has Vitest, use `templates/tailwind/theme.test.ts` instead (next to the
    theme file, its paths fixed), and delete the browser spec; with no Vitest, keep the spec and
    report the variables it can't see.
 8. **Write the mapping.** Add a "Building from Figma" section to CLAUDE.md (create the file
@@ -138,16 +144,26 @@ that is expected.
      and text under it and one per library instance. Build the page from the export with the
      mapping you just wrote: the library's components and the variables, nothing else, on a page
      the test can open. If the page uses a library component with no code, stop and report it;
-     don't build it. Add a spec from `templates/tests/page.figma.spec.ts`: the viewport set to the
-     frame's size, `expectPageToMatchFigma` with an element or `skip("why")` for every key of the
-     export (copy the keys from the file). A skip is for an entry the helper can't read, never for
-     one whose values fail.
+     don't build it. The export has sizes and styles but not the instances' text properties
+     (labels, descriptions, placeholders, error messages): read those from the instances'
+     `componentProperties` with a read-only `use_figma` call. Figma's auto layout doesn't
+     stretch a child unless it is set to fill, and CSS flex does (`align-items: stretch`), so
+     give each flex container the alignment its Figma frame has (`items-start`,
+     `align-items: flex-start` for the default). The page's root is the frame, from the
+     viewport's top left: if no CSS in the app removes the body's margin, the page does. Add a
+     spec from `templates/tests/page.figma.spec.ts`: the viewport set to the frame's size,
+     `expectPageToMatchFigma` with an element or `skip("why")` for every key of the export (copy
+     the keys from the file). A skip is for an entry the helper can't read, never for one whose
+     values fail.
    - **A component**: if it exists in code, add a page that renders every variant where a test
      can find it, and a spec from `templates/tests/example.figma.spec.ts`. The page doesn't have
      to look like the Figma file. If it doesn't exist in code yet, stop after the export and say
      the spec is ready to add when it is built.
    - Run `test:figma`. On a page you built, fix your page until it passes, at most two rounds;
-     don't change the library, the tokens or the test. On an existing component, a failure is a
+     don't change the library, the tokens or the test. A box in a row or column that is taller or
+     wider than Figma's is nearly always stretched by its parent (above), not the library's: check
+     the parent's alignment before reporting it. If the first run fails with "Execution context was
+     destroyed", the dev server reloaded the page while it prepared its dependencies: run it again. On an existing component, a failure is a
      finding about it: don't change the component. Either way, report each value still failing
      with Figma's value and the rendered value (the comparisons are soft, so one run lists them
      all). Never loosen the test.

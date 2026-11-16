@@ -19,5 +19,6 @@ export default defineConfig({
     // PW_CHROMIUM at a Chromium that is: PW_CHROMIUM=/path/to/chromium pnpm test:figma.
     launchOptions: process.env.PW_CHROMIUM ? { executablePath: process.env.PW_CHROMIUM } : {},
   },
+  // Reuses whatever already answers on the port: keep it one no other app uses.
   webServer: { command: "<DEV SERVER COMMAND>", url, reuseExistingServer: !process.env.CI },
 });

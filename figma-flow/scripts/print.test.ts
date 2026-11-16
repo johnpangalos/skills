@@ -1,5 +1,6 @@
-// `node --test "figma-flow/scripts/*.test.ts"`, from the repo root: print.ts's `check`, which a
-// project uses to confirm an export or a lint saved by hand is exactly what Figma returned.
+// `node --test "figma-flow/scripts/*.test.ts"`, from the repo root: print.ts's printed code, and its
+// `check`, which a project uses to confirm an export or a lint saved by hand is exactly what Figma
+// returned.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
@@ -37,4 +38,13 @@ test("check refuses a file with no hash line, such as the token snapshot", () =>
   const ran = check('{\n  "Colors": {}\n}\n');
   assert.equal(ran.status, 1);
   assert.match(ran.stderr, /no hash line/);
+});
+
+test("the printed code starts at the script, without the comment at the top of its file", () => {
+  for (const script of ["export-node", "lint-node", "export-tokens"]) {
+    const ran = spawnSync(process.execPath, [print, script, "1:2"], { encoding: "utf8" });
+    assert.equal(ran.status, 0, ran.stderr);
+    assert.match(ran.stdout, /^\s*(async function|const|function|type|let)/, script);
+    assert.match(ran.stdout, /\nreturn await \w+\(/, script);
+  }
 });

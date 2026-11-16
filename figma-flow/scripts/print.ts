@@ -57,7 +57,9 @@ if (name === "hash") {
   const entry = /^export default (async function (\w+))/m.exec(source);
   if (!entry) throw new Error(`${name}.ts needs an "export default async function name"`);
 
-  const body = stripTypeScriptTypes(source).replace(entry[0], entry[1]!);
+  // The comment at the top is for people reading the file; leaving it out of the printed code makes
+  // less to pass to use_figma by hand.
+  const body = stripTypeScriptTypes(source).replace(/^(\/\/.*\n)+/, "").replace(entry[0], entry[1]!);
   const call = `await ${entry[2]}(${args.map((arg) => JSON.stringify(arg)).join(", ")})`;
   console.log(
     isHashOnly
