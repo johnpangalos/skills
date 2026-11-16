@@ -282,6 +282,10 @@ type Pseudo = {
   opacity: number;
   rings: [string, number][];
   shadows: Shadow[];
+  /** A corner whose horizontal and vertical radii differ (an ellipse, not a circle). */
+  elliptical: boolean;
+  /** Each property (custom ones aside) that differs from an empty reference pseudo on the element. */
+  changed: string[];
 };
 
 /** The element as it is drawn, for its focus ring. */
@@ -291,9 +295,31 @@ type Painted = {
   outline: { width: number; color: string | null; offset: number; style: string };
   position: string;
   overflow: string[];
+  contain: string;
+  clipPath: string;
+  maskImage: string;
   before: Pseudo;
   after: Pseudo;
 };
+
+/*
+ * What a ring may differ from the reference pseudo on: where its box sits and how big it is, its
+ * corners and its box-shadow. transform-origin and perspective-origin resolve against the box, so
+ * they differ with its size; they move nothing unless transform or perspective is set, which is
+ * checked. Every other property must match the reference, unless its own check below names it.
+ */
+const placement =
+  "position|top|right|bottom|left|inset(-.+)?|width|height|inline-size|block-size|z-index|display|transform-origin|perspective-origin";
+const cornerRadius = "border-((top|bottom)-(left|right)|(start|end)-(start|end))-radius";
+const ringKeeps = new RegExp(`^(${placement}|${cornerRadius}|box-shadow)$`);
+const strayKeeps = new RegExp(`^(${placement}|box-shadow)$`);
+const sideName = "(top|right|bottom|left|block-start|block-end|inline-start|inline-end)";
+const ringChecked = new RegExp(
+  `^(content|background-image|background-color|opacity|transform|translate|scale|rotate|filter|clip-path|margin-${sideName}|border-${sideName}-width|outline-(width|style|color))$`,
+);
+const strayChecked = new RegExp(
+  `^(content|background-image|background-color|border-${sideName}-width|outline-(width|style|color))$`,
+);
 
 /** Each way the outline differs from Figma's, named. */
 function outlineProblems(outline: Painted["outline"], figma: Outline) {
@@ -318,6 +344,10 @@ function ringProblems(name: string, ring: Pseudo, painted: Painted, box: Region,
   if (painted.position === "static") problems.push("the element is position: static, so the ring isn't placed on it");
   if (painted.overflow.some((axis) => axis !== "visible"))
     problems.push(`the element clips its overflow (overflow-x ${painted.overflow[0]}, overflow-y ${painted.overflow[1]}), which clips a ring`);
+  if (/\b(paint|strict|content)\b/.test(painted.contain))
+    problems.push(`the element's contain is ${painted.contain}, which clips a ring`);
+  if (painted.clipPath !== "none") problems.push(`the element's clip-path is ${painted.clipPath}, which clips a ring`);
+  if (painted.maskImage !== "none") problems.push(`the element's mask-image is ${painted.maskImage}, which masks a ring`);
   const sides = ["top", "right", "bottom", "left"] as const;
   const wrong = new Set(sides.map((_, i) => -ring.inset[i]! - painted.borders[i]!).filter((d) => d !== offset));
   for (const drawnOffset of wrong) problems.push(`${name} ring offset is ${drawnOffset}px, Figma's is ${offset}px`);
@@ -336,6 +366,7 @@ function ringProblems(name: string, ring: Pseudo, painted: Painted, box: Region,
   const radii = ring.radius.map((radius) => drawn(radius, { width: ring.size[0]!, height: ring.size[1]! }));
   if (radii.some((radius, i) => radius !== expectedRadii[i]))
     problems.push(`${name} ring radius (top left, top right, bottom right, bottom left) is ${radii}, Figma's is ${expectedRadii}`);
+  if (ring.elliptical) problems.push(`${name} ring corners are elliptical, Figma's are circular`);
   if (!emptyContent(ring.content)) problems.push(`${name} content is ${ring.content}, the ring's must be ""`);
   if (ring.backgroundImage !== "none") problems.push(`${name} background-image is set, the ring is a box-shadow only`);
   if (ring.outlined) problems.push(`${name} draws an outline of its own, the ring is a box-shadow only`);
@@ -345,6 +376,8 @@ function ringProblems(name: string, ring: Pseudo, painted: Painted, box: Region,
   if (ring.borders.some((border) => border > 0)) problems.push(`${name} has a border, the ring has none`);
   if (ring.opacity !== 1) problems.push(`${name} opacity is ${ring.opacity}, Figma's is 1`);
   if (ring.shadows.length > 0) problems.push(`${name} has a shadow that isn't a ring (a blur, an offset or an inset)`);
+  const sets = ring.changed.filter((property) => !ringKeeps.test(property) && !ringChecked.test(property));
+  if (sets.length > 0) problems.push(`${name} sets ${sets.join(", ")}, the ring must draw only its box-shadow`);
   if (ring.rings.length !== 1) {
     problems.push(`${name} has ${ring.rings.length} rings, Figma's has one`);
   } else {
@@ -370,6 +403,8 @@ function strayPaint(pseudo: Pseudo): string[] {
   if (pseudo.borders.some((border) => border > 0)) paint.push("a border");
   if (pseudo.rings.length + pseudo.shadows.length > 0) paint.push("a box-shadow");
   if (pseudo.outlined) paint.push("an outline");
+  const sets = pseudo.changed.filter((property) => !strayKeeps.test(property) && !strayChecked.test(property));
+  if (sets.length > 0) paint.push(`sets ${sets.join(", ")}`);
   return paint;
 }
 
@@ -820,8 +855,28 @@ export async function expectToMatchFigma(
     const { rings, shadows } = layers(style);
 
     // A ::before or ::after as it is drawn: a focus ring Figma's Simple Design System draws as one.
+    // `changed` is read against the same pseudo on an empty child of the element (so inherited values
+    // match), which is removed again: it names every property the author set, not only the ones
+    // checked by name.
     const pseudo = (which: "::before" | "::after"): Pseudo => {
       const computed = getComputedStyle(el, which);
+      const reference = document.createElement("span");
+      reference.setAttribute("data-figma-ref", "");
+      const sheet = document.createElement("style");
+      sheet.textContent = `[data-figma-ref]${which}{content:"";position:absolute}`;
+      el.append(reference);
+      document.head.append(sheet);
+      let changed: string[] = [];
+      try {
+        const expected = getComputedStyle(reference, which);
+        const names = Array.from({ length: computed.length }, (_, i) => computed[i]!);
+        changed = names.filter(
+          (name) => !name.startsWith("--") && computed.getPropertyValue(name) !== expected.getPropertyValue(name),
+        );
+      } finally {
+        reference.remove();
+        sheet.remove();
+      }
       const painted = layers(computed);
       const drawn = computed.display !== "none" && computed.content !== "none" && computed.content !== "normal";
       return {
@@ -844,6 +899,11 @@ export async function expectToMatchFigma(
         opacity: parseFloat(computed.opacity),
         rings: painted.rings,
         shadows: painted.shadows,
+        elliptical: corners.some((corner) => {
+          const [across, down = across] = computed[`border${corner}Radius`].split(" ");
+          return parseFloat(across!) !== parseFloat(down!);
+        }),
+        changed,
       };
     };
 
@@ -931,6 +991,9 @@ export async function expectToMatchFigma(
       radius: corners.map((corner) => parseFloat(style[`border${corner}Radius`])),
       position: style.position,
       overflow: [style.overflowX, style.overflowY],
+      contain: style.contain,
+      clipPath: style.clipPath,
+      maskImage: style.maskImage,
       before: pseudo("::before"),
       after: pseudo("::after"),
       rings,
@@ -1002,8 +1065,8 @@ export async function expectToMatchFigma(
 
   // A focus ring Figma draws as a separate frame. CSS draws it as the element's own outline (a solid
   // line at the ring's width, offset and colour), or, where the element draws no outline of its own,
-  // as an offset ::before or ::after with one spread-only box-shadow: how Figma's Simple Design
-  // System draws focus. Compared only where Figma has one (focusRingProblems says how).
+  // as an offset ::before or ::after that draws only one spread-only box-shadow: how Figma's Simple
+  // Design System draws focus. Compared only where Figma has one (focusRingProblems says how).
   if (figma.outline) {
     expect
       .soft(

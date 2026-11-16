@@ -661,6 +661,23 @@ test.describe("the browser helper", () => {
       '#sdsafter::before { content: "X"; position: absolute; inset: -2px }',
       ringed,
     ],
+    ["a mask-image", "sdsringed", "#sdsringed::before { mask-image: linear-gradient(transparent, transparent) !important }", ringed],
+    ["a mix-blend-mode", "sdsringed", "#sdsringed::before { mix-blend-mode: difference !important }", ringed],
+    ["a backdrop-filter", "sdsringed", "#sdsringed::before { backdrop-filter: invert(1) !important }", ringed],
+    [
+      "a backdrop-filter on the other pseudo, ::after",
+      "sdsringed",
+      '#sdsringed::after { content: ""; position: absolute; inset: 0; backdrop-filter: invert(1) }',
+      ringed,
+    ],
+    [
+      "a border-image with a width and no border",
+      "sdsringed",
+      "#sdsringed::before { border-style: solid !important; border-width: 0 !important; border-image: linear-gradient(red, red) 1 / 6px !important }",
+      ringed,
+    ],
+    ["an elliptical corner, 8px / 2px", "sdsringed", "#sdsringed::before { border-radius: 8px / 2px !important }", ringed],
+    ["contain: paint on the element", "sdsringed", "#sdsringed { contain: paint !important }", ringed],
   ];
   for (const [label, id, css, figma] of ringHostiles) {
     test(`#${id}: a ring with ${label} fails against Figma's ring`, async ({ page }) => {
