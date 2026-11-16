@@ -1,0 +1,328 @@
+diff --git a/README.md b/README.md
+index 620cc9b..5eb5c54 100644
+--- a/README.md
++++ b/README.md
+@@ -1,7 +1,7 @@
+ # shop
+ 
+ Checkout logic for a small online coffee shop: catalog, cart totals, receipts,
+-and password-reset tokens. Standard library only.
++stock/inventory reservations, and password-reset tokens. Standard library only.
+ 
+     ./check.sh        # lint + unit tests (run before every commit)
+ 
+diff --git a/shop/inventory.py b/shop/inventory.py
+new file mode 100644
+index 0000000..9bb8a52
+--- /dev/null
++++ b/shop/inventory.py
+@@ -0,0 +1,89 @@
++"""Thread-safe stock on hand, with reservations that hold units until settled."""
++
++import threading
++from dataclasses import dataclass
++
++from shop import catalog
++
++
++class OutOfStock(ValueError):
++    pass
++
++
++class ReservationError(ValueError):
++    pass
++
++
++@dataclass(frozen=True, eq=False)
++class Reservation:
++    """Units of one SKU held by an Inventory; compared by identity."""
++
++    sku: str
++    qty: int
++
++
++def _check_sku(sku):
++    try:
++        catalog.PRODUCTS[sku]
++    except (KeyError, TypeError):
++        raise catalog.UnknownProduct(sku) from None
++
++
++def _check_stock(count):
++    if type(count) is not int or count < 0:
++        raise ValueError("stock must be a non-negative int")
++
++
++def _check_qty(qty):
++    if type(qty) is not int or qty < 1:
++        raise ValueError("qty must be a positive int")
++
++
++class Inventory:
++    """Units on hand per SKU, shared safely between threads."""
++
++    def __init__(self, stock):
++        """Copy the on-hand counts, each of which must be a non-negative int."""
++        self._on_hand = dict(stock)
++        for count in self._on_hand.values():
++            _check_stock(count)
++        self._lock = threading.Lock()
++        self._open = {}  # Reservation -> (sku, qty) as recorded at reserve time
++
++    def available(self, sku):
++        """Return units on hand minus units held by open reservations."""
++        _check_sku(sku)
++        with self._lock:
++            return self._available_locked(sku)
++
++    def reserve(self, sku, qty):
++        """Hold qty units of a SKU and return the Reservation."""
++        _check_sku(sku)
++        _check_qty(qty)
++        with self._lock:
++            free = self._available_locked(sku)
++            if qty > free:
++                raise OutOfStock(f"{sku}: requested {qty}, available {free}")
++            reservation = Reservation(sku, qty)
++            self._open[reservation] = (sku, qty)
++            return reservation
++
++    def commit(self, reservation):
++        """Consume a reservation's units for good."""
++        with self._lock:
++            sku, qty = self._settle_locked(reservation)
++            self._on_hand[sku] -= qty
++
++    def release(self, reservation):
++        """Return a reservation's units to availability."""
++        with self._lock:
++            self._settle_locked(reservation)
++
++    def _available_locked(self, sku):
++        held = sum(qty for held_sku, qty in self._open.values() if held_sku == sku)
++        return self._on_hand.get(sku, 0) - held
++
++    def _settle_locked(self, reservation):
++        if not isinstance(reservation, Reservation) or reservation not in self._open:
++            raise ReservationError("reservation is not open in this inventory")
++        return self._open.pop(reservation)
+diff --git a/tests/test_inventory.py b/tests/test_inventory.py
+new file mode 100644
+index 0000000..a7f52f7
+--- /dev/null
++++ b/tests/test_inventory.py
+@@ -0,0 +1,214 @@
++import dataclasses
++import threading
++import unittest
++from decimal import Decimal
++from unittest import mock
++
++from shop import catalog
++from shop.catalog import UnknownProduct
++from shop.inventory import Inventory, OutOfStock, Reservation, ReservationError
++
++
++def race(actions):
++    """Run each action in its own thread, all released at once; return (index, error type or None)."""
++    barrier = threading.Barrier(len(actions))
++    results = []
++
++    def run(index, action):
++        barrier.wait()
++        try:
++            action()
++            results.append((index, None))
++        except Exception as exc:
++            results.append((index, type(exc)))
++
++    threads = [threading.Thread(target=run, args=(i, a)) for i, a in enumerate(actions)]
++    for thread in threads:
++        thread.start()
++    for thread in threads:
++        thread.join()
++    return sorted(results)
++
++
++class InventoryTest(unittest.TestCase):
++    def test_copies_stock_dict(self):
++        stock = {"MUG": 2}
++        inv = Inventory(stock)
++        stock["MUG"] = 50
++        stock["FILTER"] = 9
++        self.assertEqual(inv.available("MUG"), 2)
++        self.assertEqual(inv.available("FILTER"), 0)
++
++    def test_empty_stock_is_valid(self):
++        self.assertEqual(Inventory({}).available("MUG"), 0)
++
++    def test_non_catalog_key_constructs_but_lookup_raises(self):
++        inv = Inventory({"NOPE": 3})
++        with self.assertRaises(UnknownProduct):
++            inv.available("NOPE")
++        with self.assertRaises(UnknownProduct):
++            inv.reserve("NOPE", 1)
++
++    def test_rejects_bad_counts(self):
++        for count in (-1, 2.0, True, "3", None):
++            with self.subTest(count=count):
++                with self.assertRaises(ValueError) as ctx:
++                    Inventory({"MUG": count})
++                self.assertEqual(str(ctx.exception), "stock must be a non-negative int")
++
++    def test_available_unknown_sku(self):
++        inv = Inventory({"MUG": 1})
++        for sku in ("NOPE", "", None, ["MUG"]):
++            with self.subTest(sku=sku):
++                with self.assertRaises(UnknownProduct):
++                    inv.available(sku)
++                with self.assertRaises(UnknownProduct):
++                    inv.reserve(sku, 1)
++
++    def test_catalog_consulted_at_call_time(self):
++        products = {"NEW": ("New thing", Decimal("1.00"))}
++        with mock.patch.object(catalog, "PRODUCTS", products):
++            inv = Inventory({"NEW": 2})
++            self.assertEqual(inv.available("NEW"), 2)
++        with self.assertRaises(UnknownProduct):
++            inv.available("NEW")
++
++    def test_missing_catalog_sku_has_zero_on_hand(self):
++        inv = Inventory({})
++        self.assertEqual(inv.available("MUG"), 0)
++        with self.assertRaises(OutOfStock):
++            inv.reserve("MUG", 1)
++
++    def test_reserve_returns_reservation(self):
++        inv = Inventory({"MUG": 5})
++        reservation = inv.reserve("MUG", 2)
++        self.assertIsInstance(reservation, Reservation)
++        self.assertEqual(reservation.sku, "MUG")
++        self.assertEqual(reservation.qty, 2)
++        self.assertEqual(inv.available("MUG"), 3)
++
++    def test_reserve_rejects_bad_qty(self):
++        inv = Inventory({"MUG": 5})
++        for qty in (0, -1, 1.0, 2.5, "1", None, True, False):
++            with self.subTest(qty=qty):
++                with self.assertRaises(ValueError) as ctx:
++                    inv.reserve("MUG", qty)
++                self.assertNotIsInstance(ctx.exception, OutOfStock)
++                self.assertEqual(str(ctx.exception), "qty must be a positive int")
++        self.assertEqual(inv.available("MUG"), 5)
++
++    def test_reserve_more_than_available_holds_nothing(self):
++        inv = Inventory({"MUG": 2})
++        with self.assertRaises(OutOfStock) as ctx:
++            inv.reserve("MUG", 3)
++        self.assertEqual(str(ctx.exception), "MUG: requested 3, available 2")
++        self.assertEqual(inv.available("MUG"), 2)
++
++    def test_huge_qty_is_out_of_stock(self):
++        inv = Inventory({"MUG": 2})
++        with self.assertRaises(OutOfStock):
++            inv.reserve("MUG", 10**30)
++        self.assertEqual(inv.available("MUG"), 2)
++
++    def test_reserve_exactly_available(self):
++        inv = Inventory({"MUG": 2})
++        inv.reserve("MUG", 2)
++        self.assertEqual(inv.available("MUG"), 0)
++
++    def test_commit_removes_units_for_good(self):
++        inv = Inventory({"MUG": 5})
++        reservation = inv.reserve("MUG", 2)
++        inv.commit(reservation)
++        self.assertEqual(inv.available("MUG"), 3)
++        inv.reserve("MUG", 3)
++        self.assertEqual(inv.available("MUG"), 0)
++        with self.assertRaises(OutOfStock):
++            inv.reserve("MUG", 1)
++
++    def test_release_returns_units(self):
++        inv = Inventory({"MUG": 5})
++        reservation = inv.reserve("MUG", 2)
++        inv.release(reservation)
++        self.assertEqual(inv.available("MUG"), 5)
++
++    def test_each_reservation_settles_once(self):
++        cases = [
++            ("commit", "commit"),
++            ("release", "release"),
++            ("commit", "release"),
++            ("release", "commit"),
++        ]
++        for first, second in cases:
++            with self.subTest(first=first, second=second):
++                inv = Inventory({"MUG": 5})
++                reservation = inv.reserve("MUG", 2)
++                getattr(inv, first)(reservation)
++                before = inv.available("MUG")
++                with self.assertRaises(ReservationError) as ctx:
++                    getattr(inv, second)(reservation)
++                self.assertEqual(str(ctx.exception), "reservation is not open in this inventory")
++                self.assertEqual(inv.available("MUG"), before)
++
++    def test_foreign_or_fake_reservation_rejected(self):
++        inv = Inventory({"MUG": 5})
++        other = Inventory({"MUG": 5})
++        foreign = other.reserve("MUG", 2)
++        fake = Reservation("MUG", 2)
++        for bogus in (foreign, fake, None):
++            for settle in (inv.commit, inv.release):
++                with self.subTest(bogus=bogus, settle=settle.__name__):
++                    with self.assertRaises(ReservationError):
++                        settle(bogus)
++        self.assertEqual(inv.available("MUG"), 5)
++        self.assertEqual(other.available("MUG"), 3)
++
++    def test_reservation_is_frozen(self):
++        reservation = Inventory({"MUG": 5}).reserve("MUG", 2)
++        with self.assertRaises(dataclasses.FrozenInstanceError):
++            reservation.qty = 1
++
++    def test_settlement_ignores_tampered_fields(self):
++        inv = Inventory({"MUG": 5})
++        reservation = inv.reserve("MUG", 1)
++        object.__setattr__(reservation, "qty", 4)
++        object.__setattr__(reservation, "sku", "FILTER")
++        inv.commit(reservation)
++        self.assertEqual(inv.available("MUG"), 4)
++        self.assertEqual(inv.available("FILTER"), 0)
++
++    def test_equal_reservations_are_distinct(self):
++        inv = Inventory({"MUG": 5})
++        first = inv.reserve("MUG", 1)
++        second = inv.reserve("MUG", 1)
++        self.assertIsNot(first, second)
++        inv.commit(first)
++        self.assertEqual(inv.available("MUG"), 3)
++        inv.release(second)
++        self.assertEqual(inv.available("MUG"), 4)
++        with self.assertRaises(ReservationError):
++            inv.release(second)
++
++    def test_threads_cannot_oversell(self):
++        inv = Inventory({"MUG": 100})
++        results = race([lambda: inv.reserve("MUG", 1)] * 200)
++        errors = [error for _, error in results]
++        self.assertEqual(errors.count(None), 100)
++        self.assertEqual(errors.count(OutOfStock), 100)
++        self.assertEqual(inv.available("MUG"), 0)
++
++    def test_concurrent_settle_only_one_succeeds(self):
++        inv = Inventory({"MUG": 1})
++        reservation = inv.reserve("MUG", 1)
++        actions = [lambda: inv.commit(reservation)] * 25 + [lambda: inv.release(reservation)] * 25
++        results = race(actions)
++        winners = [index for index, error in results if error is None]
++        self.assertEqual(len(winners), 1)
++        self.assertEqual(
++            [error for _, error in results if error is not None],
++            [ReservationError] * 49,
++        )
++        expected = 0 if winners[0] < 25 else 1
++        self.assertEqual(inv.available("MUG"), expected)
++        if expected == 0:
++            with self.assertRaises(OutOfStock):
++                inv.reserve("MUG", 1)
