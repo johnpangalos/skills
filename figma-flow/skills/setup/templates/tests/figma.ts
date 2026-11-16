@@ -3,7 +3,7 @@ import { expect, test, type Locator } from "@playwright/test";
 
 export type Region = { x: number; y: number; width: number; height: number };
 
-/** A shadow with a blur. Its colour is "#rrggbb", or "#rrggbbaa" when its alpha is below 1, as every colour in an export is. */
+/** A shadow that isn't a ring. Its colour is "#rrggbb", or "#rrggbbaa" when its alpha is below 1, as every colour in an export is. */
 export type Shadow = { x: number; y: number; blur: number; spread: number; color: string; inset: boolean };
 
 /**
@@ -37,7 +37,7 @@ export type FigmaNode = Region & {
    */
   radius: number | [number, number, number, number] | null;
   rings: [color: string, spread: number][];
-  /** Shadows with a blur, in the order CSS lists them: what isn't a ring. */
+  /** Every shadow that isn't a ring (a blur, an offset, an inset ring), in the order CSS lists them. */
   shadows?: Shadow[];
   minWidth?: number;
   maxWidth?: number;
@@ -382,17 +382,18 @@ export async function expectToMatchFigma(element: Locator, figma: FigmaNode, { w
     const corners = ["TopLeft", "TopRight", "BottomRight", "BottomLeft"] as const;
     const borders = sides.map((side) => px(style[`border${side}Width`]));
 
-    // box-shadow layers: a spread-only layer (no blur, no offset) is a ring, [colour, spread],
-    // outermost first; a layer with a blur is a shadow. Fully transparent layers are neither.
+    // box-shadow layers: a spread-only layer (no blur, no offset, not inset) is a ring, [colour,
+    // spread], outermost first; every other layer is a shadow, an inset ring included. Fully
+    // transparent layers are neither.
     const rings: [string, number][] = [];
     const shadows: { x: number; y: number; blur: number; spread: number; color: string; inset: boolean }[] = [];
     for (const layer of style.boxShadow.split(/,(?![^(]*\))/).map((part) => part.trim())) {
-      const ring = layer.match(/^(.+?) 0px 0px 0px ([\d.]+)px$/);
+      const ring = layer.match(/^(.+?) 0px 0px 0px (-?[\d.]+)px$/);
       const ringColor = ring && hex(ring[1]!);
-      if (ring && ringColor && Number(ring[2]) > 0) rings.push([ringColor, Number(ring[2])]);
+      if (ring && ringColor && Number(ring[2]) !== 0) rings.push([ringColor, Number(ring[2])]);
       const shadow = layer.match(/^(.+?) (-?[\d.]+)px (-?[\d.]+)px (-?[\d.]+)px (-?[\d.]+)px( inset)?$/);
       const shadowColor = shadow && hex(shadow[1]!);
-      if (shadow && shadowColor && Number(shadow[4]) > 0) {
+      if (shadow && shadowColor && !ring) {
         shadows.push({
           x: Number(shadow[2]),
           y: Number(shadow[3]),

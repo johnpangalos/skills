@@ -243,6 +243,22 @@ test("A1: a spread-only shadow is a ring, and a shadow with blur is not", async 
   assert.deepEqual(entry.shadows, []);
 });
 
+test("A1: an inset ring and an offset shadow with no blur are shadows, not rings, and not lost", async () => {
+  const black = { r: 0, g: 0, b: 0, a: 1 };
+  const node = box("13:2", "FRAME", "Inset", {
+    effects: [
+      { type: "INNER_SHADOW", visible: true, radius: 0, spread: 1, offset: { x: 0, y: 0 }, color: black },
+      { type: "DROP_SHADOW", visible: true, radius: 0, spread: 0, offset: { x: 0, y: 1 }, color: { ...black, a: 0.05 } },
+    ],
+  });
+  const entry = parse(await run([frame("13:1", [node])], "13:1"))["Page > Inset"]!;
+  assert.deepEqual(entry.rings, []);
+  assert.deepEqual(entry.shadows, [
+    { x: 0, y: 0, blur: 0, spread: 1, color: "#000000", inset: true },
+    { x: 0, y: 1, blur: 0, spread: 0, color: "#0000000d", inset: false },
+  ]);
+});
+
 test("A1 hostile: a hidden shadow or ring is left out, and a dash needs a stroke", async () => {
   const hidden = box("11:2", "FRAME", "Hidden", {
     effects: [

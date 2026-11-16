@@ -23,8 +23,8 @@
 // What a box records: its size and position, `fill`, `stroke` and `strokeWeight` (a number, or
 // top, right, bottom, left when the sides differ), `strokeAlign` and `dashed` (with a stroke only),
 // `radius` (a number, or top-left, top-right, bottom-right, bottom-left when the corners differ),
-// `rings` (spread-only shadows, a focus ring: colour and spread), `shadows` (the others, with blur:
-// x, y, blur, spread, colour, inset), `opacity`, `sizing` (hug, fill or fixed, across then down),
+// `rings` (drop shadows with no blur and no offset, a focus ring: colour and spread), `shadows`
+// (every other visible shadow, an inset ring included: x, y, blur, spread, colour, inset), `opacity`, `sizing` (hug, fill or fixed, across then down),
 // and `minWidth`/`maxWidth`/`minHeight`/`maxHeight` where set. Colours are "#rrggbb", or
 // "#rrggbbaa" when see-through. `layout` (two or more laid-out children) adds `justify` and `align`
 // in CSS's words, left out where a child fills that axis, and `wrap` with `rowGap` when it wraps.
@@ -198,6 +198,9 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
       (effect): effect is DropShadowEffect | InnerShadowEffect =>
         (effect.type === "DROP_SHADOW" || effect.type === "INNER_SHADOW") && effect.visible !== false,
     );
+    // A ring: a drop shadow that only spreads, with no blur and no offset.
+    const isRing = (effect: DropShadowEffect | InnerShadowEffect) =>
+      effect.type === "DROP_SHADOW" && effect.radius === 0 && effect.offset.x === 0 && effect.offset.y === 0;
     return {
       id: node.id,
       x: node.x,
@@ -211,9 +214,7 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
       // One radius, or top-left, top-right, bottom-right, bottom-left when the corners differ.
       radius: radius ?? [node.topLeftRadius, node.topRightRadius, node.bottomRightRadius, node.bottomLeftRadius],
       // Spread-only shadows are how Figma draws a focus ring: [colour, spread], outermost first.
-      rings: shadows.flatMap((effect) =>
-        effect.type === "DROP_SHADOW" && effect.radius === 0 ? [[hex(effect.color, effect.color.a), effect.spread ?? 0]] : [],
-      ),
+      rings: shadows.flatMap((effect) => (isRing(effect) ? [[hex(effect.color, effect.color.a), effect.spread ?? 0]] : [])),
       label: label
         ? {
             x: label.x,
@@ -242,9 +243,9 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
       // Inside (a CSS border), outside (an outline) or centred (half each, which CSS can't draw).
       ...(stroke !== null && { strokeAlign: node.strokeAlign.toLowerCase() }),
       ...(stroke !== null && node.dashPattern.length > 0 && { dashed: true }),
-      // Shadows with blur, in the order CSS lists them: what isn't a ring.
+      // Every other shadow, in the order CSS lists them: a blur, an offset, or an inset ring.
       shadows: shadows
-        .filter((effect) => effect.radius > 0)
+        .filter((effect) => !isRing(effect))
         .map((effect) => ({
           x: effect.offset.x,
           y: effect.offset.y,
