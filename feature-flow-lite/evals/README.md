@@ -505,6 +505,83 @@ None showed a gain. Run eagerly they made react-aria 2–3× slower (section 15)
 - **Haiku panelists are noisy** (20 must-fixes) and missed a HEAD case for the third build running. The Opus final gate didn't catch it.
 - One build each: worth repeating Sonnet panelists before changing the default.
 
+### 21. Cutting the 0.3 flow's cost
+
+The shipped flow spends about $7 a chi-etag build. Nearly half of that is the Opus orchestrator ($2.85 in the 0.3 build), and of that about $1 is its own output. The rest is cache reads and writes of a context that grows to 140–160k tokens. Each idea below is a variant of 0.3 (`harness/variants/<name>/`) or an arm setting. Every arm copies `lite-shipped-0.3`: the working-tree skill, the check cache on, heavy-limiter loaded, `SendMessage` allowed, session persistence kept.
+
+| Arm | What changes |
+|---|---|
+| `lite-0.3-lean-orch` | **Idea 1 + 2, orchestrator tokens.** The criteria go to `criteria.md` and the request, base, checks, sibling and checklist to `brief.md` in the scratchpad; handoffs point at the two files instead of restating them. Checks write to a log, and only exit codes and failing lines are read. No diffs or logs read into the main thread, one line between tool calls, a report of at most 15 lines. Gatekeeper returns capped at about 20 lines: must-fixes with their repro, wrong criteria only, at most 3 nits, one `PROBED:` line instead of every passed probe. |
+| `lite-0.3-orch-low` | **Idea 3.** The orchestrator at effort `low` (`--effort low`); every agent's pin unchanged. |
+| `lite-0.3-sonnet-orch` | **Idea 3.** The orchestrator on Sonnet at medium; every agent's pin unchanged, so the criteria-checker and gatekeepers stay Opus. |
+| `lite-0.3-one-fix-round` | **Idea 4.** Panel, then one fix round, and the panel members are not continued to verify: the fresh final gate gets every must-fix with its repro under `RULED ON:`, reruns them, and reviews the whole change. If all three panelists say yes with no must-fix, the panel decides and there is no final gate. The final gate's own loop is unchanged. |
+| `lite-0.3-two-panel` | **Idea 4.** Two panelists: request+repo, and edges. |
+| `lite-0.3-sonnet-repo-seat` | **Idea 5.** The repo seat is a new `repo-panelist` agent (the gatekeeper's prompt, pinned to Sonnet at high); request and edges stay Opus gatekeepers. |
+| `lite-0.3-combo` | **Idea 6.** `lean-orch` + `one-fix-round`, with the orchestrator at effort `low`. |
+
+One build per idea on each task, run two at a time per 4-CPU machine, on this machine and four cloud sessions; the three ideas that looked promising on chi-etag (effort `low`, one fix round, the combination) got a second or third chi-etag build. Same-day control: one more `lite-shipped-0.3` chi-etag build. Costs are list prices from `threads.py`.
+
+**chi-etag** (shipped 0.3: $6.99 and today's control $8.35; the Opus panel's 4 earlier builds $4.85–8.83, mean $6.68):
+
+| Arm | Cost | Main / sub | Main output | Main context | Time | Outcome | Probes | Audit |
+|---|---|---|---|---|---|---|---|---|
+| shipped 0.3 (section 19) | $6.99 | $2.85 / $3.99 | $1.04 | 141k | 42 min | 5/5 | 6/7 | no (docs say put `ETag` outside `NoCache`) |
+| shipped 0.3, control | $8.35 | $3.55 / $4.41 | $1.25 | 159k | 37 min | 5/5 | 6/7 | **yes** |
+| lean-orch | $6.08 | $2.28 / $3.80 | $0.81 | 115k | 37 min | 5/5 | 5/7 | **yes** |
+| orch-low | $4.04 | $1.84 / $2.20 | $0.72 | 105k | 17 min | 5/5 | 6/7 | **yes** |
+| orch-low, rep 2 | $4.43 | $2.10 / $2.29 | $0.78 | 110k | 23 min | 5/5 | 5/7 | no: HEAD from a handler that skips the body gets the empty body's ETag |
+| sonnet-orch | $3.74 | $1.22 / $2.83 | $0.23 | 117k | 25 min | 5/5 | 4/7 | no: the same HEAD bug |
+| one-fix-round | $4.37 | $2.03 / $2.34 | $0.73 | 120k | 24 min | 5/5 | 6/7 | **yes** |
+| one-fix-round, rep 2 | $4.57 | $2.21 / $2.26 | $0.88 | 118k | 22 min | 5/5 | 6/7 | **yes** |
+| two-panel | $6.03 | $3.06 / $2.76 | $1.11 | 141k | 30 min | 5/5 | 6/7 | **yes** |
+| sonnet-repo-seat | $5.02 | $2.34 / $2.70 | $0.85 | 121k | 28 min | 5/5 | 6/7 | **yes** |
+| sonnet-repo-seat, rep 2 | $7.07 | $3.18 / $3.74 | $1.19 | 148k | 28 min | 5/5 | 5/7 | **yes** |
+| **combo** | **$2.64** | $1.15 / $1.49 | $0.45 | 82k | 20 min | 5/5 | 6/7 | **yes** |
+| **combo, rep 2** | **$3.28** | $1.49 / $1.79 | $0.57 | 90k | 21 min | 5/5 | 6/7 | no: `If-None-Match` split on commas inside a quoted tag |
+| **combo, rep 3** | **$3.09** | $1.41 / $1.67 | $0.56 | 85k | 18 min | 5/5 | 6/7 | **yes** |
+
+Every chi-etag build passed every outcome check, the hidden `TestFlushDoesNotBypassTheBuffer` included. (The first sonnet-repo-seat build failed the setup check, one subagent still running at the end, and was rerun; both are shown.)
+
+**rac-shadow-hide** (shipped 0.3: $6.21, 35 min, audit no; the Opus panel's 4 earlier builds $4.88–5.98):
+
+| Arm | Cost | Main / sub | Main context | Time | Outcome | Nested target | Audit |
+|---|---|---|---|---|---|---|---|
+| shipped 0.3 (section 19) | $6.21 | $2.59 / $3.44 | – | 35 min | 6/6 | passes | no (later shadow root around a kept-visible element) |
+| lean-orch | $4.65 | $1.68 / $2.96 | 101k | 23 min | 6/6 | passes | **yes** |
+| orch-low | $5.29 | $2.16 / $3.13 | 117k | 23 min | 6/6 | passes | **yes** |
+| sonnet-orch | $4.10 | $1.15 / $3.18 | 108k | 31 min | 6/6 | passes | **yes**, but it skipped the simplifier |
+| one-fix-round | $6.70 | $2.78 / $3.92 | 132k | 37 min | 6/6 | passes | no: light-DOM content slotted into a target is hidden |
+| two-panel | $4.95 | $2.40 / $2.56 | 123k | 26 min | **5/6**: `yarn.lock` not updated for a new dependency | passes | no: the same `yarn.lock` |
+| sonnet-repo-seat | $6.27 | $3.11 / $3.08 | 150k | 43 min | 6/6 | passes | no: slotted light-DOM content hidden |
+| **combo** | **$4.24** | $1.90 / $2.34 | 96k | 26 min | 6/6 | passes | **yes** |
+| **combo, rep 2** | **$3.64** | $1.33 / $2.30 | 87k | 26 min | 5/6: type check, see below | passes | **yes** |
+
+The second combo build's type check failed on `TS2300: Duplicate identifier 'JSX'` in `node_modules/@mdx-js/react/lib/index.d.ts`, a file no build touches. Its dependency edits (`package.json` and `yarn.lock`) are byte-identical to the first combo build's, whose type check passes, and its full diff type-checks clean in that build's workspace. The `node_modules` its own `yarn install` produced is the likely cause, so it is counted as a workspace fault, but the check is left failed in its grading.
+
+What each idea did:
+
+- **Lean orchestrator (ideas 1 and 2): it does what it says, but alone it is swamped by the round count.** The main thread's output fell from $1.04–1.25 to $0.62–0.81 and its peak context from 141–159k to 101–115k. On rac-shadow-hide it was the cheapest Opus-orchestrated single idea ($4.65). On chi-etag it ran three verify rounds and two final-gate fix rounds, and the 4 extra Opus gatekeeper turns ate the saving ($6.08). Pointer handoffs worked: in all seven lean and combo builds every gatekeeper read `brief.md` and every gatekeeper, implementor and criteria-checker read `criteria.md` from the scratchpad, and the mod accepted the one-line `ACCEPTANCE CRITERIA:` pointer as the block.
+- **Orchestrator effort `low` (idea 3): the biggest single saving on chi-etag ($4.04, $4.43), smaller on rac-shadow-hide ($5.29).** It thinks less per turn and runs fewer turns. Quality: one of the two chi-etag builds shipped the HEAD bug the Sonnet and Haiku panels shipped in section 20, which the Opus panel's audits had found once in 4 builds before.
+- **Sonnet orchestrator (idea 3): cheap, but it drops steps and misses the HEAD bug.** Its own output costs a fifth of Opus's ($0.21–0.23), but the subagents cost more ($2.83–3.18) because it hands more rounds to them. On chi-etag it scored the lowest probes of any build (4 of 7) and shipped the HEAD bug; on rac-shadow-hide it skipped the simplifier, which the skill requires on every task. Per the skill's premise, not a default.
+- **One fix round (idea 4): the best quality-per-dollar on chi-etag, no saving on rac-shadow-hide.** On chi-etag both builds were $4.37–4.57, clean audits, 6 of 7 probes, about 23 min. The verify rounds it cuts are where section 18's chi-etag builds spent their time. On rac-shadow-hide its final gate found more and the build needed a second fix round ($6.70), and the audit found the slot bug no gate caught. The panel-says-yes shortcut never fired: every panel raised a must-fix.
+- **Two panelists (idea 4): no saving.** With request and repo merged, chi-etag needed three fix rounds and 10 verify messages ($6.03); on rac-shadow-hide the merged seat missed that `yarn.lock` wasn't updated for a new dependency, the only outcome-check failure in this section.
+- **Sonnet repo seat (idea 5): no saving.** The Sonnet seat costs a fifth of an Opus one, but the three seats cost about $1.40 together, so the saving is at most $0.40, and it is lost in round-count noise ($5.02–7.07 on chi-etag, $6.27 on rac-shadow-hide, with the slot bug missed).
+- **The combination (idea 6): the cheapest builds of any setup that kept quality.** Chi-etag $2.64, $3.28, $3.09 (mean $3.00) and rac-shadow-hide $4.24, $3.64 (mean $3.94); every outcome check passed, 6 of 7 probes on every chi-etag build, clean audits in 4 of 5 (2 of 3 on chi-etag, 2 of 2 on rac-shadow-hide). The pieces stack: one fix round caps the gate rounds, so the lean orchestrator's per-turn saving and effort `low`'s shorter turns aren't eaten by extra rounds. The orchestrator ends at 82–96k tokens of context, and four gatekeeper spawns is the whole review.
+
+What to take from it:
+
+- **The orchestrator's tokens were the cheap thing to cut, and the gate rounds decide whether the cut shows.** Every idea that touched only the orchestrator saved its share on a build with the usual number of rounds and lost it on a build with more. Capping the rounds (one fix round, the final gate verifies) is what makes the saving reliable.
+- **Quality held, within the noise of single builds.** Across the 3 chi-etag combo builds, 2 clean audits, against 3 of 4 for the Opus panel in section 18 and 1 of 2 for shipped 0.3 here. The one must-fix (commas inside a quoted entity tag) is a narrower RFC case than the HEAD bug the cheaper panels kept shipping. On rac-shadow-hide both combo builds' audits were clean where the shipped build's wasn't. The auditor of the second listed slotted light-DOM content inside a web component's shadow root as a nit, not a must-fix, so the slot case is the one to watch there.
+- **Where quality slipped, it slipped on the same two bugs.** The HEAD-with-no-body ETag on chi-etag (orch-low rep 2, sonnet-orch) and slotted light-DOM content on rac-shadow-hide (one-fix-round, sonnet-repo-seat). No gate seat probes `http.ServeContent` behind the middleware, or a `<slot>` inside a target; both are worth a line in each repo's `FEATURE_FLOW.md` checklist.
+
+**Recommendation.** Ship the combination in 0.4 (done: feature-flow-lite 0.4.0 is `variants/combo` with the effort advice in its intro; arm `lite-shipped-0.4` runs it at `low`, and `lite-shipped-0.3` now pins the 0.3 skill at `51c9cfa`):
+1. Add the "Keep the main thread lean" section from `variants/lean-orch/SKILL.md`: criteria and brief files in the scratchpad, pointer handoffs, checks to a log, one line between tool calls, a 15-line report. Cap the gatekeeper's return at about 20 lines (the variant's `agents/gatekeeper.md`), and tell every agent that reads the criteria to read the pointed-at files first.
+2. Replace steps 9–10 with `variants/one-fix-round/SKILL.md`'s: one fix round after the panel, no panel verification, a fresh final gate that reruns each must-fix's repro from `RULED ON:` and reviews the whole change; skip the final gate when the panel says yes with no must-fix.
+3. Say in the skill's intro that it is meant to run with the main session at effort `low`; the orchestrator's job is routing, and the judgment sits in the Opus criteria-checker and gatekeepers. (The harness sets it with `--effort low`; a user sets it with `/effort` or `--effort`.)
+4. Keep three Opus panelists and the Opus orchestrator. Don't take two panelists, a Sonnet repo seat or a Sonnet orchestrator.
+
+On chi-etag that is about $3.00 a build against $6.68–7.67 for the Opus panel (55–60% less) and about 20 minutes against 31–40; on rac-shadow-hide about $3.94 against $6.21 for shipped 0.3 and $4.88–5.98 for the Opus panel (25–35% less), in about the same 26 minutes. It's 3 builds on one task and 2 on the other: repeat the combo at 5+ builds per task before reading a quality difference into it.
+
 ### Open questions
 
 - Does v5 plus the screenshot reviewer alone (without v9's verify paragraph) keep the product gain and the tests?
@@ -593,6 +670,7 @@ Process checks (`kind: process`) apply only to skill arms. Outcome checks (hidde
 | `lite-opus-reviewer`, `lite-no-opus-reviewer` | The skill with its mod before the Opus-reviewer clause was removed (`f11f50c`; the batch ran it as `lite-pc-mod`), and the working tree |
 | `lite-review-gate`, `lite-review-gate-cache` | The `review-gate` variant (one Opus gatekeeper that reviews and decides, a criteria check before the implementor, the investigator started at once); the second arm sets `FEATURE_FLOW_CHECK_CACHE=1` through its `env` |
 | `lite-review-panel`, `lite-review-panel-mod` | The `review-panel` variant (three gatekeepers at once by focus, batched fixes verified by `SendMessage`, a fresh final gate; check cache on, `SendMessage` allowed, session persistence kept), and `review-panel-mod`, the same plus `FEATURE_FLOW_EXTRAS=1` (base checks, checks ahead, request and `RULED ON` added to handoffs) |
+| `lite-0.3-*` | Section 21's cost cuts on top of `lite-shipped-0.3`: `lean-orch`, `orch-low` (`--effort low`), `sonnet-orch` (`--model sonnet`), `one-fix-round`, `two-panel`, `sonnet-repo-seat` (a Sonnet `repo-panelist`), and `combo` (lean-orch + one-fix-round at `low`). Their builds' data (gzipped traces, gradings, audits, probes, `threads.json`) is in `harness/cost-cuts-data/`. |
 
 The full feature-flow skill isn't in the tree any more, so its arms load it from history: an arm can pin any git `ref` of any skill `folder`, and the harness extracts that version with `git archive`. An arm can also lay a variant's files over the skill (`variant`: `harness/variants/<name>/`, which can replace SKILL.md or add and replace agents), pin every agent's model and effort or a single agent's (`agents`), set environment variables for its runs (`env`), and tell the grader which model every role should run on (`roster_model`). The skill's value claim is that `lite-v2` matches `baseline` on outcomes for no more money.
 
