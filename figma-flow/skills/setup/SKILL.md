@@ -28,7 +28,9 @@ disagree, it reports the difference and leaves both alone.
   stop and say so: the export scripts only run inside Figma.
 - **figma-flow's scripts.** This skill is part of the figma-flow plugin; the lint and export
   scripts are in the plugin's `scripts/` folder, two folders up from this file
-  (`<this skill's folder>/../../scripts/`). Later builds use the plugin's figma-flow skill.
+  (`<this skill's folder>/../../scripts/`). Later builds use the plugin's `figma-flow:component`
+  skill (a component or component set) or `figma-flow:page` (a frame), which the main figma-flow
+  skill routes between.
 - **A React app that runs in a browser**, with a dev server. Other setups are out of scope;
   say so instead of improvising.
 
