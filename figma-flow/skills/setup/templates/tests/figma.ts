@@ -263,8 +263,16 @@ type Outline = NonNullable<FigmaNode["outline"]>;
 
 /** A ::before or ::after as it is drawn: the values a focus ring is made of. */
 type Pseudo = {
-  /** Absolutely positioned, with content and a display and visibility that draw it. */
+  /** Has a display and a content that draw it. */
+  drawn: boolean;
+  /** Drawn, absolutely positioned and visible: a box a focus ring can be drawn in. */
   shown: boolean;
+  content: string;
+  backgroundImage: string;
+  /** Draws an outline: a style, a width above 0 and a colour that isn't transparent. */
+  outlined: boolean;
+  /** The properties that move, scale, filter or clip it, where set. */
+  altered: string[];
   inset: number[];
   margin: number[];
   size: number[];
@@ -328,6 +336,11 @@ function ringProblems(name: string, ring: Pseudo, painted: Painted, box: Region,
   const radii = ring.radius.map((radius) => drawn(radius, { width: ring.size[0]!, height: ring.size[1]! }));
   if (radii.some((radius, i) => radius !== expectedRadii[i]))
     problems.push(`${name} ring radius (top left, top right, bottom right, bottom left) is ${radii}, Figma's is ${expectedRadii}`);
+  if (!emptyContent(ring.content)) problems.push(`${name} content is ${ring.content}, the ring's must be ""`);
+  if (ring.backgroundImage !== "none") problems.push(`${name} background-image is set, the ring is a box-shadow only`);
+  if (ring.outlined) problems.push(`${name} draws an outline of its own, the ring is a box-shadow only`);
+  if (ring.altered.length > 0)
+    problems.push(`${name} has ${ring.altered.join(", ")} set, the ring must not be moved, scaled, filtered or clipped`);
   if (ring.fill !== null) problems.push(`${name} background is ${ring.fill}, the ring must be see-through`);
   if (ring.borders.some((border) => border > 0)) problems.push(`${name} has a border, the ring has none`);
   if (ring.opacity !== 1) problems.push(`${name} opacity is ${ring.opacity}, Figma's is 1`);
@@ -342,28 +355,53 @@ function ringProblems(name: string, ring: Pseudo, painted: Painted, box: Region,
   return problems;
 }
 
+/** A content that draws nothing: an empty string, which is how a computed "" is written. */
+const emptyContent = (content: string) => content === '""' || content === "''";
+
+/**
+ * What a pseudo that isn't the ring paints, named. None of it may be drawn once the other pseudo is
+ * the ring; a pseudo that paints nothing passes.
+ */
+function strayPaint(pseudo: Pseudo): string[] {
+  const paint: string[] = [];
+  if (!emptyContent(pseudo.content)) paint.push(`content ${pseudo.content}`);
+  if (pseudo.fill !== null) paint.push("a background");
+  if (pseudo.backgroundImage !== "none") paint.push("a background-image");
+  if (pseudo.borders.some((border) => border > 0)) paint.push("a border");
+  if (pseudo.rings.length + pseudo.shadows.length > 0) paint.push("a box-shadow");
+  if (pseudo.outlined) paint.push("an outline");
+  return paint;
+}
+
 /**
  * The focus ring Figma draws, against the element as it is drawn. It holds as the element's own CSS
  * outline (a solid line at the ring's width, offset and colour), or, where the element draws no
  * outline of its own, as a ::before or ::after that is the ring (ringProblems): the way Figma's
- * Simple Design System draws focus. When neither holds, the list has every mismatch on each path
- * that has one, so a failure says what was found on each.
+ * Simple Design System draws focus. Once one pseudo is that ring, the other paints nothing (strayPaint)
+ * and two rings fail. When neither holds, the list has every mismatch on each path that has one, so a
+ * failure says what was found on each.
  */
 function focusRingProblems(painted: Painted, box: Region, figma: Outline): string[] {
   const own = outlineProblems(painted.outline, figma);
   if (own.length === 0) return [];
-  const drawsOwn = painted.outline.width > 0 && painted.outline.color !== null;
   const pseudos = [
     ["::before", painted.before],
     ["::after", painted.after],
   ] as const;
-  const rings = pseudos
-    .filter(([, ring]) => ring.shown)
-    .map(([name, ring]) => ringProblems(name, ring, painted, box, figma));
-  const clean = rings.some((problems) => problems.length === 0);
-  if (clean && !drawsOwn) return [];
-  const second = clean ? ["the element draws its own outline too, so the ring would be a second one"] : [];
-  return [...own, ...rings.flat(), ...second];
+  const found = pseudos
+    .filter(([, pseudo]) => pseudo.shown)
+    .map(([name, pseudo]) => ({ name, problems: ringProblems(name, pseudo, painted, box, figma) }));
+  const rings = found.filter((ring) => ring.problems.length === 0).map((ring) => ring.name);
+  if (rings.length === 0) return [...own, ...found.flatMap((ring) => ring.problems)];
+  const stray = pseudos.flatMap(([name, pseudo]) => {
+    const paint = pseudo.drawn && !rings.includes(name) ? strayPaint(pseudo) : [];
+    return paint.length > 0 ? [`${name} draws too: ${paint.join(", ")}`] : [];
+  });
+  const both = rings.length > 1 ? ["::before and ::after are both rings, Figma's draws one"] : [];
+  const drawsOwn = painted.outline.width > 0 && painted.outline.color !== null;
+  if (!drawsOwn) return [...stray, ...both];
+  const second = ["the element draws its own outline too, so the ring would be a second one"];
+  return [...own, ...stray, ...both, ...second];
 }
 
 /**
@@ -785,13 +823,18 @@ export async function expectToMatchFigma(
     const pseudo = (which: "::before" | "::after"): Pseudo => {
       const computed = getComputedStyle(el, which);
       const painted = layers(computed);
+      const drawn = computed.display !== "none" && computed.content !== "none" && computed.content !== "normal";
       return {
-        shown:
-          computed.position === "absolute" &&
-          computed.content !== "none" &&
-          computed.content !== "normal" &&
-          computed.display !== "none" &&
-          computed.visibility === "visible",
+        drawn,
+        shown: drawn && computed.position === "absolute" && computed.visibility === "visible",
+        content: computed.content,
+        backgroundImage: computed.backgroundImage,
+        outlined:
+          px(computed.outlineWidth) > 0 && computed.outlineStyle !== "none" && hex(computed.outlineColor) !== null,
+        altered: ["transform", "translate", "scale", "rotate", "filter", "clip-path"].filter((property) => {
+          const value = computed.getPropertyValue(property);
+          return value !== "" && value !== "none";
+        }),
         inset: [computed.top, computed.right, computed.bottom, computed.left].map(px),
         margin: sides.map((side) => px(computed[`margin${side}`])),
         size: [px(computed.width), px(computed.height)],
