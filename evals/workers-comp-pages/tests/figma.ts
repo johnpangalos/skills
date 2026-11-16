@@ -19,6 +19,9 @@ export type Typography = {
   textAlign?: "left" | "center" | "right" | "justify";
 };
 
+/** A sizing axis: hug (its content), fill (the room its parent leaves it) or fixed. */
+export type Sizing = "hug" | "fill" | "fixed";
+
 /** A node as the figma-flow skill's export-node describes it: where it is and the values it is drawn with. */
 export type FigmaNode = Region & {
   /** The node's own opacity. Absent from an older export, which isn't compared. */
@@ -39,19 +42,23 @@ export type FigmaNode = Region & {
   rings: [color: string, spread: number][];
   /** Every shadow that isn't a ring (a blur, an offset, an inset ring), in the order CSS lists them. */
   shadows?: Shadow[];
+  /** Across, then down. Absent from an export that doesn't record it; a root is never checked for fill. */
+  sizing?: [horizontal: Sizing, vertical: Sizing];
   minWidth?: number;
   maxWidth?: number;
   minHeight?: number;
   maxHeight?: number;
-  label: ({
-    x: number;
-    y: number;
-    height: number;
-    color: string;
-    fontSize: number;
-    fontWeight: number;
-    lineHeight: number;
-  } & Typography) | null;
+  label:
+    | ({
+        x: number;
+        y: number;
+        height: number;
+        color: string;
+        fontSize: number;
+        fontWeight: number;
+        lineHeight: number;
+      } & Typography)
+    | null;
   /**
    * Present when the node lays out two or more children. Padding is top, right, bottom, left.
    * `strokesIncludedInLayout`, recorded for a node with a stroke, says whether the padding starts
@@ -72,26 +79,99 @@ export type FigmaNode = Region & {
 };
 
 /**
- * Reads a file written by the figma-flow skill's export-node. Its last line is a hash of the rest, so a
- * copy that lost or changed a character throws here instead of testing against wrong numbers.
+ * The roots of the exports read so far: a component's variant, or a page entry with no parent. The
+ * fill check skips them, since their DOM parent is the page's, not Figma's. nodesOf marks them.
  */
-export function loadFigmaNodes(url: URL): Record<string, FigmaNode> {
+const roots = new WeakSet<object>();
+
+/**
+ * Reads a file written in Figma (by the figma-flow skill's export-node, or a script in figma/). Its
+ * last line is a hash of the rest, so a copy that lost or changed a character throws here instead
+ * of testing against wrong numbers.
+ */
+export function loadFigmaExport(url: URL): Record<string, unknown> {
   const text = readFileSync(url, "utf8");
   const body = text.slice(0, text.lastIndexOf('  "hash"'));
   let hash = 5381;
   for (let i = 0; i < body.length; i++) hash = ((hash * 33) ^ body.charCodeAt(i)) >>> 0;
-  const { variants, hash: expected } = JSON.parse(text);
-  if (hash.toString(16) !== expected) {
+  const parsed = JSON.parse(text);
+  if (hash.toString(16) !== parsed.hash) {
     throw new Error(`${url.pathname} doesn't match its hash: export it from Figma again`);
   }
   // JSON keeps only the last of two equal keys, so a repeated key would leave a node unmeasured
   // without a word. Exports from the current export-node number repeats; older ones may not.
-  const written = [...body.matchAll(/^ {4}("(?:[^"\\]|\\.)*"):/gm)].map((match) => JSON.parse(match[1]!) as string);
+  const written = [...body.matchAll(/^ {4}("(?:[^"\\]|\\.)*"):/gm)].map(
+    (match) => JSON.parse(match[1]!) as string,
+  );
   const repeated = written.filter((key, i) => written.indexOf(key) !== i);
   if (repeated.length > 0) {
-    throw new Error(`${url.pathname} repeats ${[...new Set(repeated)].join(", ")}: export it again with the current figma-flow`);
+    throw new Error(
+      `${url.pathname} repeats ${[...new Set(repeated)].join(", ")}: export it again with the current figma-flow`,
+    );
   }
-  return variants;
+  return parsed;
+}
+
+type Json = Record<string, unknown>;
+
+/** Sets each key the object omits to its default, and returns the object. */
+function fillIn(object: Json, defaults: Json) {
+  for (const [key, value] of Object.entries(defaults)) if (!(key in object)) object[key] = value;
+  return object;
+}
+
+/** The typography a label or a text leaves out at its default. */
+const typography = (): Json => ({ letterSpacing: 0, textCase: "none", textDecoration: "none" });
+
+/**
+ * Puts back, on a copy, what a format-2 export left out at its default. A text on a page gets its
+ * typography and opacity. A box gets the node defaults, its label's typography where there is a
+ * label, and a strokeAlign of inside where there is a stroke.
+ */
+function restore(node: Json): Json {
+  if (node.type === "TEXT") return fillIn(node, { opacity: 1, ...typography() });
+  fillIn(node, {
+    fill: null,
+    stroke: null,
+    strokeWeight: 0,
+    radius: 0,
+    rings: [],
+    label: null,
+    opacity: 1,
+    shadows: [],
+  });
+  if (node.label !== null) fillIn(node.label as Json, typography());
+  if (node.stroke !== null && !("strokeAlign" in node)) node.strokeAlign = "inside";
+  return node;
+}
+
+/**
+ * The nodes of an export, by key. A format-2 export has its omitted defaults put back, on a copy;
+ * an older export is taken as it is, and its absent fields are skipped. Each root is marked.
+ */
+export function nodesOf<T>(exported: Json): Record<string, T> {
+  const { format, variants } = exported;
+  if (format !== undefined && format !== 2) {
+    throw new Error(
+      `format ${JSON.stringify(format)} isn't one this helper reads: export it again with the current figma-flow`,
+    );
+  }
+  const nodes: Record<string, T> = {};
+  for (const [key, value] of Object.entries(variants as Record<string, Json>)) {
+    let node = value;
+    if (format === 2) node = restore(structuredClone(value));
+    // A page entry is a root when its parent is null; a component variant when its key has no " > ".
+    let root = !key.includes(" > ");
+    if ("parent" in node) root = node.parent === null;
+    if (root) roots.add(node);
+    nodes[key] = node as T;
+  }
+  return nodes;
+}
+
+/** The nodes of a file written by the figma-flow skill's export-node. */
+export function loadFigmaNodes(url: URL): Record<string, FigmaNode> {
+  return nodesOf<FigmaNode>(loadFigmaExport(url));
 }
 
 /** A text node on a page, as export-node describes it. */
@@ -122,9 +202,10 @@ export type FigmaPageNode = FigmaPageBox | FigmaText;
 
 /** Reads the export of a page: a frame exported with export-node, every frame and text under it. */
 export function loadFigmaPage(url: URL): Record<string, FigmaPageNode> {
-  const nodes = loadFigmaNodes(url) as unknown as Record<string, FigmaPageNode>;
+  const nodes = nodesOf<FigmaPageNode>(loadFigmaExport(url));
   const notPage = Object.keys(nodes).filter((key) => !("parent" in nodes[key]!));
-  if (notPage.length > 0) throw new Error(`${url.pathname} is not a page export (no parent on ${notPage[0]})`);
+  if (notPage.length > 0)
+    throw new Error(`${url.pathname} is not a page export (no parent on ${notPage[0]})`);
   return nodes;
 }
 
@@ -174,7 +255,10 @@ function expectFields(rendered: object, figma: object, what: string) {
     const actual = (rendered as Record<string, unknown>)[key];
     if (key in tolerance) {
       expect
-        .soft(Math.abs((actual as number) - (expected as number)), `${what}: ${key} is ${actual}, Figma's is ${expected}`)
+        .soft(
+          Math.abs((actual as number) - (expected as number)),
+          `${what}: ${key} is ${actual}, Figma's is ${expected}`,
+        )
         .toBeLessThan(tolerance[key]!);
     } else {
       expect.soft(actual, `${what}: ${key}`).toEqual(expected);
@@ -198,7 +282,9 @@ export async function expectTextToMatchFigma(element: Locator, figma: FigmaText,
   const measured: ("width" | "height")[] = ["height"];
   if (width) measured.unshift("width");
   for (const side of measured) {
-    expect.soft(Math.abs(box![side] - figma[side]), `${side} is ${box![side]}px, Figma's is ${figma[side]}px`).toBeLessThan(1);
+    expect
+      .soft(Math.abs(box![side] - figma[side]), `${side} is ${box![side]}px, Figma's is ${figma[side]}px`)
+      .toBeLessThan(1);
   }
   const rendered = await element.evaluate((el) => {
     // A CSS colour → "#rrggbb", or "#rrggbbaa" below alpha 1, or null when fully transparent. The
@@ -230,7 +316,10 @@ export async function expectTextToMatchFigma(element: Locator, figma: FigmaText,
       fontSize: parseFloat(style.fontSize),
       fontWeight: Number(style.fontWeight),
       lineHeight: parseFloat(style.lineHeight),
-      fontFamily: style.fontFamily.split(",")[0]!.trim().replace(/^["']|["']$/g, ""),
+      fontFamily: style.fontFamily
+        .split(",")[0]!
+        .trim()
+        .replace(/^["']|["']$/g, ""),
       letterSpacing,
       textCase,
       textDecoration: style.textDecorationLine,
@@ -241,7 +330,10 @@ export async function expectTextToMatchFigma(element: Locator, figma: FigmaText,
   if (figma.color !== null) {
     expectSameColor(rendered.color, figma.color, "text colour");
   } else {
-    test.info().annotations.push({ type: "figma: not measured", description: "text colour: Figma's text colour is mixed or not solid, so it wasn't compared" });
+    test.info().annotations.push({
+      type: "figma: not measured",
+      description: "text colour: Figma's text colour is mixed or not solid, so it wasn't compared",
+    });
   }
   expectFields(
     rendered,
@@ -262,7 +354,7 @@ export async function expectTextToMatchFigma(element: Locator, figma: FigmaText,
 
 /**
  * Leaves an entry of a page export unmeasured, with the reason; the report lists it. For an
- * entry the helper can't read (a vector, a shadow with blur), never for one whose values fail.
+ * entry the helper can't read (a vector, a ring Figma draws as a separate shape), never for one whose values fail.
  */
 export const skip = (reason: string) => ({ skip: reason });
 
@@ -279,7 +371,10 @@ type Located = Locator | { skip: string } | { element: Locator; width?: false; p
  * offset can't be compared, such as after several text-hugging siblings in a row, whose
  * fractions of a pixel add up.
  */
-export async function expectPageToMatchFigma(nodes: Record<string, FigmaPageNode>, locate: Record<string, Located>) {
+export async function expectPageToMatchFigma(
+  nodes: Record<string, FigmaPageNode>,
+  locate: Record<string, Located>,
+) {
   const missing = Object.keys(nodes).filter((key) => !(key in locate));
   const extra = Object.keys(locate).filter((key) => !(key in nodes));
   expect(missing, "entries of the export with no element and no skip()").toEqual([]);
@@ -298,7 +393,11 @@ export async function expectPageToMatchFigma(nodes: Record<string, FigmaPageNode
       continue;
     }
     const element = elementOf(key)!;
-    const options: { width?: false; position?: false } = "element" in where ? where : {};
+    const options: { width?: false; position?: false } = {};
+    if ("element" in where) {
+      options.width = where.width;
+      options.position = where.position;
+    }
     await test.step(key, async () => {
       if (node.type === "TEXT") await expectTextToMatchFigma(element, node, { width: options.width ?? true });
       else await expectToMatchFigma(element, node, { width: options.width ?? true });
@@ -313,14 +412,104 @@ export async function expectPageToMatchFigma(nodes: Record<string, FigmaPageNode
         parent = nodes[parent]!.parent;
       }
       if (parent === null) {
-        test.info().annotations.push({ type: "figma: not measured", description: `${key}: position not compared, no ancestor of it is measured` });
+        test.info().annotations.push({
+          type: "figma: not measured",
+          description: `${key}: position not compared, no ancestor of it is measured`,
+        });
         return;
       }
       const [box, parentBox] = await Promise.all([element.boundingBox(), elementOf(parent)!.boundingBox()]);
       if (!box || !parentBox) return; // expectToMatchFigma has already failed on a missing box
-      expect.soft(Math.abs(box.x - parentBox.x - x), `x in ${parent} is ${box.x - parentBox.x}px, Figma's is ${x}px`).toBeLessThan(1);
-      expect.soft(Math.abs(box.y - parentBox.y - y), `y in ${parent} is ${box.y - parentBox.y}px, Figma's is ${y}px`).toBeLessThan(1);
+      expect
+        .soft(
+          Math.abs(box.x - parentBox.x - x),
+          `x in ${parent} is ${box.x - parentBox.x}px, Figma's is ${x}px`,
+        )
+        .toBeLessThan(1);
+      expect
+        .soft(
+          Math.abs(box.y - parentBox.y - y),
+          `y in ${parent} is ${box.y - parentBox.y}px, Figma's is ${y}px`,
+        )
+        .toBeLessThan(1);
     });
+  }
+}
+
+/**
+ * Checks an element's fill axes against its DOM parent. Across, the element spans the parent's
+ * content box. Along a flex parent, it has a flex-grow of at least 1 or leaves no free room for
+ * anything else. A parent that isn't a flex container can't say, so the check is skipped and reported.
+ */
+async function expectFillMatches(element: Locator, sizing: [Sizing, Sizing]) {
+  const axes: ("horizontal" | "vertical")[] = [];
+  if (sizing[0] === "fill") axes.push("horizontal");
+  if (sizing[1] === "fill") axes.push("vertical");
+  if (axes.length === 0) return;
+  const fill = await element.evaluate((el, wanted) => {
+    const parent = el.parentElement;
+    if (parent === null) return { reason: "it has no parent element" };
+    const parentStyle = getComputedStyle(parent);
+    if (!parentStyle.display.includes("flex")) {
+      return { reason: `its parent is display: ${parentStyle.display}, not a flex container` };
+    }
+    const px = (value: string) => parseFloat(value) || 0;
+    const column = parentStyle.flexDirection.startsWith("column");
+    const siblings = [...parent.children].filter((child) => {
+      const style = getComputedStyle(child);
+      return (
+        child !== el &&
+        style.display !== "none" &&
+        style.position !== "absolute" &&
+        style.position !== "fixed"
+      );
+    });
+    return {
+      axes: wanted.map((axis) => {
+        const horizontal = axis === "horizontal";
+        let key: "width" | "height" = "height";
+        let gap = px(parentStyle.rowGap);
+        let content = parent.clientHeight - px(parentStyle.paddingTop) - px(parentStyle.paddingBottom);
+        if (horizontal) {
+          key = "width";
+          gap = px(parentStyle.columnGap);
+          content = parent.clientWidth - px(parentStyle.paddingLeft) - px(parentStyle.paddingRight);
+        }
+        const size = el.getBoundingClientRect()[key];
+        const main = horizontal !== column;
+        if (!main)
+          return { axis, main, across: size - content, size, content, free: 0, grow: false, noRoom: false };
+        const used = siblings.reduce((sum, child) => sum + child.getBoundingClientRect()[key], 0);
+        const free = content - used - gap * siblings.length;
+        const grow = parseFloat(getComputedStyle(el).flexGrow) >= 1;
+        const noRoom = Math.abs(free - size) < 1;
+        return { axis, main, across: size - content, size, content, free, grow, noRoom };
+      }),
+    };
+  }, axes);
+  if ("reason" in fill) {
+    test.info().annotations.push({
+      type: "figma: not measured",
+      description: `sizing: fill isn't checked, ${fill.reason}`,
+    });
+    return;
+  }
+  for (const check of fill.axes) {
+    if (check.main) {
+      expect
+        .soft(
+          check.grow || check.noRoom,
+          `${check.axis} is fill: the element is ${check.size}px, its parent has ${check.free}px free for it, and its flex-grow is under 1`,
+        )
+        .toBe(true);
+    } else {
+      expect
+        .soft(
+          Math.abs(check.across),
+          `${check.axis} is fill: the element is ${check.size}px, its parent's content box is ${check.content}px`,
+        )
+        .toBeLessThan(1);
+    }
   }
 }
 
@@ -335,23 +524,36 @@ export async function expectPageToMatchFigma(nodes: Record<string, FigmaPageNode
  * differ by 1 of 255 per channel (rounding), and an alpha by 1 of 255.
  *
  * Every value Figma has is compared; one the export doesn't have (an older export) isn't. A stroke
- * Figma centres can't be drawn in CSS, so it fails: move it inside or outside.
+ * Figma centres can't be drawn in CSS, so it fails: move it inside or outside. A stroke is expected
+ * solid unless the node is dashed; an older export that records neither its stroke's alignment
+ * nor a dash isn't checked for style at all.
+ *
+ * A "fill" axis (`sizing`) is checked against the element's flex parent (see expectFillMatches).
+ * A root (a component's variant, or a page entry with no parent) is never checked for fill.
  *
  * Every comparison is soft: one run reports each value that differs, not only the first.
  *
  * Pass `width: false` where the width can't be compared: the element's text differs from the
  * Figma node's (a state variant labelled "Tab"), or it holds several text-hugging children,
  * whose fractions add up past a pixel. Not where the font differs from the design's: that is a
- * failure to report, and turning the check off hides it.
+ * failure to report, and turning the check off hides it. Pass `sizing: false` where the parent's
+ * layout differs from Figma's on purpose.
  */
-export async function expectToMatchFigma(element: Locator, figma: FigmaNode, { width = true } = {}) {
+export async function expectToMatchFigma(
+  element: Locator,
+  figma: FigmaNode,
+  { width = true, sizing = true } = {},
+) {
   const box = await element.boundingBox();
   expect(box, "element is not rendered").not.toBeNull(); // hard: nothing else can be measured
   const measured: ("width" | "height")[] = ["height"];
   if (width) measured.unshift("width");
   for (const side of measured) {
-    expect.soft(Math.abs(box![side] - figma[side]), `${side} is ${box![side]}px, Figma's is ${figma[side]}px`).toBeLessThan(1);
+    expect
+      .soft(Math.abs(box![side] - figma[side]), `${side} is ${box![side]}px, Figma's is ${figma[side]}px`)
+      .toBeLessThan(1);
   }
+  if (sizing && figma.sizing && !roots.has(figma)) await expectFillMatches(element, figma.sizing);
 
   const rendered = await element.evaluate((el) => {
     // A CSS colour → "#rrggbb", or "#rrggbbaa" below alpha 1, or null when fully transparent. The
@@ -386,7 +588,8 @@ export async function expectToMatchFigma(element: Locator, figma: FigmaNode, { w
     // spread], outermost first; every other layer is a shadow, an inset ring included. Fully
     // transparent layers are neither.
     const rings: [string, number][] = [];
-    const shadows: { x: number; y: number; blur: number; spread: number; color: string; inset: boolean }[] = [];
+    const shadows: { x: number; y: number; blur: number; spread: number; color: string; inset: boolean }[] =
+      [];
     for (const layer of style.boxShadow.split(/,(?![^(]*\))/).map((part) => part.trim())) {
       const ring = layer.match(/^(.+?) 0px 0px 0px (-?[\d.]+)px$/);
       const ringColor = ring && hex(ring[1]!);
@@ -495,7 +698,10 @@ export async function expectToMatchFigma(element: Locator, figma: FigmaNode, { w
         fontSize: parseFloat(style.fontSize),
         fontWeight: Number(style.fontWeight),
         lineHeight: parseFloat(style.lineHeight),
-        fontFamily: style.fontFamily.split(",")[0]!.trim().replace(/^["']|["']$/g, ""),
+        fontFamily: style.fontFamily
+          .split(",")[0]!
+          .trim()
+          .replace(/^["']|["']$/g, ""),
         letterSpacing,
         textCase,
         textDecoration: getComputedStyle(owner).textDecorationLine,
@@ -506,25 +712,33 @@ export async function expectToMatchFigma(element: Locator, figma: FigmaNode, { w
 
   expectFields(rendered, { opacity: figma.opacity }, "element");
 
+  // A stroke is expected solid unless it is dashed. An older export with neither a stroke nor
+  // strokeAlign says nothing about its style, so it isn't checked.
+  const styled = figma.dashed === true || (figma.stroke !== null && figma.strokeAlign !== undefined);
+
   // The stroke: a border inside the box, or an outline outside it (CSS draws none outside).
   if (figma.strokeAlign === "center") {
-    expect.soft(figma.strokeAlign, "CSS can't draw a centred stroke: Figma's stroke must be inside or outside").not.toBe("center");
+    expect
+      .soft(figma.strokeAlign, "CSS can't draw a centred stroke: Figma's stroke must be inside or outside")
+      .not.toBe("center");
   }
   if (figma.strokeAlign === "outside") {
-    expect.soft(rendered.borders, "an outside stroke is an outline in CSS, so no border is drawn").toEqual([0, 0, 0, 0]);
-    expect.soft(figma.strokeWeight, "an outline has one width; Figma's sides differ").not.toBeInstanceOf(Array);
+    expect
+      .soft(rendered.borders, "an outside stroke is an outline in CSS, so no border is drawn")
+      .toEqual([0, 0, 0, 0]);
+    expect
+      .soft(figma.strokeWeight, "an outline has one width; Figma's sides differ")
+      .not.toBeInstanceOf(Array);
     expect.soft(rendered.outline.width, "outline width").toBe(figma.strokeWeight);
     expect.soft(rendered.outline.offset, "outline offset").toBe(0);
     expectSameColor(rendered.outline.color, figma.stroke, "outline");
-    if (figma.dashed || rendered.outline.width > 0) {
-      expect.soft(rendered.outline.style, "outline style").toBe(lineStyle(figma.dashed));
-    }
+    if (styled) expect.soft(rendered.outline.style, "outline style").toBe(lineStyle(figma.dashed));
   } else {
-    expect.soft(rendered.borders, "border width (top, right, bottom, left)").toEqual(fourOf<number>(figma.strokeWeight));
+    expect
+      .soft(rendered.borders, "border width (top, right, bottom, left)")
+      .toEqual(fourOf<number>(figma.strokeWeight));
     expectSameColor(rendered.stroke, figma.stroke, "border");
-    if (figma.dashed || rendered.borders.some((width) => width > 0)) {
-      expect.soft(rendered.borderStyle, "border style").toBe(lineStyle(figma.dashed));
-    }
+    if (styled) expect.soft(rendered.borderStyle, "border style").toBe(lineStyle(figma.dashed));
   }
 
   expectSameColor(rendered.fill, figma.fill, "fill");
@@ -533,7 +747,9 @@ export async function expectToMatchFigma(element: Locator, figma: FigmaNode, { w
   // where Figma says 9999. Both sides are clamped to the box each is drawn in, which is exact.
   const drawn = (radius: number, { width, height }: Region) => Math.min(radius, Math.min(width, height) / 2);
   if (figma.radius === null) {
-    expect.soft(figma.radius, "Figma's corners have different radii; the export can't describe them").not.toBeNull();
+    expect
+      .soft(figma.radius, "Figma's corners have different radii; the export can't describe them")
+      .not.toBeNull();
   } else {
     expect
       .soft(
@@ -545,13 +761,24 @@ export async function expectToMatchFigma(element: Locator, figma: FigmaNode, { w
 
   // Figma can draw a ring another way (the ghost Button uses a rectangle), which this can't read.
   if (figma.rings.length > 0) {
-    expect.soft(rendered.rings.map(([, spread]) => spread), "ring widths").toEqual(figma.rings.map(([, spread]) => spread));
-    figma.rings.forEach(([color], i) => expectSameColor(rendered.rings[i]?.[0] ?? null, color, `ring ${i + 1}`));
+    expect
+      .soft(
+        rendered.rings.map(([, spread]) => spread),
+        "ring widths",
+      )
+      .toEqual(figma.rings.map(([, spread]) => spread));
+    figma.rings.forEach(([color], i) =>
+      expectSameColor(rendered.rings[i]?.[0] ?? null, color, `ring ${i + 1}`),
+    );
   }
 
   if (figma.shadows) {
-    expect.soft(rendered.shadows.map(shadowShape), "shadows (x, y, blur, spread, inset)").toEqual(figma.shadows.map(shadowShape));
-    figma.shadows.forEach((shadow, i) => expectSameColor(rendered.shadows[i]?.color ?? null, shadow.color, `shadow ${i + 1} colour`));
+    expect
+      .soft(rendered.shadows.map(shadowShape), "shadows (x, y, blur, spread, inset)")
+      .toEqual(figma.shadows.map(shadowShape));
+    figma.shadows.forEach((shadow, i) =>
+      expectSameColor(rendered.shadows[i]?.color ?? null, shadow.color, `shadow ${i + 1} colour`),
+    );
   }
 
   for (const key of ["minWidth", "maxWidth", "minHeight", "maxHeight"] as const) {
@@ -562,7 +789,9 @@ export async function expectToMatchFigma(element: Locator, figma: FigmaNode, { w
     const { strokesIncludedInLayout, ...layout } = figma.layout;
     // Figma measures padding from the node's edge, so the CSS border counts towards it, unless the
     // stroke is in the layout: then the padding starts inside it, as CSS padding does.
-    const padding = rendered.layout.padding.map((side, i) => side + Number(!strokesIncludedInLayout) * rendered.borders[i]!);
+    const padding = rendered.layout.padding.map(
+      (side, i) => side + Number(!strokesIncludedInLayout) * rendered.borders[i]!,
+    );
     expectFields({ ...rendered.layout, padding }, layout, "layout");
   }
 
