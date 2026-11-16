@@ -64,9 +64,9 @@ is expected, and the hashes below show whether what ran and what was saved are e
    Read CLAUDE.md if there is one.
 2. **Read the Figma files.** The design file's pages, frames and components, and whether its
    components and variables come from a library (an instance whose main component is remote;
-   `get_libraries` may not list a team's own library). From the file that defines them (the library's, when there is one): the
-   components, the variables with their code syntax, the text and effect styles, and the font
-   families. Note each library component the code doesn't have yet.
+   `get_libraries` may not list a team's own library). From the file that defines them (the
+   library's, when there is one): the components, the variables with their code syntax, the text
+   and effect styles, and the font families. Note each library component the code doesn't have yet.
 3. **Copy the templates** from this skill's `templates/` folder, keeping the repo's own
    layout and naming where it has one:
    - Pick the exports folder, where saved Figma values will live: `figma/` at the root unless
@@ -84,7 +84,7 @@ is expected, and the hashes below show whether what ran and what was saved are e
      path to the exports folder, and a page whose CSS includes the app's global styles (`/`
      usually).
    - The other templates come later: `fonts.css` in step 6, the page or component spec in step 9.
-     Their placeholders don't parse, so don't copy them before then.
+     The specs' placeholders don't parse, so don't copy them before then.
    - Add a `test:figma` script that runs `playwright test` (with `--config` if the config isn't
      the default one). Install `@playwright/test` and `@types/node` as dev dependencies with the
      repo's package manager, and add Playwright's output folders (`test-results`,
