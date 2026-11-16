@@ -6,7 +6,7 @@ export type Flow = {
   unmeasured: string[]
   /** How the last measurement run ended. */
   lastMeasure: 'none' | 'passed' | 'failed'
-  /** The person released the hold with `/figma-flow release`. */
+  /** The person released the hold with `/figma-hold release`. */
   isReleased: boolean
 }
 

@@ -149,11 +149,11 @@ test('an absolute save outside the project is refused', async ($, on) => {
   expect(Object.keys(written)).toEqual([])
 })
 
-test('/figma-flow release lets a commit through', async ($, on) => {
+test('/figma-hold release lets a commit through', async ($, on) => {
   tools(on, {})
   await $.tool.call({ tool: FIGMA, code: 'return 1' })
   await $.tool.call({ tool: 'Edit', file_path: 'src/button.tsx', old_string: 'a', new_string: 'b' })
-  await $.command.run({ command: 'figma-flow', args: 'release' } as never)
+  await $.command.run({ command: 'figma-hold', args: 'release' } as never)
   const ran = await $.tool.call({ tool: 'Bash', command: 'git commit -m "feat: x"' })
 
   expect(ran.deny).toBe(undefined)
@@ -167,4 +167,24 @@ test('invoking the skill counts as Figma work', async ($, on) => {
   const held = await $.tool.call({ tool: 'Bash', command: 'git commit -m "feat: x"' })
 
   expect(held.deny).toContain('src/button.tsx')
+})
+
+test('invoking figma-flow:setup counts as Figma work', async ($, on) => {
+  tools(on, {})
+  on('skill.prompt', (_$, e) => ({ text: e.text }) as never)
+  await $.skill.prompt({ skill: 'figma-flow:setup', text: 'x' } as never)
+  await $.tool.call({ tool: 'Edit', file_path: 'src/fonts.css', old_string: 'a', new_string: 'b' })
+  const held = await $.tool.call({ tool: 'Bash', command: 'git commit -m "feat: x"' })
+
+  expect(held.deny).toContain('src/fonts.css')
+})
+
+test("another plugin's skill named setup is not Figma work", async ($, on) => {
+  tools(on, {})
+  on('skill.prompt', (_$, e) => ({ text: e.text }) as never)
+  await $.skill.prompt({ skill: 'other:setup', text: 'x' } as never)
+  await $.tool.call({ tool: 'Edit', file_path: 'src/button.tsx', old_string: 'a', new_string: 'b' })
+  const ran = await $.tool.call({ tool: 'Bash', command: 'git commit -m "feat: x"' })
+
+  expect(ran.deny).toBe(undefined)
 })

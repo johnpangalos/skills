@@ -53,17 +53,21 @@ async function hasMeasurement($: EngineInterface) {
 
 export const register: Register = on => {
   // Invoking the skill is Figma work, even when the export is already saved and no Figma tool runs.
+  // So is figma-flow:setup: it adds a page and its CSS for the worked example, and the test:figma
+  // that measures them, so a commit waits for that to pass as it does after a build.
   on('skill.prompt', async ($, e, next) => {
-    if (/(^|:)figma-flow$/.test(e.skill)) {
+    if (/(^|:)figma-flow(:setup)?$/.test(e.skill)) {
       await update($, flow, now => (now.isActive ? now : { ...now, isActive: true }))
     }
 
     return next(e)
   }).catch(($, e, next) => next(e))
 
+  // Not /figma-flow: the plugin's skill answers to that name, and Claude Code refuses a command
+  // that takes it ("refused: it is the plugin's /figma-flow:figma-flow").
   on('session.start', async ($, e, next) => {
     await $.command.register({
-      name: 'figma-flow',
+      name: 'figma-hold',
       description: 'Show what figma-flow is holding; "release" lets a commit through unmeasured',
       argumentHint: '[release]',
     })
@@ -71,7 +75,7 @@ export const register: Register = on => {
     return next(e)
   })
 
-  on('command.run', { command: 'figma-flow' }, async ($, e) => {
+  on('command.run', { command: 'figma-hold' }, async ($, e) => {
     if (e.args.trim() === 'release') {
       await update($, flow, now => ({ ...now, isReleased: true }))
       $.ui.status(undefined)
@@ -127,7 +131,7 @@ export const register: Register = on => {
           deny:
             `figma-flow: ${now.unmeasured.length} file(s) changed since the Figma measurement last passed ` +
             `(${now.unmeasured.slice(0, 5).join(', ')}). Run \`pnpm test:figma\` and fix what it reports, ` +
-            'then commit. Only the person can lift this, with /figma-flow release.',
+            'then commit. Only the person can lift this, with /figma-hold release.',
         }
       }
       const ran = await next(e)

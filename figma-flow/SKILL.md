@@ -27,8 +27,8 @@ Read the project's instructions first (the "Building from Figma" section of CLAU
 are kept, and how to measure. Follow them over anything here.
 
 If the project has no mapping rules or no measurement (a `test:figma` command with
-`expectToMatchFigma`), stop and say so: the figma-setup skill installs them. Guessing a
-mapping is how drift starts.
+`expectToMatchFigma`), stop and say so: this plugin's setup skill (`figma-flow:setup`) installs
+them. Guessing a mapping is how drift starts.
 
 ## The export scripts
 
@@ -44,9 +44,11 @@ They are in this skill's `scripts/` folder, not in the project:
   measures its components. An instance of a component made in the file is opened, since the app
   builds it. Each entry has the node's `id`, and a repeated key is numbered (`ClaimRow (2)`), so
   no entry overwrites another.
-- `export-tokens.ts`: the file's variables, text styles and effect styles.
-- `print.ts`: prints either as plain JavaScript for the Figma MCP's `use_figma`. The scripts
-  run inside Figma, so they can't be run in Node directly.
+- `export-tokens.ts`: the file's own variables, text styles and effect styles. Run it on the file
+  that defines them: a library's, for a design built from one. On a file with none of its own it
+  throws, naming the library collections the file uses.
+- `print.ts`: prints any of them as plain JavaScript for the Figma MCP's `use_figma`. The scripts
+  run inside Figma, so they can't be run in Node directly. It also checks saved files (below).
 
 ```sh
 node <this skill's folder>/scripts/print.ts lint-node <node id> [<node id>…]
@@ -65,9 +67,11 @@ to the file and nobody retypes it:
 ```
 
 The path is relative to the project, or absolute inside it. The mod refuses any other path and
-says so; save that result yourself. Without the mod, save the output exactly as returned. To check a saved file against Figma
-without reading it back, print the script with `--hash` and compare its `{ length, hash }`
-with `node <this skill's folder>/scripts/print.ts hash <file>`.
+says so; save that result yourself. Without the mod, save the output exactly as returned, character
+for character. An export or a lint ends in a hash of the rest:
+`node <this skill's folder>/scripts/print.ts check <file>` exits 1 unless the file matches it. The
+token snapshot has no hash of its own: print `export-tokens` with `--hash`, run it, and compare its
+`{ length, hash }` with `node <this skill's folder>/scripts/print.ts hash <file>`.
 
 ## Flow
 
@@ -123,12 +127,12 @@ The plugin's mod does two things a skill can't:
 - **Holds `git commit` and `git push`** once this skill or a Figma tool has been used and a
   source file has changed, until the measurement command passes. It counts edits by subagents
   too. If you are held, run the measurement and fix what it reports. Only the person can lift
-  the hold, with `/figma-flow release`; don't ask them to unless the measurement itself is
+  the hold, with `/figma-hold release`; don't ask them to unless the measurement itself is
   broken.
 
 The mod recognises the measurement as a shell command containing `test:figma`, so name the
 project's script that, in the `package.json` at its root. A project without that script is never
-held, since nothing in it could pass. `/figma-flow` shows what is being held.
+held, since nothing in it could pass. `/figma-hold` shows what is being held.
 
 ## Not for
 
