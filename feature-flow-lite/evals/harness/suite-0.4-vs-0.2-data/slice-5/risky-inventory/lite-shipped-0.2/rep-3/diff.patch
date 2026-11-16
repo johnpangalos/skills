@@ -1,0 +1,416 @@
+diff --git a/README.md b/README.md
+index 620cc9b..afc7260 100644
+--- a/README.md
++++ b/README.md
+@@ -1,7 +1,10 @@
+ # shop
+ 
+ Checkout logic for a small online coffee shop: catalog, cart totals, receipts,
+-and password-reset tokens. Standard library only.
++password-reset tokens, and stock reservations. Standard library only.
++
++Stock reservations (`shop/inventory.py`): `reserve` holds units, `commit`
++removes them for good, and `release` returns them to sale.
+ 
+     ./check.sh        # lint + unit tests (run before every commit)
+ 
+diff --git a/shop/inventory.py b/shop/inventory.py
+new file mode 100644
+index 0000000..beac35b
+--- /dev/null
++++ b/shop/inventory.py
+@@ -0,0 +1,84 @@
++"""Thread-safe stock on hand with reservations."""
++
++import threading
++
++from shop.catalog import UnknownProduct, lookup
++
++
++class OutOfStock(ValueError):
++    pass
++
++
++class ReservationError(ValueError):
++    pass
++
++
++class Reservation:
++    """Units held for one SKU; settle it with Inventory.commit or Inventory.release."""
++
++    def __init__(self, sku, qty):
++        self.sku = sku
++        self.qty = qty
++
++
++def _check_sku(sku):
++    if not isinstance(sku, str):
++        raise UnknownProduct(sku)
++    lookup(sku)
++
++
++class Inventory:
++    def __init__(self, stock):
++        stock = dict(stock)
++        for sku, units in stock.items():
++            _check_sku(sku)
++            if type(units) is not int or units < 0:
++                raise ValueError("units must be a non-negative int")
++        self._lock = threading.Lock()
++        self._on_hand = stock
++        self._held = {}
++        self._open = {}  # id(Reservation) -> (Reservation, sku, qty); the entry keeps the object alive
++
++    def on_hand(self, sku):
++        _check_sku(sku)
++        with self._lock:
++            return self._on_hand.get(sku, 0)
++
++    def available(self, sku):
++        _check_sku(sku)
++        with self._lock:
++            return self._available(sku)
++
++    def reserve(self, sku, qty):
++        if type(qty) is not int or qty < 1:
++            raise ValueError("qty must be a positive int")
++        _check_sku(sku)
++        with self._lock:
++            available = self._available(sku)
++            if qty > available:
++                raise OutOfStock(f"out of stock: {sku} requested {qty}, available {available}")
++            self._held[sku] = self._held.get(sku, 0) + qty
++            reservation = Reservation(sku, qty)
++            self._open[id(reservation)] = (reservation, sku, qty)
++            return reservation
++
++    def commit(self, reservation):
++        with self._lock:
++            sku, qty = self._close(reservation)
++            self._on_hand[sku] -= qty
++            self._held[sku] -= qty
++
++    def release(self, reservation):
++        with self._lock:
++            sku, qty = self._close(reservation)
++            self._held[sku] -= qty
++
++    def _available(self, sku):
++        return self._on_hand.get(sku, 0) - self._held.get(sku, 0)
++
++    def _close(self, reservation):
++        entry = self._open.get(id(reservation))
++        if entry is None or entry[0] is not reservation:
++            raise ReservationError("reservation is not open")
++        del self._open[id(reservation)]
++        return entry[1], entry[2]
+diff --git a/tests/test_inventory.py b/tests/test_inventory.py
+new file mode 100644
+index 0000000..1ced007
+--- /dev/null
++++ b/tests/test_inventory.py
+@@ -0,0 +1,304 @@
++import threading
++import unittest
++
++from shop.catalog import UnknownProduct
++from shop.inventory import Inventory, OutOfStock, Reservation, ReservationError
++
++THREADS = 24
++ROUNDS = 50
++
++
++class InventoryTest(unittest.TestCase):
++    def setUp(self):
++        self.inv = Inventory({"MUG": 3, "BEAN-ETH": 1})
++
++    def assertRaisesExact(self, exc_type, message, func, *args):
++        with self.assertRaises(exc_type) as cm:
++            func(*args)
++        self.assertIs(type(cm.exception), exc_type)
++        self.assertEqual(str(cm.exception), message)
++
++    def run_threads(self, target, count):
++        barrier = threading.Barrier(count)
++        results = []
++
++        def worker(i):
++            barrier.wait()
++            results.append(target(i))
++
++        threads = [threading.Thread(target=worker, args=(i,)) for i in range(count)]
++        for thread in threads:
++            thread.start()
++        for thread in threads:
++            thread.join()
++        return results
++
++    def test_stock_is_copied(self):
++        stock = {"MUG": 2}
++        inv = Inventory(stock)
++        stock["MUG"] = 99
++        self.assertEqual(inv.on_hand("MUG"), 2)
++
++    def test_unknown_sku_in_stock(self):
++        with self.assertRaises(UnknownProduct):
++            Inventory({"NOPE": 3})
++
++    def test_bad_units(self):
++        for bad in [-1, True, 2.0, "2", None]:
++            with self.subTest(units=bad):
++                self.assertRaisesExact(
++                    ValueError, "units must be a non-negative int", Inventory, {"MUG": bad}
++                )
++
++    def test_empty_stock_is_all_zero(self):
++        inv = Inventory({})
++        self.assertEqual(inv.available("MUG"), 0)
++        self.assertEqual(inv.on_hand("MUG"), 0)
++
++    def test_available_unknown_sku(self):
++        with self.assertRaises(UnknownProduct):
++            self.inv.available("NOPE")
++
++    def test_available_sku_absent_from_stock_is_zero(self):
++        self.assertEqual(self.inv.available("FILTER"), 0)
++
++    def test_unhashable_or_none_sku_is_unknown(self):
++        for bad in [None, ["MUG"]]:
++            with self.subTest(sku=bad):
++                with self.assertRaises(UnknownProduct):
++                    self.inv.available(bad)
++                with self.assertRaises(UnknownProduct):
++                    self.inv.on_hand(bad)
++                with self.assertRaises(UnknownProduct):
++                    self.inv.reserve(bad, 1)
++
++    def test_reserve_holds_units(self):
++        reservation = self.inv.reserve("MUG", 2)
++        self.assertIsInstance(reservation, Reservation)
++        self.assertEqual(reservation.sku, "MUG")
++        self.assertEqual(reservation.qty, 2)
++        self.assertEqual(self.inv.available("MUG"), 1)
++        self.assertEqual(self.inv.on_hand("MUG"), 3)
++
++    def test_reserve_bad_qty(self):
++        for bad in [True, False, 1.0, "1", None, 0, -1]:
++            with self.subTest(qty=bad):
++                self.assertRaisesExact(
++                    ValueError, "qty must be a positive int", self.inv.reserve, "MUG", bad
++                )
++        self.assertEqual(self.inv.available("MUG"), 3)
++
++    def test_reserve_unknown_sku(self):
++        with self.assertRaises(UnknownProduct):
++            self.inv.reserve("NOPE", 1)
++
++    def test_reserve_more_than_available(self):
++        self.assertRaisesExact(
++            OutOfStock,
++            "out of stock: MUG requested 4, available 3",
++            self.inv.reserve,
++            "MUG",
++            4,
++        )
++        self.assertEqual(self.inv.available("MUG"), 3)
++
++    def test_reserve_huge_qty(self):
++        self.assertRaisesExact(
++            OutOfStock,
++            f"out of stock: MUG requested {10**30}, available 3",
++            self.inv.reserve,
++            "MUG",
++            10**30,
++        )
++        self.assertEqual(self.inv.on_hand("MUG"), 3)
++
++    def test_reserve_exact_available_leaves_zero(self):
++        self.inv.reserve("MUG", 3)
++        self.assertEqual(self.inv.available("MUG"), 0)
++        self.assertRaisesExact(
++            OutOfStock,
++            "out of stock: MUG requested 1, available 0",
++            self.inv.reserve,
++            "MUG",
++            1,
++        )
++
++    def test_reserve_sku_absent_from_stock(self):
++        self.assertRaisesExact(
++            OutOfStock,
++            "out of stock: FILTER requested 1, available 0",
++            self.inv.reserve,
++            "FILTER",
++            1,
++        )
++
++    def test_commit_removes_units_for_good(self):
++        reservation = self.inv.reserve("MUG", 2)
++        self.inv.commit(reservation)
++        self.assertEqual(self.inv.on_hand("MUG"), 1)
++        self.assertEqual(self.inv.available("MUG"), 1)
++
++    def test_release_returns_units(self):
++        reservation = self.inv.reserve("MUG", 2)
++        self.inv.release(reservation)
++        self.assertEqual(self.inv.on_hand("MUG"), 3)
++        self.assertEqual(self.inv.available("MUG"), 3)
++
++    def test_settle_at_most_once(self):
++        cases = [
++            ("commit", "commit"),
++            ("release", "release"),
++            ("commit", "release"),
++            ("release", "commit"),
++        ]
++        for first, second in cases:
++            with self.subTest(first=first, second=second):
++                inv = Inventory({"MUG": 3})
++                reservation = inv.reserve("MUG", 2)
++                getattr(inv, first)(reservation)
++                before = (inv.on_hand("MUG"), inv.available("MUG"))
++                self.assertRaisesExact(
++                    ReservationError,
++                    "reservation is not open",
++                    getattr(inv, second),
++                    reservation,
++                )
++                self.assertEqual((inv.on_hand("MUG"), inv.available("MUG")), before)
++
++    def test_foreign_or_hand_built_reservation_is_rejected(self):
++        other = Inventory({"MUG": 3})
++        foreign = other.reserve("MUG", 1)
++        reservation = self.inv.reserve("MUG", 2)
++        for bad in [None, Reservation("MUG", 2), foreign]:
++            with self.subTest(reservation=bad):
++                self.assertRaisesExact(
++                    ReservationError, "reservation is not open", self.inv.commit, bad
++                )
++                self.assertRaisesExact(
++                    ReservationError, "reservation is not open", self.inv.release, bad
++                )
++                self.assertEqual(self.inv.on_hand("MUG"), 3)
++                self.assertEqual(self.inv.available("MUG"), 1)
++        other.commit(foreign)
++        self.assertEqual(other.on_hand("MUG"), 2)
++        self.inv.release(reservation)
++        self.assertEqual(self.inv.available("MUG"), 3)
++
++    def test_mutating_reservation_fields_does_not_change_settlement(self):
++        reservation = self.inv.reserve("MUG", 1)
++        reservation.qty = 3
++        self.inv.commit(reservation)
++        self.assertEqual(self.inv.on_hand("MUG"), 2)
++        self.assertEqual(self.inv.available("MUG"), 2)
++
++    def test_forged_subclass_cannot_settle_victim(self):
++        victim = self.inv.reserve("MUG", 2)
++
++        class Forge(Reservation):
++            def __eq__(self, other):
++                return True
++
++            def __hash__(self):
++                return hash(victim)
++
++        forged = Forge("MUG", 2)
++        for action in ["commit", "release"]:
++            with self.subTest(action=action):
++                self.assertRaisesExact(
++                    ReservationError, "reservation is not open", getattr(self.inv, action), forged
++                )
++                self.assertEqual(self.inv.on_hand("MUG"), 3)
++                self.assertEqual(self.inv.available("MUG"), 1)
++        self.inv.commit(victim)
++        self.assertEqual(self.inv.on_hand("MUG"), 1)
++        self.assertEqual(self.inv.available("MUG"), 1)
++
++    def test_unhashable_subclass_is_rejected_not_crashing(self):
++        reservation = self.inv.reserve("MUG", 2)
++
++        class Unh(Reservation):
++            def __eq__(self, other):
++                return False
++
++        unhashable = Unh("MUG", 1)
++        for action in ["commit", "release"]:
++            with self.subTest(action=action):
++                self.assertRaisesExact(
++                    ReservationError,
++                    "reservation is not open",
++                    getattr(self.inv, action),
++                    unhashable,
++                )
++                self.assertEqual(self.inv.on_hand("MUG"), 3)
++                self.assertEqual(self.inv.available("MUG"), 1)
++        self.inv.release(reservation)
++        self.assertEqual(self.inv.available("MUG"), 3)
++
++    def test_concurrent_reserve_never_oversells(self):
++        inv = Inventory({"MUG": 7})
++
++        def attempt(_):
++            try:
++                inv.reserve("MUG", 1)
++                return "ok"
++            except OutOfStock:
++                return "out_of_stock"
++
++        results = self.run_threads(attempt, THREADS)
++        self.assertEqual(len(results), THREADS)
++        self.assertEqual(results.count("ok"), 7)
++        self.assertEqual(results.count("out_of_stock"), THREADS - 7)
++        self.assertEqual(inv.on_hand("MUG"), 7)
++        self.assertEqual(inv.available("MUG"), 0)
++
++    def test_concurrent_commit_and_release_only_one_wins(self):
++        inv = Inventory({"MUG": 5})
++        reservation = inv.reserve("MUG", 2)
++
++        def settle(i):
++            action = "commit" if i % 2 else "release"
++            try:
++                getattr(inv, action)(reservation)
++                return action
++            except ReservationError:
++                return "reservation_error"
++
++        results = self.run_threads(settle, THREADS)
++        self.assertEqual(len(results), THREADS)
++        winners = [result for result in results if result != "reservation_error"]
++        self.assertEqual(len(winners), 1)
++        expected = {"commit": 3, "release": 5}[winners[0]]
++        self.assertEqual(inv.on_hand("MUG"), expected)
++        self.assertEqual(inv.available("MUG"), expected)
++
++    def test_concurrent_mixed_operations_stay_consistent(self):
++        inv = Inventory({"MUG": 10})
++
++        def cycle(i):
++            outcomes = []
++            for step in range(ROUNDS):
++                try:
++                    reservation = inv.reserve("MUG", 1)
++                except OutOfStock:
++                    outcomes.append("out_of_stock")
++                    continue
++                if (i + step) % 2:
++                    inv.commit(reservation)
++                    outcomes.append("commit")
++                else:
++                    inv.release(reservation)
++                    outcomes.append("release")
++            return outcomes
++
++        per_thread = self.run_threads(cycle, THREADS)
++        outcomes = [item for thread_outcomes in per_thread for item in thread_outcomes]
++        commits = outcomes.count("commit")
++        releases = outcomes.count("release")
++        self.assertGreater(commits + releases, 0)
++        self.assertEqual(outcomes.count("out_of_stock") + commits + releases, THREADS * ROUNDS)
++        self.assertEqual(inv.on_hand("MUG"), 10 - commits)
++        self.assertEqual(inv.available("MUG"), 10 - commits)
++
++
++if __name__ == "__main__":
++    unittest.main()

@@ -1,0 +1,140 @@
+diff --git a/shop/auth.py b/shop/auth.py
+index d159a6c..b9651b3 100644
+--- a/shop/auth.py
++++ b/shop/auth.py
+@@ -1,24 +1,56 @@
+-"""Password-reset tokens (in-memory store)."""
++"""Password-reset tokens (in-memory store).
++
++Tokens expire TOKEN_TTL seconds after they are issued and are single-use.
++"""
+ 
+ import secrets
++import threading
++import time
++
++TOKEN_TTL = 1800  # seconds (30 minutes)
+ 
+-_TOKENS = {}  # token -> username
++_TOKENS = {}  # token -> {"username": str, "issued_at": float, "used": bool}
++_LOCK = threading.Lock()
+ 
+ 
+ class InvalidToken(Exception):
+     pass
+ 
+ 
+-def issue_reset_token(username):
+-    """Create a reset token for username."""
++class TokenExpired(InvalidToken):
++    pass
++
++
++class TokenUsed(InvalidToken):
++    pass
++
++
++def issue_reset_token(username, now=None):
++    """Create a reset token for username, issued at now (Unix seconds)."""
++    if now is None:
++        now = time.time()
+     token = secrets.token_urlsafe(16)
+-    _TOKENS[token] = username
++    with _LOCK:
++        _TOKENS[token] = {"username": username, "issued_at": now, "used": False}
+     return token
+ 
+ 
+-def redeem_reset_token(token):
+-    """Return the username a token was issued for."""
+-    username = _TOKENS.get(token)
+-    if username is None:
+-        raise InvalidToken("unknown token")
+-    return username
++def redeem_reset_token(token, now=None):
++    """Return the username a token was issued for and mark it used.
++
++    Raises InvalidToken for unknown tokens, TokenUsed if it was already
++    redeemed, and TokenExpired if redeemed more than TOKEN_TTL seconds
++    after it was issued.
++    """
++    if now is None:
++        now = time.time()
++    with _LOCK:
++        entry = _TOKENS.get(token)
++        if entry is None:
++            raise InvalidToken("unknown token")
++        if entry["used"]:
++            raise TokenUsed("token already used")
++        if now - entry["issued_at"] > TOKEN_TTL:
++            raise TokenExpired("token expired")
++        entry["used"] = True
++        return entry["username"]
+diff --git a/tests/test_auth.py b/tests/test_auth.py
+index 7e9882c..e86f148 100644
+--- a/tests/test_auth.py
++++ b/tests/test_auth.py
+@@ -1,6 +1,13 @@
++import time
+ import unittest
+ 
+-from shop.auth import InvalidToken, issue_reset_token, redeem_reset_token
++from shop.auth import (
++    InvalidToken,
++    TokenExpired,
++    TokenUsed,
++    issue_reset_token,
++    redeem_reset_token,
++)
+ 
+ 
+ class ResetTokenTest(unittest.TestCase):
+@@ -11,3 +18,48 @@ class ResetTokenTest(unittest.TestCase):
+     def test_unknown_token(self):
+         with self.assertRaises(InvalidToken):
+             redeem_reset_token("not-a-token")
++
++    def test_single_use(self):
++        token = issue_reset_token("ada", now=1000)
++        self.assertEqual(redeem_reset_token(token, now=1001), "ada")
++        with self.assertRaises(TokenUsed):
++            redeem_reset_token(token, now=1002)
++
++    def test_second_redeem_after_expiry_is_used(self):
++        token = issue_reset_token("ada", now=1000)
++        redeem_reset_token(token, now=1001)
++        with self.assertRaises(TokenUsed):
++            redeem_reset_token(token, now=1000 + 86400)
++
++    def test_valid_at_exactly_ttl(self):
++        token = issue_reset_token("ada", now=1000)
++        self.assertEqual(redeem_reset_token(token, now=2800), "ada")
++
++    def test_expired_after_ttl(self):
++        token = issue_reset_token("ada", now=1000)
++        with self.assertRaises(TokenExpired):
++            redeem_reset_token(token, now=2800.001)
++        with self.assertRaises(TokenExpired):
++            redeem_reset_token(token, now=1000 + 86400)
++
++    def test_now_zero_is_honoured(self):
++        token = issue_reset_token("ada", now=0)
++        with self.assertRaises(TokenExpired):
++            redeem_reset_token(token, now=1801)
++
++    def test_defaults_to_current_time(self):
++        token = issue_reset_token("ada")
++        with self.assertRaises(TokenExpired):
++            redeem_reset_token(token, now=time.time() + 1801)
++        token = issue_reset_token("bob", now=time.time() - 1801)
++        with self.assertRaises(TokenExpired):
++            redeem_reset_token(token)
++
++    def test_unknown_token_is_not_a_subclass_error(self):
++        with self.assertRaises(InvalidToken) as ctx:
++            redeem_reset_token("nope")
++        self.assertIs(type(ctx.exception), InvalidToken)
++
++    def test_subclasses(self):
++        self.assertTrue(issubclass(TokenExpired, InvalidToken))
++        self.assertTrue(issubclass(TokenUsed, InvalidToken))

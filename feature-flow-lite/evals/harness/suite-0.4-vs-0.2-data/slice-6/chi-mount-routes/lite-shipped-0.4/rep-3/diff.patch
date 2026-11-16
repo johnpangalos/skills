@@ -1,0 +1,114 @@
+diff --git a/tree.go b/tree.go
+index 74ff43d..1a3df61 100644
+--- a/tree.go
++++ b/tree.go
+@@ -133,6 +133,10 @@ type endpoint struct {
+ 
+ 	// parameter keys recorded on handler nodes
+ 	paramKeys []string
++
++	// stub is true when the handler was set by a Mount() stub registration
++	// rather than by a route registered directly on this pattern
++	stub bool
+ }
+ 
+ func (s endpoints) Value(method methodTyp) *endpoint {
+@@ -356,6 +360,7 @@ func (n *node) setEndpoint(method methodTyp, handler http.Handler, pattern strin
+ 	}
+ 
+ 	paramKeys := patParamKeys(pattern)
++	stub := method&mSTUB == mSTUB
+ 
+ 	if method&mSTUB == mSTUB {
+ 		n.endpoints.Value(mSTUB).handler = handler
+@@ -365,17 +370,20 @@ func (n *node) setEndpoint(method methodTyp, handler http.Handler, pattern strin
+ 		h.handler = handler
+ 		h.pattern = pattern
+ 		h.paramKeys = paramKeys
++		h.stub = stub
+ 		for _, m := range methodMap {
+ 			h := n.endpoints.Value(m)
+ 			h.handler = handler
+ 			h.pattern = pattern
+ 			h.paramKeys = paramKeys
++			h.stub = stub
+ 		}
+ 	} else {
+ 		h := n.endpoints.Value(method)
+ 		h.handler = handler
+ 		h.pattern = pattern
+ 		h.paramKeys = paramKeys
++		h.stub = stub
+ 	}
+ }
+ 
+@@ -629,15 +637,16 @@ func (n *node) routes() []Route {
+ 	rts := []Route{}
+ 
+ 	n.walk(func(eps endpoints, subroutes Routes) bool {
+-		if eps[mSTUB] != nil && eps[mSTUB].handler != nil && subroutes == nil {
+-			return false
+-		}
++		// A Mount() stub node without subroutes (eg. "/bar" for a mount at
++		// "/bar/*") is not reported itself, but routes registered directly on
++		// the same pattern (eg. r.Get("/bar")) still are.
++		mountStub := eps[mSTUB] != nil && eps[mSTUB].handler != nil && subroutes == nil
+ 
+ 		// Group methodHandlers by unique patterns
+ 		pats := make(map[string]endpoints)
+ 
+ 		for mt, h := range eps {
+-			if h.pattern == "" {
++			if h.pattern == "" || (mountStub && h.stub) {
+ 				continue
+ 			}
+ 			p, ok := pats[h.pattern]
+diff --git a/tree_test.go b/tree_test.go
+index c07e830..d8dc535 100644
+--- a/tree_test.go
++++ b/tree_test.go
+@@ -4,6 +4,8 @@ import (
+ 	"fmt"
+ 	"log"
+ 	"net/http"
++	"reflect"
++	"sort"
+ 	"testing"
+ )
+ 
+@@ -522,6 +524,35 @@ func TestWalker(t *testing.T) {
+ 	}
+ }
+ 
++func TestWalkRouteOnMountPattern(t *testing.T) {
++	handler := func(w http.ResponseWriter, r *http.Request) {}
++
++	r := NewRouter()
++	r.Route("/foo", func(r Router) {
++		r.Route("/bar", func(r Router) {
++			r.Get("/{id}", handler)
++		})
++		r.Get("/bar", handler)
++	})
++	r.Route("/baz", func(r Router) {
++		r.Get("/", handler)
++	})
++
++	var got []string
++	if err := Walk(r, func(method string, route string, handler http.Handler, middlewares ...func(http.Handler) http.Handler) error {
++		got = append(got, method+" "+route)
++		return nil
++	}); err != nil {
++		t.Fatal(err)
++	}
++	sort.Strings(got)
++
++	expected := []string{"GET /baz/", "GET /foo/bar", "GET /foo/bar/{id}"}
++	if !reflect.DeepEqual(got, expected) {
++		t.Fatalf("expected %v, got %v", expected, got)
++	}
++}
++
+ func TestWalkInlineMiddlewaresAcrossSubrouter(t *testing.T) {
+ 	mw := func(next http.Handler) http.Handler { return next }
+ 	handler := func(w http.ResponseWriter, r *http.Request) {}
