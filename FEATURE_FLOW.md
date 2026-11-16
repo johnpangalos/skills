@@ -11,9 +11,11 @@ type stripping, Claude Code mods), with evals. No CI: the checks below are run b
 
 ## Checks
 
-- Full: `node --test "figma-flow/scripts/*.test.ts"` (export-node against a fake Figma tree)
+- Full: `node --test "figma-flow/scripts/*.test.ts"` (export-node and export-tokens against a fake Figma, print.ts check)
+- Full: `claude plugin test figma-flow` (the mod's tests in `hooks/register.test.ts`; it also tries to load
+  the scripts' and templates' tests and reports them as not loading, which is expected)
 - Full: `cd figma-flow/scripts && pnpm install && pnpm typecheck`
-- Full, when figma-setup's templates or figma-flow's scripts change: in `evals/workers-comp-pages`,
+- Full, when the setup skill's templates (`figma-flow/skills/setup/templates`) or figma-flow's scripts change: in `evals/workers-comp-pages`,
   `pnpm install`, `pnpm typecheck`, `pnpm build`, `pnpm test:figma` (set
   `PW_CHROMIUM=/opt/pw-browsers/chromium` where Playwright's own browser build isn't installed)
 - Targeted: `node --test figma-flow/scripts/export-node.test.ts`
@@ -24,8 +26,8 @@ type stripping, Claude Code mods), with evals. No CI: the checks below are run b
 
 - Change to a figma-flow script: its behaviour described in the comment at the top of the script
   and in figma-flow/SKILL.md's script list; a test in `figma-flow/scripts/*.test.ts`.
-- Change to figma-setup's templates: the eval app's copy (`evals/workers-comp-pages/tests/figma.ts`)
-  updated to match, and its `test:figma` passing.
+- Change to the setup skill's templates: the eval app's copies (`evals/workers-comp-pages/tests/figma.ts`,
+  `tests/tokens.figma.spec.ts`) updated to match, and its `test:figma` passing.
 - Plugin versions (`.claude-plugin/marketplace.json`, each plugin's `plugin.json`) are bumped in a
   PR of their own.
 - An eval records what was run, on what, and what happened, in its README, with each agent's log.

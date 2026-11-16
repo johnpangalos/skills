@@ -53,8 +53,10 @@ async function hasMeasurement($: EngineInterface) {
 
 export const register: Register = on => {
   // Invoking the skill is Figma work, even when the export is already saved and no Figma tool runs.
+  // So is figma-flow:setup: it adds a page and its CSS for the worked example, and the test:figma
+  // that measures them, so a commit waits for that to pass as it does after a build.
   on('skill.prompt', async ($, e, next) => {
-    if (/(^|:)figma-flow$/.test(e.skill)) {
+    if (/(^|:)figma-flow(:setup)?$/.test(e.skill)) {
       await update($, flow, now => (now.isActive ? now : { ...now, isActive: true }))
     }
 

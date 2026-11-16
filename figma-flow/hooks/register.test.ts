@@ -168,3 +168,23 @@ test('invoking the skill counts as Figma work', async ($, on) => {
 
   expect(held.deny).toContain('src/button.tsx')
 })
+
+test('invoking figma-flow:setup counts as Figma work', async ($, on) => {
+  tools(on, {})
+  on('skill.prompt', (_$, e) => ({ text: e.text }) as never)
+  await $.skill.prompt({ skill: 'figma-flow:setup', text: 'x' } as never)
+  await $.tool.call({ tool: 'Edit', file_path: 'src/fonts.css', old_string: 'a', new_string: 'b' })
+  const held = await $.tool.call({ tool: 'Bash', command: 'git commit -m "feat: x"' })
+
+  expect(held.deny).toContain('src/fonts.css')
+})
+
+test("another plugin's skill named setup is not Figma work", async ($, on) => {
+  tools(on, {})
+  on('skill.prompt', (_$, e) => ({ text: e.text }) as never)
+  await $.skill.prompt({ skill: 'other:setup', text: 'x' } as never)
+  await $.tool.call({ tool: 'Edit', file_path: 'src/button.tsx', old_string: 'a', new_string: 'b' })
+  const ran = await $.tool.call({ tool: 'Bash', command: 'git commit -m "feat: x"' })
+
+  expect(ran.deny).toBe(undefined)
+})
