@@ -27,13 +27,17 @@
 // The last line is a hash of everything above it, which the tests check, so a copy that lost
 // or changed a character fails instead of quietly testing against the wrong numbers.
 export default async function exportNode(...nodeIds: string[]): Promise<string> {
-  const hex = ({ r, g, b }: RGB) =>
-    "#" + [r, g, b].map((c) => Math.round(c * 255).toString(16).padStart(2, "0")).join("");
+  // Figma stores numbers as 32-bit floats (0.35 reads back as 0.3499999940…): round what is computed.
+  const round = (value: number) => Math.round(value * 100) / 100;
+  // "#rrggbb", or "#rrggbbaa" when the colour is see-through (a paint's opacity, a colour's alpha).
+  const hex = ({ r, g, b }: RGB, alpha = 1) =>
+    "#" +
+    [r, g, b, ...(alpha < 1 ? [alpha] : [])].map((c) => Math.round(c * 255).toString(16).padStart(2, "0")).join("");
+  const firstSolid = (paints: readonly Paint[] | typeof figma.mixed) =>
+    Array.isArray(paints) ? paints.find((p): p is SolidPaint => p.type === "SOLID" && p.visible !== false) : undefined;
   const solid = (paints: readonly Paint[] | typeof figma.mixed) => {
-    const paint = Array.isArray(paints)
-      ? paints.find((p): p is SolidPaint => p.type === "SOLID" && p.visible !== false)
-      : undefined;
-    return paint ? hex(paint.color) : null;
+    const paint = firstSolid(paints);
+    return paint ? hex(paint.color, paint.opacity ?? 1) : null;
   };
   // Figma reports `figma.mixed` (a symbol) when a value differs within the node.
   const single = <T>(value: T | typeof figma.mixed) => (typeof value === "symbol" ? null : (value as T));
@@ -41,6 +45,95 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
     const value = single(lineHeight);
     return value?.unit === "PIXELS" ? value.value : null;
   };
+  // Letter spacing in pixels, as CSS computes it: Figma's percent is of the font size.
+  const tracking = (node: TextNode) => {
+    const value = single(node.letterSpacing);
+    const size = single(node.fontSize);
+    if (!value) return null;
+    if (value.unit === "PIXELS") return round(value.value);
+    return size === null ? null : round((value.value / 100) * size);
+  };
+  // Text properties in the words CSS uses for them, so a test compares them with getComputedStyle.
+  // Figma's word → CSS's; null for a value that is mixed, or one with no CSS word.
+  const css = (words: Record<string, string>, value: string | typeof figma.mixed) =>
+    (typeof value === "string" && words[value]) || null;
+  const textCase = (value: TextCase | typeof figma.mixed) =>
+    css({ ORIGINAL: "none", UPPER: "uppercase", LOWER: "lowercase", TITLE: "capitalize", SMALL_CAPS: "small-caps", SMALL_CAPS_FORCED: "small-caps" }, value);
+  const textDecoration = (value: TextDecoration | typeof figma.mixed) =>
+    css({ NONE: "none", UNDERLINE: "underline", STRIKETHROUGH: "line-through" }, value);
+  const textAlign = (node: TextNode) =>
+    css({ LEFT: "left", CENTER: "center", RIGHT: "right", JUSTIFIED: "justify" }, node.textAlignHorizontal);
+  // A text's type, for a component's label and for a text on a page. Alignment only matters, and
+  // is only recorded, when the text wraps to a set width: a box that hugs its text has no room to align in.
+  const typeOf = (node: TextNode) => ({
+    fontFamily: single(node.fontName)?.family ?? null,
+    fontSize: single(node.fontSize),
+    fontWeight: single(node.fontWeight),
+    lineHeight: pixels(node.lineHeight),
+    letterSpacing: tracking(node),
+    textCase: textCase(node.textCase),
+    textDecoration: textDecoration(node.textDecoration),
+    ...(node.textAutoResize !== "WIDTH_AND_HEIGHT" && { textAlign: textAlign(node) }),
+  });
+
+  // The names of the variables and styles a node's values come from: a variable by its WEB code
+  // syntax (`var(--color-blue-600)`, what the Tailwind utility is read from), or its name where it
+  // has none; a style by its name (`text-sm/medium`, `shadow-md`). Only what is bound is listed.
+  const variables = new Map<string, string | null>();
+  const variableName = async (alias: VariableAlias | readonly VariableAlias[] | undefined): Promise<string | null> => {
+    const aliases = ([] as VariableAlias[]).concat((alias ?? []) as VariableAlias | VariableAlias[]);
+    // A text's bound values are per run of characters: one name only when every run shares it.
+    if (aliases.length === 0 || aliases.some((a) => a.id !== aliases[0]!.id)) return null;
+    const id = aliases[0]!.id;
+    if (!variables.has(id)) {
+      const variable = await figma.variables.getVariableByIdAsync(id);
+      variables.set(id, variable ? (variable.codeSyntax.WEB ?? variable.name) : null);
+    }
+    return variables.get(id)!;
+  };
+  const styleName = async (id: string | typeof figma.mixed) =>
+    typeof id === "string" && id !== "" ? ((await figma.getStyleByIdAsync(id))?.name ?? null) : null;
+  const paintToken = async (node: SceneNode & MinimalFillsMixin, field: "fills" | "strokes") => {
+    const style = await styleName(field === "fills" ? node.fillStyleId : (node as MinimalStrokesMixin).strokeStyleId);
+    return style ?? variableName(firstSolid((node as never)[field])?.boundVariables?.color);
+  };
+  // One name for four sides or corners that share it, four (or null for one that has none) otherwise.
+  const fourNames = async (bound: Record<string, unknown>, fields: string[]) => {
+    const names = await Promise.all(fields.map((field) => variableName(bound[field] as VariableAlias | undefined)));
+    if (names.every((name) => name === null)) return null;
+    return names.every((name) => name === names[0]) ? names[0] : names;
+  };
+  async function tokensOf(node: Box | TextNode, label?: TextNode) {
+    const bound = (node.boundVariables ?? {}) as Record<string, VariableAlias | VariableAlias[] | undefined>;
+    const tokens: Record<string, unknown> = {};
+    const set = (key: string, value: unknown) => {
+      if (value !== null && value !== undefined) tokens[key] = value;
+    };
+    if (node.type !== "TEXT") {
+      set("fill", await paintToken(node, "fills"));
+      set("stroke", await paintToken(node, "strokes"));
+      set("strokeWeight", await fourNames(bound, ["strokeTopWeight", "strokeRightWeight", "strokeBottomWeight", "strokeLeftWeight"]));
+      set("radius", await fourNames(bound, ["topLeftRadius", "topRightRadius", "bottomRightRadius", "bottomLeftRadius"]));
+      set("gap", await variableName(bound.itemSpacing));
+      set("rowGap", await variableName(bound.counterAxisSpacing));
+      set("padding", await fourNames(bound, ["paddingTop", "paddingRight", "paddingBottom", "paddingLeft"]));
+      for (const field of ["width", "height", "minWidth", "maxWidth", "minHeight", "maxHeight"]) {
+        set(field, await variableName(bound[field]));
+      }
+      set("effect", await styleName(node.effectStyleId));
+    }
+    set("opacity", await variableName(bound.opacity));
+    const text = node.type === "TEXT" ? node : label;
+    if (text) {
+      const textBound = (text.boundVariables ?? {}) as Record<string, VariableAlias | VariableAlias[] | undefined>;
+      set("text", await styleName(text.textStyleId));
+      set("textColor", await paintToken(text, "fills"));
+      for (const field of ["fontFamily", "fontSize", "fontWeight", "lineHeight", "letterSpacing"]) {
+        set(field, await variableName(textBound[field]));
+      }
+    }
+    return Object.keys(tokens).length > 0 ? { tokens } : {};
+  }
 
   type Box = FrameNode | ComponentNode | InstanceNode;
   const isBox = (node: BaseNode): node is Box =>
@@ -65,9 +158,31 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
     return typeof text === "string" ? short(text) : node.name;
   };
 
-  function describe(node: Box, withLabel: boolean) {
+  // Where auto layout puts the children, in CSS's words: justify-content along the direction,
+  // align-items across it. Left out where it can't show: justify when a child fills the
+  // direction (it takes the room), align when every child fills across.
+  const sizingAlong = (child: SceneNode, horizontal: boolean) =>
+    "layoutSizingHorizontal" in child ? (horizontal ? child.layoutSizingHorizontal : child.layoutSizingVertical) : "FIXED";
+  function alignment(node: Box, laidOut: SceneNode[]) {
+    const horizontal = node.layoutMode === "HORIZONTAL";
+    const justify = css({ MIN: "start", CENTER: "center", MAX: "end", SPACE_BETWEEN: "space-between" }, node.primaryAxisAlignItems);
+    const align = css({ MIN: "start", CENTER: "center", MAX: "end", BASELINE: "baseline" }, node.counterAxisAlignItems);
+    return {
+      ...(!laidOut.some((child) => sizingAlong(child, horizontal) === "FILL") && { justify }),
+      ...(!laidOut.every((child) => sizingAlong(child, !horizontal) === "FILL") && { align }),
+    };
+  }
+
+  async function describe(node: Box, withLabel: boolean) {
     const label = withLabel ? firstText(node) : undefined;
     const laidOut = flow(node);
+    const stroke = solid(node.strokes);
+    const weight = single(node.strokeWeight);
+    const radius = single(node.cornerRadius);
+    const shadows = node.effects.filter(
+      (effect): effect is DropShadowEffect | InnerShadowEffect =>
+        (effect.type === "DROP_SHADOW" || effect.type === "INNER_SHADOW") && effect.visible !== false,
+    );
     return {
       id: node.id,
       x: node.x,
@@ -75,14 +190,14 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
       width: node.width,
       height: node.height,
       fill: solid(node.fills),
-      stroke: solid(node.strokes),
-      strokeWeight: solid(node.strokes) ? single(node.strokeWeight) : 0,
-      radius: single(node.cornerRadius),
+      stroke,
+      // One weight, or top, right, bottom, left when the sides differ.
+      strokeWeight: stroke ? (weight ?? [node.strokeTopWeight, node.strokeRightWeight, node.strokeBottomWeight, node.strokeLeftWeight]) : 0,
+      // One radius, or top-left, top-right, bottom-right, bottom-left when the corners differ.
+      radius: radius ?? [node.topLeftRadius, node.topRightRadius, node.bottomRightRadius, node.bottomLeftRadius],
       // Spread-only shadows are how Figma draws a focus ring: [colour, spread], outermost first.
-      rings: node.effects.flatMap((effect) =>
-        effect.type === "DROP_SHADOW" && effect.visible !== false && effect.radius === 0
-          ? [[hex(effect.color), effect.spread ?? 0]]
-          : [],
+      rings: shadows.flatMap((effect) =>
+        effect.type === "DROP_SHADOW" && effect.radius === 0 ? [[hex(effect.color, effect.color.a), effect.spread ?? 0]] : [],
       ),
       label: label
         ? {
@@ -90,9 +205,7 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
             y: label.y,
             height: label.height,
             color: solid(label.fills),
-            fontSize: single(label.fontSize),
-            fontWeight: single(label.fontWeight),
-            lineHeight: pixels(label.lineHeight),
+            ...typeOf(label),
           }
         : null,
       ...(laidOut.length >= 2 && {
@@ -104,15 +217,41 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
           // over the padding, which is measured from the node's edge. On, the stroke takes room of
           // its own and the padding starts inside it, as padding does inside a CSS border. Only
           // recorded for a node with a stroke, where it changes where the children start.
-          ...(solid(node.strokes) !== null && { strokesIncludedInLayout: node.strokesIncludedInLayout }),
+          ...(stroke !== null && { strokesIncludedInLayout: node.strokesIncludedInLayout }),
+          ...alignment(node, laidOut),
+          // Children that wrap onto more lines, with the gap between the lines.
+          ...(node.layoutWrap === "WRAP" && { wrap: true, rowGap: node.counterAxisSpacing ?? 0 }),
         },
       }),
+      opacity: round(node.opacity),
+      // Inside (a CSS border), outside (an outline) or centred (half each, which CSS can't draw).
+      ...(stroke !== null && { strokeAlign: node.strokeAlign.toLowerCase() }),
+      ...(stroke !== null && node.dashPattern.length > 0 && { dashed: true }),
+      // Shadows with blur, in the order CSS lists them: what isn't a ring.
+      shadows: shadows
+        .filter((effect) => !(effect.type === "DROP_SHADOW" && effect.radius === 0))
+        .map((effect) => ({
+          x: effect.offset.x,
+          y: effect.offset.y,
+          blur: effect.radius,
+          spread: effect.spread ?? 0,
+          color: hex(effect.color, effect.color.a),
+          inset: effect.type === "INNER_SHADOW",
+        })),
+      // How auto layout sizes it, across and down: hug its content, fill its parent, or fixed.
+      sizing: [node.layoutSizingHorizontal, node.layoutSizingVertical].map((sizing) => sizing.toLowerCase()),
+      ...Object.fromEntries(
+        (["minWidth", "maxWidth", "minHeight", "maxHeight"] as const).flatMap((field) =>
+          node[field] === null || node[field] === undefined ? [] : [[field, node[field]]],
+        ),
+      ),
+      ...(await tokensOf(node, label)),
     };
   }
 
   // A text node on a page: where it sits, its size, and its type. `wraps` is true when its width
   // is set (the text wraps to it) rather than hugging the text.
-  const describeText = (node: TextNode) => ({
+  const describeText = async (node: TextNode) => ({
     id: node.id,
     type: "TEXT",
     x: node.x,
@@ -120,10 +259,10 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
     width: node.width,
     height: node.height,
     color: solid(node.fills),
-    fontSize: single(node.fontSize),
-    fontWeight: single(node.fontWeight),
-    lineHeight: pixels(node.lineHeight),
+    ...typeOf(node),
     wraps: node.textAutoResize !== "WIDTH_AND_HEIGHT",
+    opacity: round(node.opacity),
+    ...(await tokensOf(node)),
   });
 
   const entries: [string, object][] = [];
@@ -136,14 +275,15 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
   };
 
   // Components: the node, and its laid-out children one level down.
-  function add(key: string, node: Box, isRoot = false) {
+  async function add(key: string, node: Box, isRoot = false) {
     const own = unique(key);
-    entries.push([own, isRoot ? { ...describe(node, true), x: 0, y: 0 } : describe(node, true)]);
+    const described = await describe(node, true);
+    entries.push([own, isRoot ? { ...described, x: 0, y: 0 } : described]);
     const laidOut = flow(node);
     if (laidOut.length < 2) return;
     for (const child of laidOut) {
       if (!isBox(child)) continue;
-      entries.push([unique(`${own} > ${firstText(child)?.characters ?? child.name}`), describe(child, true)]);
+      entries.push([unique(`${own} > ${firstText(child)?.characters ?? child.name}`), await describe(child, true)]);
     }
   }
 
@@ -153,7 +293,7 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
     for (const child of node.children) {
       if (!child.visible) continue;
       if (child.type === "TEXT") {
-        entries.push([unique(`${parent} > ${short(child.characters)}`), { ...describeText(child), parent }]);
+        entries.push([unique(`${parent} > ${short(child.characters)}`), { ...(await describeText(child)), parent }]);
       } else if (isBox(child)) {
         const key = unique(`${parent} > ${labelOf(child)}`);
         if (child.type === "INSTANCE") {
@@ -163,10 +303,10 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
           // A component from a library is the library's to measure. One made in this file (a
           // ClaimRow) has no code until the app builds it, so its insides are measured here.
           const local = main !== null && !main.remote;
-          entries.push([key, { ...describe(child, !local), type: "INSTANCE", component, variant, local, parent }]);
+          entries.push([key, { ...(await describe(child, !local)), type: "INSTANCE", component, variant, local, parent }]);
           if (local) await walk(key, child);
         } else {
-          entries.push([key, { ...describe(child, false), type: "FRAME", parent }]);
+          entries.push([key, { ...(await describe(child, false)), type: "FRAME", parent }]);
           await walk(key, child);
         }
       } else if ("children" in child) {
@@ -179,13 +319,13 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
     const node = await figma.getNodeByIdAsync(nodeId);
     const prefix = nodeIds.length > 1 && node ? `${node.name}/` : "";
     if (node?.type === "COMPONENT_SET") {
-      for (const variant of node.children) if (isBox(variant)) add(prefix + variant.name, variant);
+      for (const variant of node.children) if (isBox(variant)) await add(prefix + variant.name, variant);
     } else if (node?.type === "FRAME") {
       const key = unique(node.name);
-      entries.push([key, { ...describe(node, false), x: 0, y: 0, type: "FRAME", parent: null }]);
+      entries.push([key, { ...(await describe(node, false)), x: 0, y: 0, type: "FRAME", parent: null }]);
       await walk(key, node);
     } else if (node && isBox(node)) {
-      add(node.name, node, true);
+      await add(node.name, node, true);
     } else {
       throw new Error(`${nodeId} is not a component set, component, instance or frame`);
     }
