@@ -1,0 +1,304 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 258c5d1..3e7b8dc 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -1,7 +1,7 @@
+ # Upcoming Release
+ 
+ ## Features
+--
++- Add `--count` to print the number of search results instead of the results themselves
+ 
+ ## Bugfixes
+ - Accept `--format` templates that start with `-` when passed as a separate argument, see #2126 (@vulragrag-star)
+diff --git a/contrib/completion/_fd b/contrib/completion/_fd
+index 8055467..e3a127d 100644
+--- a/contrib/completion/_fd
++++ b/contrib/completion/_fd
+@@ -85,15 +85,18 @@ _fd() {
+     '(long-listing)'{-a,--absolute-path}'[show absolute paths instead of relative paths]'
+ 
+     + '(null-sep)' # use null separator for output
+-    '(long-listing)'{-0,--print0}'[separate search results by the null character]'
++    '(long-listing count)'{-0,--print0}'[separate search results by the null character]'
+ 
+     + '(long-listing)' # long-listing output
+-    '(abs-path null-sep max-results exec-cmds)'{-l,--list-details}'[use a long listing format with file metadata]'
++    '(abs-path null-sep max-results exec-cmds count)'{-l,--list-details}'[use a long listing format with file metadata]'
+ 
+     + '(max-results)' # max number of results
+     '(long-listing exec-cmds)--max-results=[limit number of search results to given count and quit]:count'
+     '(long-listing exec-cmds)-1[limit to a single search result and quit]'
+ 
++    + '(count)' # print the number of search results
++    '(null-sep long-listing exec-cmds)--count[print the number of search results instead of the results]'
++
+     + '(fs-errors)' # file-system errors
+     $no'--show-errors[enable the display of filesystem errors]'
+ 
+@@ -145,9 +148,9 @@ _fd() {
+     {-j+,--threads=}'[set the number of threads for searching and executing]:number of threads'
+ 
+     + '(exec-cmds)' # execute command
+-    '(long-listing max-results)'{-x+,--exec=}'[execute command for each search result]:command: _command_names -e:*\;::program arguments: _normal'
+-    '(long-listing max-results)'{-X+,--exec-batch=}'[execute command for all search results at once]:command: _command_names -e:*\;::program arguments: _normal'
+-    '(long-listing max-results)--batch-size=[max number of args for each -X call]:size'
++    '(long-listing max-results count)'{-x+,--exec=}'[execute command for each search result]:command: _command_names -e:*\;::program arguments: _normal'
++    '(long-listing max-results count)'{-X+,--exec-batch=}'[execute command for all search results at once]:command: _command_names -e:*\;::program arguments: _normal'
++    '(long-listing max-results count)--batch-size=[max number of args for each -X call]:size'
+ 
+     + other
+     '!(--max-buffer-time)--max-buffer-time=[set amount of time to buffer before showing output]:time (ms)'
+diff --git a/doc/fd.1 b/doc/fd.1
+index 83b7948..b201343 100644
+--- a/doc/fd.1
++++ b/doc/fd.1
+@@ -158,6 +158,11 @@ Limit the number of search results to 'count' and quit immediately.
+ .B \-1
+ Limit the search to a single result and quit immediately. This is an alias for '--max-results=1'.
+ .TP
++.B \-\-count
++Print the number of search results instead of the results themselves, followed by a newline. All other search options still apply,
++and '--max-results' or '-1' cap the count. Cannot be combined with -x/--exec, -X/--exec-batch, -l/--list-details, --format,
++-0/--print0 or -q/--quiet.
++.TP
+ .B \-q, \-\-quiet
+ When the flag is present, the program does not print anything and will instead exit with a code of 0 if there is at least one search result.
+ Otherwise, the exit code will be 1.
+diff --git a/src/cli.rs b/src/cli.rs
+index 2cb9d67..d7ad753 100644
+--- a/src/cli.rs
++++ b/src/cli.rs
+@@ -600,6 +600,17 @@ pub struct Opts {
+     )]
+     pub quiet: bool,
+ 
++    /// Print the number of search results instead of the results themselves.
++    /// All other search options still apply, and '--max-results' or '-1' cap the count.
++    #[arg(
++        long,
++        hide_short_help = true,
++        conflicts_with_all(["exec", "exec_batch", "list_details", "format", "null_separator", "quiet"]),
++        help = "Print the number of search results",
++        long_help
++    )]
++    pub count: bool,
++
+     /// Enable the display of filesystem errors for situations such as
+     /// insufficient permissions or dead symlinks.
+     #[arg(
+diff --git a/src/config.rs b/src/config.rs
+index a027812..90a0473 100644
+--- a/src/config.rs
++++ b/src/config.rs
+@@ -65,6 +65,9 @@ pub struct Config {
+     /// if there's at least one match. Otherwise, the exit code will be 1.
+     pub quiet: bool,
+ 
++    /// If true, the program prints only the number of results instead of the results themselves.
++    pub count: bool,
++
+     /// Time to buffer results internally before streaming to the console. This is useful to
+     /// provide a sorted output, in case the total execution time is shorter than
+     /// `max_buffer_time`.
+diff --git a/src/main.rs b/src/main.rs
+index edb59ff..5d5ff2e 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -327,6 +327,7 @@ fn construct_config(mut opts: Opts, pattern_regexps: &[String]) -> Result<Config
+         one_file_system: opts.one_file_system,
+         null_separator: opts.null_separator,
+         quiet: opts.quiet,
++        count: opts.count,
+         max_depth: opts.max_depth(),
+         min_depth: opts.min_depth(),
+         prune: opts.prune,
+diff --git a/src/walk.rs b/src/walk.rs
+index 88683d7..5a9b060 100644
+--- a/src/walk.rs
++++ b/src/walk.rs
+@@ -31,6 +31,9 @@ enum ReceiverMode {
+ 
+     /// Receiver is directly printing results to the output.
+     Streaming,
++
++    /// Receiver is only counting results, which are printed once the search stops.
++    Counting,
+ }
+ 
+ /// The Worker threads can result in a valid entry having PathBuf or an error.
+@@ -162,7 +165,11 @@ impl<'a, W: Write> ReceiverBuffer<'a, W> {
+             interrupt_flag,
+             rx,
+             stdout,
+-            mode: ReceiverMode::Buffering,
++            mode: if config.count {
++                ReceiverMode::Counting
++            } else {
++                ReceiverMode::Buffering
++            },
+             deadline,
+             buffer: Vec::with_capacity(MAX_BUFFER_LENGTH),
+             num_results: 0,
+@@ -186,7 +193,7 @@ impl<'a, W: Write> ReceiverBuffer<'a, W> {
+                 // Wait at most until we should switch to streaming
+                 self.rx.recv_deadline(self.deadline)
+             }
+-            ReceiverMode::Streaming => {
++            ReceiverMode::Streaming | ReceiverMode::Counting => {
+                 // Wait however long it takes for a result
+                 Ok(self.rx.recv()?)
+             }
+@@ -214,6 +221,7 @@ impl<'a, W: Write> ReceiverBuffer<'a, W> {
+                                 ReceiverMode::Streaming => {
+                                     self.print(&dir_entry)?;
+                                 }
++                                ReceiverMode::Counting => {}
+                             }
+ 
+                             self.num_results += 1;
+@@ -279,6 +287,10 @@ impl<'a, W: Write> ReceiverBuffer<'a, W> {
+ 
+     /// Stop looping.
+     fn stop(&mut self) -> Result<(), ExitCode> {
++        if self.mode == ReceiverMode::Counting {
++            return self.print_count();
++        }
++
+         if self.mode == ReceiverMode::Buffering {
+             self.buffer.sort();
+             self.stream()?;
+@@ -291,6 +303,24 @@ impl<'a, W: Write> ReceiverBuffer<'a, W> {
+         }
+     }
+ 
++    /// Output the number of results.
++    fn print_count(&mut self) -> Result<(), ExitCode> {
++        if self.interrupt_flag.load(Ordering::Relaxed) {
++            // Interrupted searches report nothing, so the count is never partial
++            return Err(ExitCode::KilledBySigint);
++        }
++
++        if let Err(e) = writeln!(self.stdout, "{}", self.num_results)
++            && e.kind() != ::std::io::ErrorKind::BrokenPipe
++        {
++            print_error!("Could not write to output: {}", e);
++            return Err(ExitCode::GeneralError);
++        }
++
++        self.flush()?;
++        Err(ExitCode::Success)
++    }
++
+     /// Flush stdout if necessary.
+     fn flush(&mut self) -> Result<(), ExitCode> {
+         if self.stdout.flush().is_err() {
+diff --git a/tests/tests.rs b/tests/tests.rs
+index c24545f..b58db88 100644
+--- a/tests/tests.rs
++++ b/tests/tests.rs
+@@ -2806,6 +2806,104 @@ fn test_max_results() {
+     te.assert_failure(&["thing", "--max-results=1", "-1", "--exec=cat"]);
+ }
+ 
++#[test]
++fn test_count() {
++    let te = TestEnv::new(DEFAULT_DIRS, DEFAULT_FILES);
++
++    // Only the number of results is printed
++    te.assert_output(&["--count", "--type=f", "foo"], "5");
++    te.assert_output(&["--count", "--type=f", "--extension=foo"], "4");
++
++    // Search options apply as usual
++    te.assert_output(&["--count", "--type=f", "--hidden", "foo"], "6");
++    te.assert_output(&["--count", "--type=f", "--no-ignore", "foo"], "7");
++    te.assert_output(&["--count", "--type=f", "--exclude=one", "foo"], "1");
++    te.assert_output(&["--count", "--type=f", "--max-depth=2", "foo"], "2");
++
++    // One total for several search paths, overlapping paths included
++    te.assert_output(
++        &["--count", "--type=f", "foo", "one/two", "one/two/three"],
++        "4",
++    );
++
++    // --max-results and -1 cap the count, --max-results=0 means no cap
++    te.assert_output(&["--count", "--type=f", "--max-results=2", "foo"], "2");
++    te.assert_output(&["--count", "--type=f", "-1", "foo"], "1");
++    te.assert_output(&["--count", "--type=f", "--max-results=0", "foo"], "5");
++
++    // No matches print zero
++    te.assert_output(&["--count", "no-such-entry"], "0");
++    te.assert_output(&["--count", "-1", "no-such-entry"], "0");
++
++    // A slow search still prints only the count
++    te.assert_output(&["--count", "--type=f", "--max-buffer-time=0", "foo"], "5");
++}
++
++#[test]
++fn test_count_more_than_buffer_length() {
++    let te = TestEnv::new(DEFAULT_DIRS, DEFAULT_FILES);
++    for i in 0..1100 {
++        std::fs::write(te.test_root().join(format!("bulk{i}.txt")), "").unwrap();
++    }
++
++    te.assert_output(&["--count", "--type=f", "bulk"], "1100");
++}
++
++#[cfg(unix)]
++#[test]
++fn test_count_name_with_newline() {
++    let te = TestEnv::new(DEFAULT_DIRS, DEFAULT_FILES);
++    std::fs::write(te.test_root().join("new\nline.foo"), "").unwrap();
++
++    // The entry counts once, whatever its name contains
++    te.assert_output(&["--count", "--type=f", "foo"], "6");
++}
++
++#[test]
++fn test_count_conflicts() {
++    let te = TestEnv::new(DEFAULT_DIRS, DEFAULT_FILES);
++
++    let assert_conflict = |option: &str, message: &str| {
++        let status = te.assert_error(&["--count", option, "foo"], message);
++        assert_eq!(status.code(), Some(2));
++    };
++    assert_conflict(
++        "--quiet",
++        "error: the argument '--count' cannot be used with '--quiet'",
++    );
++    assert_conflict(
++        "--has-results",
++        "error: the argument '--count' cannot be used with '--quiet'",
++    );
++    assert_conflict(
++        "--print0",
++        "error: the argument '--count' cannot be used with '--print0'",
++    );
++    assert_conflict(
++        "--format={}",
++        "error: the argument '--count' cannot be used with '--format <fmt>'",
++    );
++    assert_conflict(
++        "--list-details",
++        "error: the argument '--count' cannot be used with '--list-details'",
++    );
++    assert_conflict(
++        "--exec=cat",
++        "error: the argument '--count' cannot be used with '--exec <cmd>...'",
++    );
++    assert_conflict(
++        "--exec-batch=cat",
++        "error: the argument '--count' cannot be used with '--exec-batch <cmd>...'",
++    );
++
++    // The order of the options does not matter
++    let status = te.assert_error(
++        &["--quiet", "--count", "foo"],
++        "error: the argument '--quiet' cannot be used with '--count'",
++    );
++    assert_eq!(status.code(), Some(2));
++}
++
+ /// Filenames with non-utf8 paths are passed to the executed program unchanged
+ ///
+ /// Note:
