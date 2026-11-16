@@ -149,7 +149,9 @@ is expected, and the hashes below show whether what ran and what was saved are e
      `componentProperties` with a read-only `use_figma` call. Figma's auto layout doesn't
      stretch a child unless it is set to fill, and CSS flex does (`align-items: stretch`), so
      give each flex container the alignment its Figma frame has (`items-start`,
-     `align-items: flex-start` for the default). The page's root is the frame, from the
+     `align-items: flex-start` for the default). A child set to fill its parent's width is
+     `width: 100%` (`w-full`), stated on the element itself: a library component may set a width
+     of its own, which the parent's stretch doesn't override. The page's root is the frame, from the
      viewport's top left: if no CSS in the app removes the body's margin, the page does. Add a
      spec from `templates/tests/page.figma.spec.ts`: the viewport set to the frame's size,
      `expectPageToMatchFigma` with an element or `skip("why")` for every key of the export (copy

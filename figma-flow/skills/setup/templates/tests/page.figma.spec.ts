@@ -7,7 +7,8 @@ import { expectPageToMatchFigma, loadFigmaPage, skip } from "./figma";
 // key of the export an element, or skip("why") for one the helper can't read. A key with neither
 // fails, so nothing goes unmeasured by accident.
 //
-// The keys are the export's own: copy them from the export file, never retype them.
+// The keys are the export's own: copy them from the export file, never retype them. Delete these
+// template notes from the finished spec.
 //
 // A library instance's element is its component's outermost element. A role or a label finds
 // something inside it (the input, the label), so step out to the outermost one (`.locator("..")`
