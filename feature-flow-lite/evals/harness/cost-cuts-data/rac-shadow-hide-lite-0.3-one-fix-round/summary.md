@@ -1,0 +1,12 @@
+| scenario | arm | runs | process | outcome | cost $ | opus share | main tool calls | spawns (role:model/effort) |
+|---|---|---|---|---|---|---|---|---|
+| rac-shadow-hide | lite-0.3-one-fix-round | 1 | 0.57 | 1.0 | 6.7 | 0.98 | 45.0 | investigator:haiku/fm, criteria_check:opus/fm, implementor:haiku/fm, simplifier:haiku/fm, gate:opus/fm, gate:opus/fm, gate:opus/fm, implementor:haiku/fm, gate:opus/fm, implementor:haiku/fm |
+
+## Failed checks
+
+- rac-shadow-hide / lite-0.3-one-fix-round rep: [process] handoff prompts use the template — criteria_check missing GOAL; simplifier missing GOAL; gate missing GOAL; gate missing GOAL; gate missing GOAL; gate missing GOAL
+- rac-shadow-hide / lite-0.3-one-fix-round rep: [process] subagents return the result template — gate returned 52 lines; gate returned 56 lines; gate returned 41 lines
+- rac-shadow-hide / lite-0.3-one-fix-round rep: [process] stages announced before the first spawn — stage words before first spawn: none
+- rac-shadow-hide / lite-0.3-one-fix-round rep: [process] checks pass before any review — 4 review(s) started with no check run after the last edit
+- rac-shadow-hide / lite-0.3-one-fix-round rep: [process] main conversation leaves edits to subagents — main conversation edited ['/tmp/claude-0/-tmp-ff-eval--u41xopb-workspace/bb16b91b-e86b-4ebd-8e7a-bc4ac1e59d76/scratchpad/criteria.md', '/tmp/claude-0/-tmp-ff-eval--u41xopb-workspace/bb16b91b-e86b-4ebd-8e7a-bc4ac1e59d76/scratchpad/criteria.md', '/tmp/claude-0/-tmp-ff-eval--u41xopb-workspace/bb16b91b-e86b-4ebd-8e7a-bc4ac1e59d76/scratchpad/gate-common.md']
+- rac-shadow-hide / lite-0.3-one-fix-round rep: [process] final report lists the agents that ran — final report names ['criteria_check'] of ['criteria_check', 'gate', 'implementor', 'investigator', 'simplifier']

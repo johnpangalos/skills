@@ -193,6 +193,7 @@ AGENT_ROLES = {
     "looker": "looker",  # figma-flow's agent
     "gatekeeper": "gate",  # the merge-gate variant's agent
     "panelist": "gate",  # the review-panel-split variant's panel agent
+    "repo-panelist": "gate",  # the sonnet-repo-seat variant's repo seat
     "councillor": "council",  # the council variant's agent
     "criteria-checker": "criteria_check",  # the review-gate variant's agent
 }

@@ -10,10 +10,15 @@ acceptance criteria while the investigator maps the code, has them checked again
 hands the work to Haiku and runs the checks itself. It never decides on its own that the work is
 done: a fresh gatekeeper, a maintainer who didn't build it, red-teams the change and decides
 whether it is mergeable, and the work goes back until it says yes. In the evals
-(`evals/README.md`, sections 12 to 18) this panel was the first setup to pass every hidden test
-on a Go middleware task and a react-aria shadow DOM change, and the audit found no must-fix in
-6 of 7 builds. It costs 3 to 4 times the Haiku-reviewer version ($5 to $9 a build against about
-$1.35) and took 19 to 37 minutes. Every role runs on every
+(`evals/README.md`, sections 12 to 21) this panel was the first setup to pass every hidden test
+on a Go middleware task and a react-aria shadow DOM change. With one fix round and a lean main
+thread (section 21) a build costs about $3 to $4 and takes about 20 to 26 minutes, against $5 to
+$9 and 19 to 42 minutes for 0.3, and the audit found no must-fix in 4 of 5 builds.
+
+**Run the main session at effort `low`** (`/effort low`, or `--effort low` headless). Its job here is
+routing and bookkeeping; the judgment sits in the Opus criteria-checker and gatekeepers, whose
+effort is pinned in their frontmatter. In the evals `low` cut the orchestrator's cost by about a
+third, and with the rest of this flow the audit's must-fix rate stayed within the 0.3 panel's. Every role runs on every
 task in an existing codebase: left to judgment, the investigator and simplifier were skipped in
 every benchmarked run, and running them costs a few cents. The acceptance criteria and the
 project's reviewer checklist matter more than the subagents' model.
@@ -32,7 +37,7 @@ prompt with `ROLE: <role>`, and end it with the result template.
 | `criteria-checker` | opus / medium | Read, Grep, Glob | Every task, once the criteria are written and before the implementor. Checks each criterion against the request sentence by sentence and against the closest sibling. |
 | `implementor` | haiku / medium | Read, Edit, Write, Bash, Grep, Glob | Every run: builds the change, running targeted tests as it goes and the full checks once at the end. |
 | `simplifier` | haiku / medium | Read, Edit, Write, Bash, Grep, Glob | Every task, after the checks pass. Makes the change simpler without changing behavior: splits or inlines helpers it gave a flag or mode parameter, rewrites over-engineered parts the plainer way, removes dead code. |
-| `gatekeeper` | opus / high | Read, Grep, Glob, Bash | Every run, after the checks pass: three at once, each with its own focus, then one fresh on the final diff. Each red-teams the change (probes for every criterion and hostile input, the project checklist) and decides, as a maintainer who didn't build it, whether it is mergeable; continued, it verifies the fixes for its own must-fixes. |
+| `gatekeeper` | opus / high | Read, Grep, Glob, Bash | Every run, after the checks pass: three at once, each with its own focus, then one fresh on the final diff. Each red-teams the change (probes for every criterion and hostile input, the project checklist) and decides, as a maintainer who didn't build it, whether it is mergeable. The final one also reruns every panel must-fix's repro; continued, it verifies the fixes for its own must-fixes. |
 
 No agent can spawn another; the main conversation spawns all of them.
 
@@ -42,6 +47,32 @@ adds a note to the result when an implementor run leaves no changed test file in
 records per-role tokens and time, which `/ff-usage` prints. It never blocks a spawn or a tool call.
 With `FEATURE_FLOW_CHECK_CACHE=1` it also replays a passing check on an unchanged tree instead of
 running it again (`hooks/check-cache.ts`).
+
+## Keep the main thread lean
+
+The main conversation is the most expensive seat: every word it writes is Opus output, and
+everything it reads is re-read on every later turn. So:
+- **Brief files.** At step 2, write the acceptance criteria with their hostile inputs to
+  `criteria.md`, and the user's request word for word, the base commit, the CHECKS, the
+  sibling's path, the project file's Run it line and its Reviewer checklist to `brief.md`, both
+  in your scratchpad directory (a `mktemp -d` outside the repo if you have none). Don't also
+  write them out in chat. When a criterion changes, edit `criteria.md`.
+- **Handoffs point at the files.** In every handoff `ACCEPTANCE CRITERIA:` is one line,
+  `read <absolute path>/criteria.md (the full list with hostile inputs)`, and
+  `BRIEF: <absolute path>/brief.md` stands in for REQUEST, BASE, CHECKS, SIBLING and PROJECT
+  CHECKLIST. Write only what is specific to that agent: its GOAL, FILES, CONSTRAINTS, FOCUS, the
+  must-fixes. If an agent says it couldn't read a file, paste that file's text into its next
+  handoff.
+- **Checks go to a log.** Run checks with their output sent to a log file in the scratchpad, and
+  read only the exit codes and the failing lines (`grep`, `tail -40`). Don't read diffs, whole
+  test logs or source files the agents already read into the main thread; the agents read the
+  tree themselves.
+- **Few turns, few words.** Put independent tool calls in one message (the three panel spawns,
+  the checks beside a spawn). Between tool calls write at most one short line, and don't restate
+  what an agent returned.
+- **Fix handoffs and verify messages.** One line per must-fix with its repro command, copied
+  from the gatekeeper. When you continue a verifier, say which of its must-fixes the fix
+  addressed and which files it touched; it reads the diff itself.
 
 ## Project file
 
@@ -106,9 +137,8 @@ right section and name it in the report. Never remove a line the user wrote.
 3. **Fold in the investigator.** Wait for it if it hasn't returned. Add any convention, sibling
    behavior or place the sibling appears that it found to the criteria, and its files and
    constraints to the implementor's FILES and CONSTRAINTS.
-4. **Criteria check.** Spawn a fresh `criteria-checker` with the user's request word for word
-   under `REQUEST:`, the acceptance criteria with their hostile inputs, and the sibling's path
-   under `SIBLING:`. It flags every criterion that contradicts the request, drops something it
+4. **Criteria check.** Spawn a fresh `criteria-checker` with the `BRIEF:` and
+   `ACCEPTANCE CRITERIA:` lines (the brief holds the request word for word and the sibling's path). It flags every criterion that contradicts the request, drops something it
    says or implies, or makes a choice the request or the sibling points against. Fix every
    `[wrong]` and `[missing]` finding in the criteria before the implementor runs; if you keep a
    criterion it flagged, say why in one line (quote the request) and list it under "Criteria
@@ -127,9 +157,8 @@ right section and name it in the report. Never remove a line the user wrote.
    criteria. Re-run the full checks after it; if it broke something, revert its edits rather
    than spending a fix round on them.
 8. **Review panel.** Spawn **three** gatekeepers **in one message** so they run in parallel, each
-   with the user's request word for word under `REQUEST:`, the base commit, the acceptance
-   criteria and hostile inputs, the CHECKS and their latest result, the project file's Run it
-   line and its Reviewer checklist as `PROJECT CHECKLIST:`, and its own `FOCUS:`:
+   with the `BRIEF:` and `ACCEPTANCE CRITERIA:` lines, the latest checks result in one line, and its
+   own `FOCUS:`:
    - **request**: every sentence of the request and every criterion, probed in the request's
      own words; wrong or missing criteria.
    - **edges**: what the new code wraps or stands in for and every capability and edge input it
@@ -143,19 +172,18 @@ right section and name it in the report. Never remove a line the user wrote.
    as soon as the simplifier's edits pass the targeted checks; run the full checks in the
    background at the same time, and if they fail, send that to the implementor and discard the
    panel's round. Merge the panel's must-fixes, dropping duplicates.
-9. **Fix and verify.** Send all the must-fixes to the implementor in one handoff, with this
-   constraint: change only what each must-fix needs; any other change in behavior is a
-   regression, even one that looks like an improvement. Then run the affected checks. Then **continue** each gatekeeper that raised a must-fix (SendMessage to its
-   agent, don't spawn a new one) with the fix diff: it reruns the probes behind its must-fixes
-   and checks the changed hunks for regressions. Loop fix and verify until every panel member
-   says `MERGEABLE: yes`. A verifier raises new must-fixes only for regressions and for what the
-   fix touched.
+9. **One fix round.** If every panel member said `MERGEABLE: yes` with no must-fix, the panel's
+   verdict is the decision: skip step 10 and report. Otherwise send all the must-fixes to the
+   implementor in one handoff, with this constraint: change only what each must-fix needs; any
+   other change in behavior is a regression, even one that looks like an improvement. Then run
+   the affected checks. Don't continue the panel members to verify: the final gate does that.
 10. **Final gate.** Spawn one **fresh** gatekeeper, `FOCUS: all`, on the whole final diff, with the
-   full checks running beside it and a `RULED ON:` list of everything the panel raised and how
-   it was settled. If it says no, fix its must-fixes, then continue that same gatekeeper to
-   verify (same constraint: only what its must-fixes need). The work is done only when this
-   final gatekeeper says `MERGEABLE: yes`. There is no
-   round cap. Nits are reported, not looped on.
+   full checks running beside it and a `RULED ON:` list of every must-fix the panel raised, each
+   with its repro command and how it was settled (fixed, or overruled and why). It reruns the
+   repro behind each fixed must-fix, reads the fix for regressions, and reviews the whole change.
+   If it says no, fix its must-fixes, then continue that same gatekeeper to verify (same
+   constraint: only what its must-fixes need). The work is done only when this final gatekeeper
+   says `MERGEABLE: yes`. There is no round cap. Nits are reported, not looped on.
    - **Criteria.** A wrong criterion a gatekeeper confirms means your criteria were wrong:
      rewrite it (and its hostile inputs), and send the corrected list with the fix. Every later
      handoff carries the corrected list.
@@ -169,9 +197,9 @@ right section and name it in the report. Never remove a line the user wrote.
    - **Only the user can decide.** If a must-fix needs the user (the request contradicts itself,
      or the fix needs a file that's off-limits), stop and report the change as not mergeable,
      with the question.
-11. **Report.** The first line is `Mergeable: yes` (the final gatekeeper said so on the final
-   diff) or `Not mergeable:` and why. Then what changed, which agents ran, what the criteria
-   check changed, how many panel, verify and final-gate rounds it took, the gatekeeper's DECISIONS, anything overruled,
+11. **Report.** At most 15 lines. The first line is `Mergeable: yes` (the final gatekeeper said so on the final
+   diff) or `Not mergeable:` and why. Then, a line or two each: what changed, which agents ran, what the criteria
+   check changed, how many panel and final-gate rounds it took, the gatekeeper's DECISIONS, anything overruled,
    and every open nit. Never call the work done, finished or ready while anything you know of is
    open; list it instead.
 
@@ -181,18 +209,14 @@ right section and name it in the report. Never remove a line the user wrote.
 GOAL: <one or two sentences: what done looks like>
 FILES: <paths to read or change; what you already know about them>
 CONSTRAINTS: <scope limits, files not to touch, no new dependencies, etc.>
-ACCEPTANCE CRITERIA:
-- <the list from step 1, word for word>
-CHECKS: <targeted test command while working; full test and lint commands for the end>
-PROJECT CHECKLIST: <gatekeeper only: the project file's Reviewer checklist, word for word>
-REQUEST: <criteria-checker and gatekeeper: the user's request, word for word>
-SIBLING: <criteria-checker only: the closest sibling's path>
-BASE: <gatekeeper only: the commit the change is diffed against>
+ACCEPTANCE CRITERIA: read <absolute path>/criteria.md (the full list with hostile inputs)
+BRIEF: <absolute path>/brief.md (the REQUEST word for word, BASE, CHECKS, SIBLING, Run it, PROJECT CHECKLIST)
+CHECKS: <implementor only: the targeted test command while working; the full set is in the brief>
 FOCUS: <gatekeeper only: request, edges, repo, or all>
-RULED ON: <final gatekeeper only: what the panel raised and how each was settled>
+RULED ON: <final gatekeeper only: what the panel raised and how each was settled, one line each>
 ```
 
-Every criteria-checker, implementor and gatekeeper handoff carries the `ACCEPTANCE CRITERIA:` block unchanged. The
+Every criteria-checker, implementor and gatekeeper handoff carries the `ACCEPTANCE CRITERIA:` line and the `BRIEF:` line. The
 agents already return this result format, so don't restate it:
 
 ```

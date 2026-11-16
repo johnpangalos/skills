@@ -1,0 +1,12 @@
+| scenario | arm | runs | process | outcome | cost $ | opus share | main tool calls | spawns (role:model/effort) |
+|---|---|---|---|---|---|---|---|---|
+| rac-shadow-hide | lite-0.3-two-panel | 1 | 0.64 | 0.83 | 4.95 | 0.98 | 37.0 | investigator:haiku/fm, criteria_check:opus/fm, implementor:haiku/fm, simplifier:haiku/fm, gate:opus/fm, gate:opus/fm, gate:opus/fm |
+
+## Failed checks
+
+- rac-shadow-hide / lite-0.3-two-panel rep: [process] handoff prompts use the template — criteria_check missing GOAL; gate missing GOAL; gate missing GOAL; gate missing GOAL
+- rac-shadow-hide / lite-0.3-two-panel rep: [process] stages announced before the first spawn — stage words before first spawn: none
+- rac-shadow-hide / lite-0.3-two-panel rep: [process] checks pass before any review — 3 review(s) started with no check run after the last edit
+- rac-shadow-hide / lite-0.3-two-panel rep: [process] main conversation leaves edits to subagents — main conversation edited ['/tmp/claude-0/-tmp-ff-eval-62ru5d31-workspace/f99b6f46-d112-4129-8565-b0460ffb0dfc/scratchpad/criteria.md']
+- rac-shadow-hide / lite-0.3-two-panel rep: [process] final report lists the agents that ran — final report names ['criteria_check'] of ['criteria_check', 'gate', 'implementor', 'investigator', 'simplifier']
+- rac-shadow-hide / lite-0.3-two-panel rep: [outcome] yarn.lock matches the package manifests — 5913a5914 | >     "@react-stately/flags": "npm:^3.1.2"
