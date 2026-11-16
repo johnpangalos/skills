@@ -1,0 +1,5 @@
+- Batch `results/20261116-205213`, arm `lite-0.2-criteria`, scenarios risky-auth and risky-refunds, 3 reps each, `-j 2`.
+- Neither scenario clones a repo (both run on `fixtures/shop`), so there was no fixture cache to warm.
+- No probe dirs exist for these scenarios, so `run_probes.py` was skipped and there is no `probes.json`/`probes.txt`.
+- `threads.json` is the stdout of `threads.py`, which is JSON (also kept as `threads.txt`).
+- No run failed setup, timed out or hit its budget cap; no reruns.

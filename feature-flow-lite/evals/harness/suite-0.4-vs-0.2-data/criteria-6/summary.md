@@ -1,0 +1,30 @@
+| scenario | arm | runs | process | outcome | cost $ | opus share | main tool calls | spawns (role:model/effort) |
+|---|---|---|---|---|---|---|---|---|
+| risky-auth | lite-0.2-criteria | 3 | 0.76 | 1.0 | 0.83 | 0.98 | 18.67 | investigator:haiku/fm, criteria_check:opus/fm, implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm, implementor:haiku/fm, reviewer:haiku/fm; investigator:haiku/fm, criteria_check:opus/fm, implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm, implementor:haiku/fm; investigator:haiku/fm, criteria_check:opus/fm, implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm |
+| risky-refunds | lite-0.2-criteria | 3 | 0.73 | 1.0 | 1.01 | 0.96 | 16.0 | investigator:haiku/fm, criteria_check:opus/fm, implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm, implementor:haiku/fm; investigator:haiku/fm, criteria_check:opus/fm, implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm, implementor:haiku/fm, reviewer:haiku/fm; investigator:haiku/fm, criteria_check:opus/fm, implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm, implementor:haiku/fm |
+
+## Failed checks
+
+- risky-auth / lite-0.2-criteria rep: [process] handoff prompts use the template — investigator missing GOAL; criteria_check missing GOAL; simplifier missing GOAL; reviewer missing GOAL
+- risky-auth / lite-0.2-criteria rep: [process] stages announced before the first spawn — stage words before first spawn: none
+- risky-auth / lite-0.2-criteria rep: [process] main conversation leaves edits to subagents — main conversation edited ['/tmp/ff-eval-ph03pkh7/workspace/tests/test_auth.py', '/tmp/ff-eval-ph03pkh7/workspace/tests/test_auth.py', '/tmp/ff-eval-ph03pkh7/workspace/tests/test_auth.py']
+- risky-auth / lite-0.2-criteria rep: [process] reviewer models (for the record) — reviewer models: ['haiku', 'haiku']
+- risky-auth / lite-0.2-criteria rep: [process] handoff prompts use the template — investigator missing GOAL; criteria_check missing GOAL; simplifier missing GOAL
+- risky-auth / lite-0.2-criteria rep: [process] stages announced before the first spawn — stage words before first spawn: none
+- risky-auth / lite-0.2-criteria rep: [process] reviewer models (for the record) — reviewer models: ['haiku']
+- risky-auth / lite-0.2-criteria rep: [process] handoff prompts use the template — investigator missing GOAL; criteria_check missing GOAL; simplifier missing GOAL
+- risky-auth / lite-0.2-criteria rep: [process] stages announced before the first spawn — stage words before first spawn: ['inves']
+- risky-auth / lite-0.2-criteria rep: [process] main conversation leaves edits to subagents — main conversation edited ['/tmp/ff-eval-ck8g2j7c/workspace/shop/auth.py', '/tmp/ff-eval-ck8g2j7c/workspace/tests/test_auth.py']
+- risky-auth / lite-0.2-criteria rep: [process] reviewer models (for the record) — reviewer models: ['haiku']
+- risky-refunds / lite-0.2-criteria rep: [process] handoff prompts use the template — investigator missing GOAL; criteria_check missing GOAL; simplifier missing GOAL
+- risky-refunds / lite-0.2-criteria rep: [process] stages announced before the first spawn — stage words before first spawn: none
+- risky-refunds / lite-0.2-criteria rep: [process] main conversation leaves edits to subagents — main conversation edited ['/tmp/claude-0/-tmp-ff-eval-fj--m740-workspace/959a8b8d-93e2-40c2-af4a-0b897ce67c8a/scratchpad/criteria.md']
+- risky-refunds / lite-0.2-criteria rep: [process] reviewer models (for the record) — reviewer models: ['haiku']
+- risky-refunds / lite-0.2-criteria rep: [process] handoff prompts use the template — investigator missing GOAL; criteria_check missing GOAL; simplifier missing GOAL
+- risky-refunds / lite-0.2-criteria rep: [process] stages announced before the first spawn — stage words before first spawn: none
+- risky-refunds / lite-0.2-criteria rep: [process] main conversation leaves edits to subagents — main conversation edited ['/tmp/claude-0/-tmp-ff-eval-n7pebqgz-workspace/c505076b-ca4d-4f80-a8a1-5472d664d736/scratchpad/criteria.md', '/tmp/claude-0/-tmp-ff-eval-n7pebqgz-workspace/c505076b-ca4d-4f80-a8a1-5472d664d736/scratchpad/criteria.md']
+- risky-refunds / lite-0.2-criteria rep: [process] reviewer models (for the record) — reviewer models: ['haiku', 'haiku']
+- risky-refunds / lite-0.2-criteria rep: [process] handoff prompts use the template — investigator missing GOAL; criteria_check missing GOAL; simplifier missing GOAL
+- risky-refunds / lite-0.2-criteria rep: [process] stages announced before the first spawn — stage words before first spawn: none
+- risky-refunds / lite-0.2-criteria rep: [process] main conversation leaves edits to subagents — main conversation edited ['/tmp/claude-0/-tmp-ff-eval-j0s7gcqc-workspace/c502216d-c8ec-476f-8a6d-0d9bf15e3e4f/scratchpad/criteria.md', '/tmp/claude-0/-tmp-ff-eval-j0s7gcqc-workspace/c502216d-c8ec-476f-8a6d-0d9bf15e3e4f/scratchpad/criteria.md']
+- risky-refunds / lite-0.2-criteria rep: [process] reviewer models (for the record) — reviewer models: ['haiku']
