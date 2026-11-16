@@ -1,0 +1,614 @@
+diff --git a/CHANGES.md b/CHANGES.md
+index 0c26e01..334b930 100644
+--- a/CHANGES.md
++++ b/CHANGES.md
+@@ -2,6 +2,9 @@
+ 
+ Unreleased
+ 
++- Add the {class}`Duration` parameter type, which converts strings such as `1h30m`
++  to a {class}`datetime.timedelta`. It accepts optional inclusive `min` and `max`
++  bounds.
+ - A parameter name that is not a valid Python identifier, or that is a Python
+   keyword, is deprecated and raises `TypeError` in Click 9.0. {pr}`3866`
+ - An {class}`Option` name written as a Python identifier is deprecated when it
+diff --git a/docs/api.md b/docs/api.md
+index df62cf5..23c0d94 100644
+--- a/docs/api.md
++++ b/docs/api.md
+@@ -256,6 +256,10 @@ classes and functions.
+ .. autoclass:: DateTime
+ ```
+ 
++```{eval-rst}
++.. autoclass:: Duration
++```
++
+ ```{eval-rst}
+ .. autoclass:: Tuple
+ ```
+diff --git a/docs/parameter-types.md b/docs/parameter-types.md
+index 470eb07..9b22267 100644
+--- a/docs/parameter-types.md
++++ b/docs/parameter-types.md
+@@ -106,6 +106,33 @@ can only be enabled if both bounds are *closed* (the default).
+     invoke(repeat, args=['--count=6', '--digit=12'])
+ ```
+ 
++(durations)=
++
++### Durations
++
++The {class}`Duration` type converts a string such as `1h30m` to a {class}`datetime.timedelta`. A value is either a whole
++number of seconds, such as `90`, or one or more parts with the units `d`, `h`, `m`, `s`, and `ms`, in that order, such as
++`2d4h` or `1m500ms`. Each unit may appear at most once, and there are no separators.
++
++`min` and `max` restrict the duration to an inclusive range, in the same way as {class}`IntRange`. Negative durations are
++rejected.
++
++```{eval-rst}
++.. click:example::
++
++    from datetime import timedelta
++
++    @click.command()
++    @click.option("--wait", type=click.Duration(min=timedelta(seconds=5), max=timedelta(hours=1)))
++    def cli(wait):
++        click.echo(f"Waiting {wait.total_seconds()} seconds")
++
++.. click:run::
++
++    invoke(cli, args=['--wait=1m30s'])
++    invoke(cli, args=['--wait=2h'])
++```
++
+ ## Built-in Types Listing
+ 
+ The supported parameter {ref}`click-api-types` are
+@@ -133,6 +160,11 @@ The supported parameter {ref}`click-api-types` are
+        :noindex:
+ ```
+ 
++```{eval-rst}
++*   .. autoclass:: Duration
++       :noindex:
++```
++
+ ```{eval-rst}
+ *   .. autoclass:: File
+        :noindex:
+diff --git a/src/click/__init__.py b/src/click/__init__.py
+index a34ab02..61f8c42 100644
+--- a/src/click/__init__.py
++++ b/src/click/__init__.py
+@@ -56,6 +56,7 @@ from .termui import unstyle as unstyle
+ from .types import BOOL as BOOL
+ from .types import Choice as Choice
+ from .types import DateTime as DateTime
++from .types import Duration as Duration
+ from .types import File as File
+ from .types import FLOAT as FLOAT
+ from .types import FloatRange as FloatRange
+diff --git a/src/click/core.py b/src/click/core.py
+index 59ed94e..4f03105 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -3681,7 +3681,7 @@ class Option(Parameter):
+                 extra["default"] = default_string
+ 
+         if (
+-            isinstance(self.type, types._NumberRangeBase)
++            isinstance(self.type, (types._NumberRangeBase, types.Duration))
+             # skip count with default range type
+             and not (self.count and self.type.min == 0 and self.type.max is None)
+         ):
+diff --git a/src/click/types.py b/src/click/types.py
+index b6e98a9..725225f 100644
+--- a/src/click/types.py
++++ b/src/click/types.py
+@@ -4,11 +4,13 @@ import abc
+ import collections.abc as cabc
+ import enum
+ import os
++import re
+ import stat
+ import sys
+ import typing as t
+ import uuid
+ from datetime import datetime
++from datetime import timedelta
+ from gettext import gettext as _
+ from gettext import ngettext
+ 
+@@ -590,6 +592,168 @@ class DateTime(ParamType[datetime]):
+         return "DateTime"
+ 
+ 
++class DurationInfoDict(ParamTypeInfoDict):
++    min: timedelta | None
++    max: timedelta | None
++
++
++_DURATION_SECONDS_RE = re.compile(r"-?[0-9]+")
++# The "m" part must not be followed by "s", so "1ms" is never read as one minute.
++_DURATION_PARTS_RE = re.compile(
++    r"-?(?:([0-9]+)d)?(?:([0-9]+)h)?(?:([0-9]+)m(?!s))?(?:([0-9]+)s)?(?:([0-9]+)ms)?"
++)
++
++
++def _parse_duration(text: str) -> timedelta:
++    """Parse a whole number of seconds, or parts such as ``1h30m``.
++
++    :raises ValueError: If the text is not in that form, or a number in it is
++        too large to convert.
++    """
++    if _DURATION_SECONDS_RE.fullmatch(text):
++        return timedelta(seconds=int(text))
++
++    match = _DURATION_PARTS_RE.fullmatch(text)
++
++    if match is None or not any(match.groups()):
++        raise ValueError(text)
++
++    days, hours, minutes, seconds, milliseconds = (
++        int(group) if group else 0 for group in match.groups()
++    )
++    duration = timedelta(
++        days=days,
++        hours=hours,
++        minutes=minutes,
++        seconds=seconds,
++        milliseconds=milliseconds,
++    )
++    return -duration if text.startswith("-") else duration
++
++
++def _format_duration(duration: timedelta) -> str:
++    """Render a ``timedelta`` in the syntax that :class:`Duration` accepts.
++
++    A sub-millisecond remainder is rendered as a decimal fraction of
++    milliseconds, such as ``1.5ms``, so the message is exact.
++    """
++    sign = "-" if duration < timedelta(0) else ""
++    microseconds = abs(duration) // timedelta(microseconds=1)
++    days, rest = divmod(microseconds, 86_400_000_000)
++    hours, rest = divmod(rest, 3_600_000_000)
++    minutes, rest = divmod(rest, 60_000_000)
++    seconds, rest = divmod(rest, 1_000_000)
++    milliseconds, sub_millisecond = divmod(rest, 1000)
++    parts = [
++        f"{amount}{unit}"
++        for amount, unit in zip(
++            (days, hours, minutes, seconds), ("d", "h", "m", "s"), strict=True
++        )
++        if amount
++    ]
++    if sub_millisecond:
++        fraction = f"{milliseconds}.{sub_millisecond:03d}".rstrip("0")
++        parts.append(f"{fraction}ms")
++    elif milliseconds:
++        parts.append(f"{milliseconds}ms")
++    return sign + ("".join(parts) or "0s")
++
++
++class Duration(ParamType[timedelta]):
++    """Convert a duration string such as ``1h30m`` to a
++    :class:`datetime.timedelta`. See :ref:`durations`.
++
++    A value is either a whole number of seconds, such as ``90``, or one or
++    more parts, each a whole number followed by a unit. The units are ``d``,
++    ``h``, ``m``, ``s``, and ``ms``. They must appear in that order, each at
++    most once, with no separators. A part may be larger than the next unit,
++    so ``90s`` and ``1500ms`` are valid. Surrounding whitespace is ignored.
++    Negative durations are rejected.
++
++    A ``timedelta`` is accepted as is, and an ``int`` is read as a number of
++    seconds.
++
++    If ``min`` or ``max`` are not passed, any value is accepted in that
++    direction. Both boundaries are included in the range.
++
++    .. versionadded:: 8.6.0
++    """
++
++    name = "duration"
++
++    min: timedelta | None
++    max: timedelta | None
++
++    def __init__(
++        self, min: timedelta | None = None, max: timedelta | None = None
++    ) -> None:
++        self.min = min
++        self.max = max
++
++    def to_info_dict(self) -> DurationInfoDict:
++        return {"min": self.min, "max": self.max, **super().to_info_dict()}
++
++    def convert(
++        self, value: t.Any, param: Parameter | None, ctx: Context | None
++    ) -> timedelta:
++        try:
++            if isinstance(value, timedelta):
++                rv = value
++            elif isinstance(value, int) and not isinstance(value, bool):
++                rv = timedelta(seconds=value)
++            elif isinstance(value, str):
++                rv = _parse_duration(value.strip())
++            else:
++                raise TypeError(type(value))
++        except (TypeError, ValueError, OverflowError):
++            self.fail(
++                _(
++                    "{value!r} is not a valid duration. Use a whole number of"
++                    " seconds or parts with units d, h, m, s, ms, such as 1h30m."
++                ).format(value=value),
++                param,
++                ctx,
++            )
++
++        if rv < timedelta(0):
++            self.fail(
++                _("Durations can't be negative: {value}.").format(
++                    value=_format_duration(rv)
++                ),
++                param,
++                ctx,
++            )
++
++        if (self.min is not None and rv < self.min) or (
++            self.max is not None and rv > self.max
++        ):
++            self.fail(
++                _("{value} is not in the range {range}.").format(
++                    value=_format_duration(rv), range=self._describe_range()
++                ),
++                param,
++                ctx,
++            )
++
++        return rv
++
++    def _describe_range(self) -> str:
++        """Describe the range for use in help text. Returns an empty string
++        if neither bound is set.
++        """
++        if self.min is None:
++            return "" if self.max is None else f"x<={_format_duration(self.max)}"
++
++        if self.max is None:
++            return f"x>={_format_duration(self.min)}"
++
++        return f"{_format_duration(self.min)}<=x<={_format_duration(self.max)}"
++
++    def __repr__(self) -> str:
++        description = self._describe_range()
++        return f"<Duration {description}>" if description else "<Duration>"
++
++
+ class _NumberParamTypeBase(
+     ParamType[_ValueT_co], t.Generic[_ValueT_contra, _ValueT_co]
+ ):
+diff --git a/tests/test_info_dict.py b/tests/test_info_dict.py
+index 58babcc..e9069c5 100644
+--- a/tests/test_info_dict.py
++++ b/tests/test_info_dict.py
+@@ -1,3 +1,5 @@
++from datetime import timedelta
++
+ import pytest
+ 
+ import click.types
+@@ -135,6 +137,16 @@ HELLO_GROUP = (
+             },
+             id="IntRange ParamType",
+         ),
++        pytest.param(
++            click.Duration(timedelta(seconds=5), timedelta(hours=1)),
++            {
++                "param_type": "Duration",
++                "name": "duration",
++                "min": timedelta(seconds=5),
++                "max": timedelta(hours=1),
++            },
++            id="Duration ParamType",
++        ),
+         pytest.param(
+             click.FLOAT, {"param_type": "Float", "name": "float"}, id="FLOAT ParamType"
+         ),
+diff --git a/tests/test_types/test_Duration.py b/tests/test_types/test_Duration.py
+new file mode 100644
+index 0000000..b561aba
+--- /dev/null
++++ b/tests/test_types/test_Duration.py
+@@ -0,0 +1,290 @@
++from datetime import timedelta
++
++import pytest
++
++import click
++from click.testing import CliRunner
++
++
++@pytest.mark.parametrize(
++    ("value", "expect"),
++    [
++        ("90s", timedelta(seconds=90)),
++        ("5m", timedelta(minutes=5)),
++        ("1h30m", timedelta(hours=1, minutes=30)),
++        ("2d4h", timedelta(days=2, hours=4)),
++        ("1m500ms", timedelta(minutes=1, milliseconds=500)),
++        ("500ms", timedelta(milliseconds=500)),
++        ("1500ms", timedelta(milliseconds=1500)),
++        ("1m", timedelta(minutes=1)),
++        ("1ms", timedelta(milliseconds=1)),
++        ("1m5s", timedelta(minutes=1, seconds=5)),
++        ("0", timedelta(0)),
++        ("0s", timedelta(0)),
++        ("45", timedelta(seconds=45)),
++        ("  1h30m\t", timedelta(hours=1, minutes=30)),
++        (timedelta(seconds=5), timedelta(seconds=5)),
++        (90, timedelta(seconds=90)),
++    ],
++)
++def test_convert(value, expect):
++    assert click.Duration().convert(value, None, None) == expect
++
++
++@pytest.mark.parametrize(
++    "value",
++    [
++        "30m1h",
++        "1h1h",
++        "1h 30m",
++        "",
++        "   ",
++        "h",
++        "1.5h",
++        "1H",
++        "1D",
++        "1x",
++        "1_000s",
++        "+5s",
++        "٣s",
++        "-",
++        "--5s",
++        "999999999999d",
++        "99999999999999999999h",
++        "9" * 5000,
++        "9" * 5000 + "s",
++    ],
++)
++def test_convert_invalid_string(value):
++    with pytest.raises(click.BadParameter) as exc_info:
++        click.Duration().convert(value, None, None)
++
++    assert exc_info.value.message == (
++        f"{value!r} is not a valid duration. Use a whole number of seconds or"
++        " parts with units d, h, m, s, ms, such as 1h30m."
++    )
++
++
++@pytest.mark.parametrize("value", [1.5, None, True, ["1h"], 10**30])
++def test_convert_invalid_type(value):
++    with pytest.raises(click.BadParameter) as exc_info:
++        click.Duration().convert(value, None, None)
++
++    assert exc_info.value.message == (
++        f"{value!r} is not a valid duration. Use a whole number of seconds or"
++        " parts with units d, h, m, s, ms, such as 1h30m."
++    )
++
++
++@pytest.mark.parametrize(
++    ("value", "rendered"),
++    [
++        ("-5s", "-5s"),
++        ("-5", "-5s"),
++        ("-1h30m", "-1h30m"),
++        (timedelta(seconds=-5), "-5s"),
++        (-5, "-5s"),
++    ],
++)
++def test_convert_negative(value, rendered):
++    with pytest.raises(click.BadParameter) as exc_info:
++        click.Duration().convert(value, None, None)
++
++    assert exc_info.value.message == f"Durations can't be negative: {rendered}."
++
++
++@pytest.mark.parametrize(
++    ("type", "value", "expect"),
++    [
++        (
++            click.Duration(timedelta(seconds=5), timedelta(hours=1)),
++            "5s",
++            timedelta(seconds=5),
++        ),
++        (
++            click.Duration(timedelta(seconds=5), timedelta(hours=1)),
++            "1h",
++            timedelta(hours=1),
++        ),
++        (click.Duration(min=timedelta(0)), "0s", timedelta(0)),
++        (click.Duration(max=timedelta(hours=1)), "1h", timedelta(hours=1)),
++        (click.Duration(min=timedelta(seconds=5)), "1h", timedelta(hours=1)),
++    ],
++)
++def test_range_accepts_boundaries(type, value, expect):
++    assert type.convert(value, None, None) == expect
++
++
++@pytest.mark.parametrize(
++    ("type", "value", "expect"),
++    [
++        (
++            click.Duration(timedelta(seconds=5), timedelta(hours=1)),
++            "4s",
++            "4s is not in the range 5s<=x<=1h.",
++        ),
++        (
++            click.Duration(timedelta(seconds=5), timedelta(hours=1)),
++            "1h1s",
++            "1h1s is not in the range 5s<=x<=1h.",
++        ),
++        (
++            click.Duration(min=timedelta(seconds=5)),
++            "4s",
++            "4s is not in the range x>=5s.",
++        ),
++        (
++            click.Duration(max=timedelta(hours=1)),
++            "1h1s",
++            "1h1s is not in the range x<=1h.",
++        ),
++        (
++            click.Duration(min=timedelta(microseconds=1500)),
++            "0s",
++            "0s is not in the range x>=1.5ms.",
++        ),
++        (
++            click.Duration(timedelta(microseconds=1), timedelta(microseconds=999)),
++            "0s",
++            "0s is not in the range 0.001ms<=x<=0.999ms.",
++        ),
++        (
++            click.Duration(min=timedelta(seconds=1, microseconds=250)),
++            "1s",
++            "1s is not in the range x>=1s0.25ms.",
++        ),
++        (
++            click.Duration(min=timedelta(seconds=1)),
++            timedelta(microseconds=999),
++            "0.999ms is not in the range x>=1s.",
++        ),
++    ],
++)
++def test_range_rejects_outside(type, value, expect):
++    with pytest.raises(click.BadParameter) as exc_info:
++        type.convert(value, None, None)
++
++    assert exc_info.value.message == expect
++
++
++@pytest.mark.parametrize(
++    ("value", "rendered"),
++    [
++        (timedelta(microseconds=-500), "-0.5ms"),
++        (timedelta(microseconds=-1500), "-1.5ms"),
++    ],
++)
++def test_negative_sub_millisecond_is_exact(value, rendered):
++    with pytest.raises(click.BadParameter) as exc_info:
++        click.Duration().convert(value, None, None)
++
++    assert exc_info.value.message == f"Durations can't be negative: {rendered}."
++
++
++@pytest.mark.parametrize(
++    ("type", "expect"),
++    [
++        (click.Duration(timedelta(seconds=5), timedelta(hours=1)), "5s<=x<=1h"),
++        (click.Duration(min=timedelta(seconds=5)), "x>=5s"),
++        (click.Duration(max=timedelta(hours=1)), "x<=1h"),
++    ],
++)
++def test_duration_default_help_text(type, expect):
++    option = click.Option(["--wait"], type=type)
++    context = click.Context(click.Command("test"))
++    assert option.get_help_extra(context) == {"range": expect}
++    assert f"[{expect}]" in option.get_help_record(context)[1]
++
++
++def test_unbounded_help_text_has_no_range():
++    option = click.Option(["--wait"], type=click.Duration())
++    context = click.Context(click.Command("test"))
++    assert option.get_help_extra(context) == {}
++    assert "[" not in option.get_help_record(context)[1]
++
++
++@pytest.mark.parametrize(
++    ("type", "expect"),
++    [
++        (
++            click.Duration(timedelta(seconds=5), timedelta(hours=1)),
++            "<Duration 5s<=x<=1h>",
++        ),
++        (click.Duration(min=timedelta(seconds=5)), "<Duration x>=5s>"),
++        (click.Duration(max=timedelta(hours=1)), "<Duration x<=1h>"),
++        (click.Duration(), "<Duration>"),
++    ],
++)
++def test_repr(type, expect):
++    assert repr(type) == expect
++
++
++def test_help_output_shows_range():
++    @click.command()
++    @click.option(
++        "--wait",
++        type=click.Duration(timedelta(seconds=5), timedelta(hours=1)),
++    )
++    def cli(wait):
++        pass
++
++    result = CliRunner().invoke(cli, ["--help"])
++    assert "--wait DURATION" in result.output
++    assert "[5s<=x<=1h]" in result.output
++
++
++def test_default_value_is_converted():
++    @click.command()
++    @click.option("--wait", type=click.Duration(), default=90)
++    def cli(wait):
++        click.echo(wait.total_seconds())
++
++    result = CliRunner().invoke(cli, [])
++    assert result.exit_code == 0
++    assert result.output == "90.0\n"
++
++
++def test_default_negative_is_usage_error():
++    @click.command()
++    @click.option("--wait", type=click.Duration(), default=-5)
++    def cli(wait):
++        pass
++
++    result = CliRunner().invoke(cli, [])
++    assert result.exit_code == 2
++    assert (
++        "Error: Invalid value for '--wait': Durations can't be negative: -5s.\n"
++        in result.output
++    )
++
++
++def test_cli_malformed_is_usage_error():
++    @click.command()
++    @click.option("--wait", type=click.Duration())
++    def cli(wait):
++        pass
++
++    result = CliRunner().invoke(cli, ["--wait", "1x"])
++    assert result.exit_code == 2
++    assert (
++        "Error: Invalid value for '--wait': '1x' is not a valid duration. Use a"
++        " whole number of seconds or parts with units d, h, m, s, ms, such as 1h30m.\n"
++        in result.output
++    )
++
++
++def test_cli_out_of_range_is_usage_error():
++    @click.command()
++    @click.option(
++        "--wait",
++        type=click.Duration(timedelta(seconds=5), timedelta(hours=1)),
++    )
++    def cli(wait):
++        pass
++
++    result = CliRunner().invoke(cli, ["--wait", "2h"])
++    assert result.exit_code == 2
++    assert (
++        "Error: Invalid value for '--wait': 2h is not in the range 5s<=x<=1h.\n"
++        in result.output
++    )
