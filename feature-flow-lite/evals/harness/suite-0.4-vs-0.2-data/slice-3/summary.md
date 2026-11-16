@@ -1,0 +1,51 @@
+| scenario | arm | runs | process | outcome | cost $ | opus share | main tool calls | spawns (role:model/effort) |
+|---|---|---|---|---|---|---|---|---|
+| risky-auth | lite-shipped-0.2 | 3 | 0.8 | 1.0 | 0.55 | 0.97 | 12.33 | investigator:haiku/fm, implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm; investigator:haiku/fm, implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm, implementor:haiku/fm; investigator:haiku/fm, implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm, implementor:haiku/fm |
+| risky-auth | lite-shipped-0.4 | 3 | 0.82 | 1.0 | 0.54 | 1.0 | 8.33 | investigator:haiku/fm, criteria_check:opus/fm, implementor:haiku/fm, simplifier:haiku/fm, gate:opus/fm, gate:opus/fm, gate:opus/fm; gate:opus/fm; gate:opus/fm |
+| ui-lib | lite-shipped-0.2 | 3 | 0.74 | 1.0 | 1.43 | 0.91 | 22.0 | implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm, implementor:haiku/fm, reviewer:haiku/fm, implementor:haiku/fm; implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm, implementor:haiku/fm; implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm, implementor:haiku/fm, reviewer:haiku/fm |
+| ui-lib | lite-shipped-0.4 | 3 | 0.67 | 1.0 | 3.33 | 0.96 | 21.0 | criteria_check:opus/fm, implementor:haiku/fm, simplifier:haiku/fm, gate:opus/fm, gate:opus/fm, gate:opus/fm, implementor:haiku/fm, gate:opus/fm; criteria_check:opus/fm, implementor:haiku/fm, simplifier:haiku/fm, gate:opus/fm, gate:opus/fm, gate:opus/fm, implementor:haiku/fm, gate:opus/fm, implementor:haiku/fm; criteria_check:opus/fm, implementor:haiku/fm, simplifier:haiku/fm, gate:opus/fm, gate:opus/fm, gate:opus/fm, implementor:haiku/fm, gate:opus/fm, implementor:haiku/fm |
+
+## Failed checks
+
+- ui-lib / lite-shipped-0.2 rep: [process] handoff prompts use the template — simplifier missing GOAL
+- ui-lib / lite-shipped-0.2 rep: [process] subagents return the result template — reviewer returned 46 lines
+- ui-lib / lite-shipped-0.2 rep: [process] checks pass before any review — 1 review(s) started with no check run after the last edit
+- ui-lib / lite-shipped-0.2 rep: [process] main conversation leaves edits to subagents — main conversation edited ['/tmp/claude-0/-tmp-ff-eval-mc4unpoa-workspace/a2f0eb49-f986-4783-9167-5810f6e115e5/scratchpad/criteria.md', '/tmp/claude-0/-tmp-ff-eval-mc4unpoa-workspace/a2f0eb49-f986-4783-9167-5810f6e115e5/scratchpad/criteria.md']
+- ui-lib / lite-shipped-0.2 rep: [process] handoff prompts use the template — simplifier missing GOAL; reviewer missing GOAL
+- ui-lib / lite-shipped-0.2 rep: [process] subagents return the result template — reviewer returned 57 lines
+- ui-lib / lite-shipped-0.2 rep: [process] checks pass before any review — 1 review(s) started with no check run after the last edit
+- ui-lib / lite-shipped-0.2 rep: [process] handoff prompts use the template — simplifier missing GOAL; reviewer missing GOAL
+- ui-lib / lite-shipped-0.2 rep: [process] subagents return the result template — reviewer returned 42 lines
+- ui-lib / lite-shipped-0.2 rep: [process] stages announced before the first spawn — stage words before first spawn: none
+- ui-lib / lite-shipped-0.2 rep: [process] checks pass before any review — 1 review(s) started with no check run after the last edit
+- ui-lib / lite-shipped-0.4 rep: [process] handoff prompts use the template — gate missing GOAL; gate missing GOAL; gate missing GOAL; gate missing GOAL
+- ui-lib / lite-shipped-0.4 rep: [process] stages announced before the first spawn — stage words before first spawn: ['inves']
+- ui-lib / lite-shipped-0.4 rep: [process] checks pass before any review — 3 review(s) started with no check run after the last edit
+- ui-lib / lite-shipped-0.4 rep: [process] main conversation leaves edits to subagents — main conversation edited ['/tmp/claude-0/-tmp-ff-eval-v5b616u9-workspace/599caaec-ec09-4c01-9202-721d422bc2d8/scratchpad/criteria.md', '/tmp/claude-0/-tmp-ff-eval-v5b616u9-workspace/599caaec-ec09-4c01-9202-721d422bc2d8/scratchpad/brief.md']
+- ui-lib / lite-shipped-0.4 rep: [process] final report lists the agents that ran — final report names no roles of ['criteria_check', 'gate', 'implementor', 'simplifier']
+- ui-lib / lite-shipped-0.4 rep: [process] handoff prompts use the template — gate missing GOAL; gate missing GOAL; gate missing GOAL; gate missing GOAL
+- ui-lib / lite-shipped-0.4 rep: [process] stages announced before the first spawn — stage words before first spawn: none
+- ui-lib / lite-shipped-0.4 rep: [process] checks pass before any review — 4 review(s) started with no check run after the last edit
+- ui-lib / lite-shipped-0.4 rep: [process] final report lists the agents that ran — final report names no roles of ['criteria_check', 'gate', 'implementor', 'simplifier']
+- ui-lib / lite-shipped-0.4 rep: [process] handoff prompts use the template — gate missing GOAL; gate missing GOAL; gate missing GOAL; gate missing GOAL
+- ui-lib / lite-shipped-0.4 rep: [process] subagents return the result template — criteria_check returned 41 lines
+- ui-lib / lite-shipped-0.4 rep: [process] stages announced before the first spawn — stage words before first spawn: ['inves']
+- ui-lib / lite-shipped-0.4 rep: [process] checks pass before any review — 3 review(s) started with no check run after the last edit
+- ui-lib / lite-shipped-0.4 rep: [process] final report lists the agents that ran — final report names no roles of ['criteria_check', 'gate', 'implementor', 'simplifier']
+- risky-auth / lite-shipped-0.2 rep: [process] handoff prompts use the template — investigator missing GOAL; simplifier missing GOAL
+- risky-auth / lite-shipped-0.2 rep: [process] stages announced before the first spawn — stage words before first spawn: ['inves']
+- risky-auth / lite-shipped-0.2 rep: [process] reviewer models (for the record) — reviewer models: ['haiku']
+- risky-auth / lite-shipped-0.2 rep: [process] handoff prompts use the template — investigator missing GOAL; simplifier missing GOAL; implementor missing GOAL
+- risky-auth / lite-shipped-0.2 rep: [process] stages announced before the first spawn — stage words before first spawn: none
+- risky-auth / lite-shipped-0.2 rep: [process] reviewer models (for the record) — reviewer models: ['haiku']
+- risky-auth / lite-shipped-0.2 rep: [process] handoff prompts use the template — investigator missing GOAL; simplifier missing GOAL; reviewer missing GOAL
+- risky-auth / lite-shipped-0.2 rep: [process] stages announced before the first spawn — stage words before first spawn: none
+- risky-auth / lite-shipped-0.2 rep: [process] reviewer models (for the record) — reviewer models: ['haiku']
+- risky-auth / lite-shipped-0.4 rep: [process] stages announced before the first spawn — stage words before first spawn: none
+- risky-auth / lite-shipped-0.4 rep: [process] reviewer models (for the record) — reviewer models: not spawned
+- risky-auth / lite-shipped-0.4 rep: [process] handoff prompts use the template — gate missing GOAL
+- risky-auth / lite-shipped-0.4 rep: [process] stages announced before the first spawn — stage words before first spawn: none
+- risky-auth / lite-shipped-0.4 rep: [process] final report lists the agents that ran — final report names no roles of ['gate']
+- risky-auth / lite-shipped-0.4 rep: [process] reviewer models (for the record) — reviewer models: not spawned
+- risky-auth / lite-shipped-0.4 rep: [process] stages announced before the first spawn — stage words before first spawn: ['revie']
+- risky-auth / lite-shipped-0.4 rep: [process] reviewer models (for the record) — reviewer models: not spawned
