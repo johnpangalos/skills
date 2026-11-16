@@ -1,0 +1,1508 @@
+[
+  {
+    "id": "chi-etag",
+    "reports": [
+      {
+        "letter": "A",
+        "overall": 8,
+        "scores": {
+          "correctness": 8,
+          "robustness": 8,
+          "code_quality": 8,
+          "tests": 9,
+          "docs": 9,
+          "product": 8
+        },
+        "defects": [
+          {
+            "severity": "minor",
+            "what": "HEAD handler that writes no body and sets no Content-Length gets the ETag of the empty body (SHA-256 of \"\"), not the tag GET returns. A client revalidating with HEAD then gets 200 instead of 304, and the HEAD and GET tags differ for the same resource.",
+            "evidence": "Probe: ETag(handler that does nothing) on HEAD -> 200 etag=\"e3b0c44298fc...b855\", while GET of a real body gets a different tag. bodyComplete() (middleware/etag.go ~L150) only refuses to tag when Content-Length is non-zero."
+          },
+          {
+            "severity": "minor",
+            "what": "HEAD responses lose their Content-Length. Because the buffered bytes are dropped for HEAD, net/http can no longer infer the length the way it does without the middleware.",
+            "evidence": "httptest server, handler writes \"hello\": bare HEAD -> resp.ContentLength=5; ETag(handler) HEAD -> ContentLength=-1 (GET still gives 5)."
+          },
+          {
+            "severity": "minor",
+            "what": "A malformed member in an If-None-Match list stops parsing for that header line, so a valid tag after it is ignored. This copies net/http's checkIfNoneMatch and is documented and tested. RFC 9110 lets a recipient ignore an invalid header, but it is stricter than tolerant list parsing.",
+            "evidence": "INM `garbage, \"<tag>\"` -> 200; INM `\"a\", garbage, \"<tag>\"` -> 200. Also see the test case 'parsing stops at a malformed member' in etag_test.go."
+          },
+          {
+            "severity": "minor",
+            "what": "The wrapper does not implement io.ReaderFrom. io.Copy still works through Write, so behavior is correct, but sendfile-style fast paths are lost (they are moot while buffering anyway).",
+            "evidence": "Type assertion on &etagResponseWriter{}: ReaderFrom=false Flusher=true Hijacker=true. io.Copy probe -> 200 \"copied\" with the correct tag."
+          }
+        ],
+        "strengths": [
+          "Meets every spec point I probed. GET and HEAD get a strong SHA-256 tag. Weak comparison works both ways, as do lists, '*', and several If-None-Match header lines. A handler-set ETag (weak or strong) is kept and used for the 304. POST/PUT/etc. and non-200 responses pass through unbuffered. A non-200 status switches to passthrough streaming right away.",
+          "Behaves well with http.ServeContent. GET is tagged, and a revalidation returns a 304 with no body. Range requests produce a 206 that passes through. HEAD with Content-Length=11 and no body gets no misleading tag. A handler ETag set before ServeContent gives a 304.",
+          "Careful edge handling. 1xx responses such as 103 Early Hints are forwarded and don't count as the final status. A double WriteHeader is ignored. A hijacked connection is never written to. A panicking handler leaks no buffered body (verified alongside Recoverer). The 304 drops representation headers the way net/http does. Flush, Hijack, Push and Unwrap are all provided, so http.ResponseController works.",
+          "Clear doc comment that covers buffering, SSE/Flush caveats, ordering with Compress, and HEAD semantics. The README row and its pkg.go.dev link are placed alphabetically, matching the table.",
+          "Thorough table-driven tests: 17 test functions and about 73 subtests, including real-server, hijack, panic, Flush and GetHead integration cases. They use the repo's existing assertEqual/assertNoError helpers. They pass with -race. The build, vet and gofmt checks are clean."
+        ],
+        "stats": {
+          "files": 3,
+          "source_lines": 655,
+          "test_cases": 73
+        },
+        "summary": "Build A adds middleware/etag.go (225 non-blank lines), middleware/etag_test.go (428), and a README row plus its link. go build, go vet and gofmt -l are clean, and all ETag tests pass, including under -race. The full `go test ./...` run hit one failure, in TestWrapWriterHTTP2: it uses a fixed port (:7072), a 100ms sleep, and was refused a connection. That test is outside this change and passed on rerun. Probes confirmed the following. GET/HEAD tagging works. Weak and strong matching works, as do lists, '*', several header lines, and handler-set tags. Non-200 responses and other methods pass through. ServeContent behaves correctly, including Range/206, HEAD with Content-Length, and revalidation. Flush is buffered as documented, Hijack is safe, and io.Copy works through Write. The remaining issues are minor. A HEAD from a handler that writes no body and sets no Content-Length gets the empty-body hash as its tag. HEAD responses lose their inferred Content-Length. A malformed If-None-Match member ends parsing of that line, which matches net/http on purpose. There is no ReaderFrom. A maintainer would likely merge this with at most small edits."
+      },
+      {
+        "letter": "B",
+        "overall": 8,
+        "scores": {
+          "correctness": 8,
+          "robustness": 8,
+          "code_quality": 8,
+          "tests": 9,
+          "docs": 8,
+          "product": 8
+        },
+        "defects": [
+          {
+            "severity": "major",
+            "what": "A HEAD request to a handler that writes no body and sets no Content-Length gets a strong ETag that is the SHA-256 of the empty body. GET on the same resource gets a different ETag, so HEAD advertises a validator that does not describe the representation, and a HEAD request whose If-None-Match carries the GET's ETag gets 200 instead of 304.",
+            "evidence": "Throwaway test with handler `if r.Method==\"HEAD\" {return}; w.Write([]byte(\"hello\"))` served via ETag with method HEAD printed: `HEAD explicit no body: 200 etag=\"e3b0c442...b855\" (GET would be \"2cf24dba...9824\")`. Same result for a handler that only calls WriteHeader(200) on HEAD. Cause: headWithoutBody (middleware/etag.go:136-142) suppresses the tag only when a non-zero Content-Length is declared. The builder's own test TestETagHead case \"no body\" asserts emptyBodyETag."
+          },
+          {
+            "severity": "minor",
+            "what": "When http.ServeContent handles a HEAD request it sets Content-Length and writes no body, so the middleware emits no ETag and HEAD with If-None-Match never gets a 304. GET on the same resource does get an ETag, so the GET and HEAD headers are inconsistent. This is the safe choice, but it is not documented.",
+            "evidence": "Probe: `SC GET: 200 ... etag=\"b94d27...\"`, `SC HEAD: 200 \"\" etag=\"\" cl=11`, `SC HEAD INM: 200 etag=\"\"`."
+          },
+          {
+            "severity": "minor",
+            "what": "If-None-Match parsing stops at the first malformed member, so a valid matching tag after a garbage member is ignored. A garbage member after the matching tag still matches. This mirrors net/http's behavior and is documented in the comment, but it is asymmetric.",
+            "evidence": "Probe: INM `garbage, \"a\"` -> 200; INM `\"a\", garbage` -> 304 (middleware/etag.go:147-170)."
+          },
+          {
+            "severity": "minor",
+            "what": "Flush is a silent no-op and the wrapper does not implement io.ReaderFrom. Streaming or SSE handlers behind ETag are fully buffered. The doc comment mentions this, but the middleware has no opt-out (for example passing through when the content type is text/event-stream).",
+            "evidence": "middleware/etag.go:68 `func (w *etagResponseWriter) Flush() {}`; probe printed `ReaderFrom on wrapper: false`. io.Copy still works through Write."
+          }
+        ],
+        "strengths": [
+          "go build, go test ./..., go vet ./... all pass and gofmt -l reports nothing.",
+          "RFC 9110 weak comparison, comma-separated lists across multiple header lines, `*`, and malformed members are all handled by a small hand-written scanner. Probes with W/ tags, lists, empty members and `w/` (lowercase, which correctly does not match) all behaved correctly.",
+          "304 responses keep ETag, Cache-Control, Vary and Expires and strip Content-Type, Content-Length, Content-Encoding and Last-Modified, matching net/http's writeNotModified.",
+          "The writer wrapper is careful: 1xx informational responses are forwarded immediately, Hijack replays an already-written status, Push is forwarded, and Unwrap is supported so http.ResponseController works. A panic in the handler writes nothing.",
+          "The handler-set ETag (strong or weak) is preserved and used for matching. Non-200 responses and non-GET/HEAD methods pass through with the original ResponseWriter.",
+          "Behind ServeContent, GET gets an ETag and a 304 on revalidation, and Range/206 passes through untouched.",
+          "Extensive table-driven tests (19 test functions, about 40 subcases) that check real behavior over real HTTP servers, including hijack, early hints and flush. They reuse the package's existing assertEqual and testRequest helpers.",
+          "The README row and link were added in alphabetical order. CHANGELOG.md is release-level only, so not adding an entry is correct."
+        ],
+        "stats": {
+          "files": 3,
+          "source_lines": 648,
+          "test_cases": 43
+        },
+        "summary": "Solid, idiomatic implementation that meets the spec. Build, tests, vet and gofmt are clean. If-None-Match matching is correct for weak tags, lists and `*`. The 304 response keeps and strips the right headers. Flush, Hijack, Push, Unwrap and 1xx forwarding are handled with care, and the tests are thorough. The main flaw: a HEAD request to a handler that writes no body and declares no Content-Length gets the empty-body hash as a strong ETag, which differs from the GET ETag. For ServeContent, HEAD gets no ETag at all. Smaller points: parsing stops at the first malformed If-None-Match member, and Flush is buffered with no opt-out. A maintainer would likely merge it after a small fix to the HEAD-without-body case."
+      },
+      {
+        "letter": "C",
+        "overall": 8.5,
+        "scores": {
+          "correctness": 9,
+          "robustness": 8,
+          "code_quality": 8,
+          "tests": 9,
+          "docs": 8,
+          "product": 8
+        },
+        "defects": [
+          {
+            "severity": "minor",
+            "what": "A HEAD response whose handler writes no body (http.ServeContent, or any handler that only sets Content-Length) gets no generated ETag, and it never returns 304 even when If-None-Match carries the tag the matching GET returned. HEAD and GET headers therefore differ. This is a deliberate, documented choice that avoids a wrong hash of the empty body, but a caching client that revalidates with HEAD gets nothing from it.",
+            "evidence": "Throwaway httptest.Server test against ETag(mux): `GET /sc` -> 200 etag=\"b94d27...\"; `HEAD /sc` -> 200 etag=\"\"; `HEAD /headnobody If-None-Match: <sha of hello>` -> 200 etag=\"\" cl=5. The behavior is in middleware/etag.go finish(): `if etag == \"\" && (method != http.MethodHead || ew.body.Len() > 0)`."
+          },
+          {
+            "severity": "minor",
+            "what": "The wrapper always implements http.Flusher (as a no-op), http.Hijacker and http.Pusher, whatever the underlying writer supports. Feature detection with a type assertion always succeeds, and a GET streaming or SSE handler is buffered with no warning. chi's own WrapResponseWriter only exposes the interfaces the underlying writer has.",
+            "evidence": "middleware/etag.go: `func (ew *etagResponseWriter) Flush() {}` plus unconditional Hijack/Push methods. In the throwaway server test, `GET /flush` (write, Flush, write) arrives as a single 2-byte response with Content-Length 2."
+          },
+          {
+            "severity": "minor",
+            "what": "The header snapshot, trailer replay (liveTrailers) and 1xx forwarding add about 50 lines of subtle logic beyond what the spec asks for. The logic is correct and tested, but it is heavier than the typical chi middleware.",
+            "evidence": "middleware/etag.go: WriteHeader snapshot via Header().Clone(), liveTrailers(), and clear(dst)/maps.Copy in finish()."
+          },
+          {
+            "severity": "minor",
+            "what": "The wrapped writer does not implement io.ReaderFrom. io.Copy falls back to Write and works correctly, so this only loses the sendfile path, which buffering makes moot anyway.",
+            "evidence": "In the throwaway test, `w.(io.ReaderFrom)` -> false. `GET /copy` -> 200 with body \"copied\" and a correct ETag."
+          }
+        ],
+        "strengths": [
+          "go build, go test ./..., go vet ./... and gofmt -l are all clean on Go 1.24, which matches go.mod.",
+          "If-None-Match parsing follows RFC 9110. It does weak comparison, handles lists across several header lines, ignores whitespace, matches `*`, skips malformed and garbage members while still matching later valid members, treats a comma inside quotes as part of the tag, and rejects lowercase `w/` and a bare `W/`. All of these were verified in the throwaway tests.",
+          "A handler-set ETag (strong or weak) is kept and used for matching. A 304 drops the body, Content-Length, Content-Type and Transfer-Encoding and keeps Cache-Control and Vary.",
+          "POST and non-200 responses (404, 206 from ServeContent Range, 304 from If-Modified-Since) pass through untouched. POST still streams through Flush.",
+          "Hijack is forwarded, and later writes return http.ErrHijacked. Push is forwarded, and Unwrap is provided.",
+          "The doc comment explains ordering with Compress and NoCache, and a test covers the NoCache ordering.",
+          "The test file covers meaningful behavior: a table of If-None-Match cases, trailer parity with the unwrapped handler, 1xx forwarding, a large body built from many small chunks, and the wrapper capabilities.",
+          "The README table row and link reference are added in the existing format."
+        ],
+        "stats": {
+          "files": 3,
+          "source_lines": 628,
+          "test_cases": 39
+        },
+        "summary": "Build C is a careful, correct ETag middleware in /tmp/inspect-chi-etag-C/middleware/etag.go, with tests in middleware/etag_test.go and a README row. Every spec requirement holds: build, test, vet and gofmt are clean, and a real httptest.Server run covered GET/HEAD/POST, non-200 responses, handler-set strong and weak tags, If-None-Match lists, `*` and garbage members, ServeContent (200, Range 206, If-Modified-Since 304) and io.Copy. I found no blocker or major defect. The minor points are: a body-less HEAD gets no generated ETag and never 304s (a documented choice); the wrapper always advertises Flusher, Hijacker and Pusher, and its Flush does nothing; it has no ReaderFrom; and the header-snapshot and trailer-replay machinery is somewhat heavier than typical chi middleware. A maintainer would likely merge it with small edits at most."
+      },
+      {
+        "letter": "D",
+        "overall": 8,
+        "scores": {
+          "correctness": 9,
+          "robustness": 8,
+          "code_quality": 7,
+          "tests": 9,
+          "docs": 8,
+          "product": 8
+        },
+        "defects": [
+          {
+            "severity": "minor",
+            "what": "Large buffered GET responses are sent chunked with no Content-Length, even though the whole body is in memory. HEAD responses for the same handler do get an explicit Content-Length (etag.go:119-127), so GET and HEAD headers differ.",
+            "evidence": "Probe through httptest.NewServer with a handler that writes 100000 bytes: 'GET /big -> 200 cl=\"\" te=[chunked]'. send() only sets Content-Length on the HEAD path (middleware/etag.go:124-126)."
+          },
+          {
+            "severity": "minor",
+            "what": "HEAD on a handler that writes no body, such as http.ServeContent (which skips the body on HEAD), gets no ETag, while GET on the same resource gets one. This is a deliberate choice that avoids hashing an empty body, but HEAD and GET metadata then disagree. If-None-Match: * on such a HEAD also never returns 304 because etagMatches returns false for an empty etag (etag.go:179).",
+            "evidence": "Probe: ETag(ServeContent handler): 'HEAD ServeContent -> 200 etag=\"\" cl=\"18\"' vs 'GET ServeContent -> 200 etag=\"\\\"6eae...\\\"\"'. 'HEAD /hb [If-None-Match *] -> 200 etag=\"\"'."
+          },
+          {
+            "severity": "minor",
+            "what": "Flush is a silent no-op, and http.NewResponseController(w).Flush() returns nil. Streaming handlers (SSE, long polls) behind ETag are buffered with no error. The doc comment covers the buffering, but there is no opt-out and no non-buffered fallback for non-200 responses.",
+            "evidence": "middleware/etag.go:72-73; probe: 'rc flush err=<nil>', and recorder Flushed=false after a handler Flush."
+          },
+          {
+            "severity": "minor",
+            "what": "The implementation does more than the spec asks: header snapshots, 1xx forwarding, trailer re-plumbing, Content-Type sniffing for HEAD and Push. Each piece is reasoned and tested, but the result is 222 lines for what is mostly a buffer-and-hash middleware, which makes review harder.",
+            "evidence": "middleware/etag.go:50-62, 119-148, 156-170."
+          },
+          {
+            "severity": "minor",
+            "what": "The wrapped writer does not implement io.ReaderFrom, so io.Copy falls back to Write. This is functionally fine for a buffering writer.",
+            "evidence": "Probe handler that type-asserts io.ReaderFrom printed 'readerfrom=false'; body and ETag were still correct."
+          }
+        ],
+        "strengths": [
+          "go build, go test ./..., and go vet ./... all pass, and gofmt -l reports nothing.",
+          "If-None-Match matching follows RFC 9110: weak comparison (W/ ignored on both sides), comma-separated lists with quote-aware splitting, multiple header lines, and '*'. Garbage members, unquoted members, lowercase w/ and unterminated quotes are all rejected (tested in TestETagIfNoneMatchMatching).",
+          "A handler-set ETag, including a weak one, is kept and used for 304. Non-GET/HEAD methods are not wrapped at all. Non-200 responses (404, http.ServeContent 206 and 304) pass through untouched with no ETag added.",
+          "The 304 response drops the representation headers (Content-Type, Content-Length, Content-Encoding, Last-Modified) and keeps the ETag.",
+          "Hijack, Push and Unwrap are forwarded. Write after Hijack returns http.ErrHijacked. Works with chi's GetHead (HEAD gets the same ETag and Content-Length as GET).",
+          "Thorough tests: 33 test functions (66 passing runs including subtests) that cover real behavior, including trailers, 1xx responses, HEAD without a body, and Flush buffering.",
+          "The README table row and its pkg.go.dev link were added in alphabetical order, matching the existing format. The doc comment is clear and states the buffering."
+        ],
+        "stats": {
+          "files": 3,
+          "source_lines": 818,
+          "test_cases": 66
+        },
+        "summary": "Build D meets the spec. The build, tests, vet and gofmt are clean, and RFC 9110 If-None-Match handling is correct for weak tags, lists, '*' and garbage members. Handler-set ETags are kept, non-GET/HEAD and non-200 responses pass through, and Hijack, Push and Unwrap are forwarded. Probes through a real server and http.ServeContent behaved correctly. All the problems are minor: large GET bodies are sent chunked without a Content-Length even though they are fully buffered; HEAD on a handler that writes no body gets no ETag while GET does; Flush is a silent no-op; and the code is heavier than needed (trailers, 1xx, sniffing). The README row and doc comment follow repo conventions. A maintainer would likely merge it with small edits."
+      },
+      {
+        "letter": "E",
+        "overall": 8,
+        "scores": {
+          "correctness": 9,
+          "robustness": 8,
+          "code_quality": 8,
+          "tests": 9,
+          "docs": 8,
+          "product": 8
+        },
+        "defects": [
+          {
+            "severity": "minor",
+            "what": "A HEAD response that writes no body gets no ETag, so GET and HEAD on the same resource carry different headers. http.ServeContent writes no body for HEAD, so HEAD gets no ETag while GET does, and a HEAD with If-None-Match set to the GET's tag gets 200 instead of 304. This choice is explained only in an inline comment and is missing from the exported doc comment.",
+            "evidence": "Probe test against ServeContent: GET -> 200 etag=\"6aed04...\" cl=12; HEAD -> 200 etag=\"\" cl=12 (also over a real httptest.Server: 'real HEAD: 200 etag=\"\" cl=12'). middleware/etag.go:104-105 `if len(h.Values(\"ETag\")) == 0 && (!head || ew.buf.Len() > 0)`"
+          },
+          {
+            "severity": "minor",
+            "what": "The wrapper always exposes Flusher, Hijacker and Pusher whatever the underlying writer supports, and it does not expose io.ReaderFrom. Once a Flush switches it to streaming mode, io.Copy loses the sendfile fast path. Other chi wrappers (WrapResponseWriter) choose interfaces based on what the underlying writer supports.",
+            "evidence": "In the probe, a handler checking `w.(io.ReaderFrom)` got false. middleware/etag.go:194-219 defines Flush/Hijack/Push unconditionally."
+          },
+          {
+            "severity": "minor",
+            "what": "Write errors from the underlying writer are ignored when flushing the buffered body. Write calls made while buffering always report success, so the handler never sees a client disconnect.",
+            "evidence": "middleware/etag.go:90 and :119 `ew.ResponseWriter.Write(ew.buf.Bytes())` ignore the returned error"
+          }
+        ],
+        "strengths": [
+          "go build, go test ./..., and go vet ./... all pass, and gofmt -l prints nothing",
+          "The If-None-Match parser follows RFC 9110 correctly: weak comparison, lists spread over several header lines, commas inside quoted tags, '*', and garbage members that are skipped without losing a later match. In probes, `garbage, TAG` -> 304, `**` -> 200, `W/*` -> 200, `,,TAG,,` -> 304",
+          "On a 304 it strips Content-Length and Content-Type and keeps Cache-Control, Vary and Set-Cookie",
+          "Careful handling of the response writer: it forwards 1xx immediately and treats 101 as final, ignores a second WriteHeader, streams on Flush, sends the buffered body before Hijack, and sends nothing when Hijack happens before any write. It also has Unwrap",
+          "Works behind http.ServeContent: GET gets an ETag and a matching If-None-Match gets 304, Range requests (206) pass through, and real-server Content-Length is preserved",
+          "The tests are thorough and table-driven, with 27 test functions (59 runs including subtests), among them real TCP tests of hijack ordering and 101",
+          "The README row and link are added in alphabetical order with matching column alignment. The doc comment notes the memory cost and the ordering issue with NoCache"
+        ],
+        "stats": {
+          "files": 3,
+          "source_lines": 730,
+          "test_cases": 59
+        },
+        "summary": "This is a solid ETag middleware that meets the spec. The build is clean, tests pass, vet and gofmt are clean, the RFC 9110 If-None-Match parsing is correct, and the writer handles Flush, Hijack and 1xx correctly. The tests are extensive and meaningful. I found no blocker or major defects, only three minor ones. A HEAD request with no body (including http.ServeContent's HEAD path) gets no ETag, so its headers don't match GET's. The wrapper always exposes Flusher, Hijacker and Pusher and does not expose ReaderFrom. Write errors are ignored when the buffered body is sent. A maintainer would likely merge it with small edits."
+      },
+      {
+        "defects": [
+          {
+            "severity": "minor",
+            "what": "A HEAD request whose handler writes no body (e.g. http.ServeContent, which skips the body on HEAD) gets no ETag, so a conditional HEAD using the GET's ETag returns 200 rather than 304. The doc comment explains this choice and it avoids sending a wrong ETag, but it means conditional HEAD does not work behind ServeContent.",
+            "evidence": "Throwaway probe in middleware/: ServeContent HEAD -> '200 etag=\"\" CL=\"8\"'; HEAD with If-None-Match set to the GET's ETag -> 200. Source: middleware/etag.go:117-120."
+          },
+          {
+            "severity": "minor",
+            "what": "Write errors from the underlying writer are dropped in startStreaming and finish, so a client disconnect is not visible to the handler. This happens after the handler returns in finish, so the impact is small.",
+            "evidence": "middleware/etag.go:73 and :128 (w.ResponseWriter.Write(...) return values ignored)"
+          },
+          {
+            "severity": "minor",
+            "what": "The whole body is buffered with no size cap. The doc comment states this, and there is no escape hatch for large GET responses other than Flush.",
+            "evidence": "middleware/etag.go:18-19, 37"
+          }
+        ],
+        "letter": "F",
+        "overall": 8.5,
+        "scores": {
+          "correctness": 9,
+          "robustness": 8.5,
+          "code_quality": 8.5,
+          "tests": 9,
+          "docs": 8.5,
+          "product": 8.5
+        },
+        "strengths": [
+          "Tolerant RFC 9110 If-None-Match parser: weak comparison, multiple header lines, OWS, empty list members, commas inside quoted tags, and invalid members skipped while later valid tags still match ('garbage, \"tag\"' -> 304, 'garbage' -> 200, '\"a\", *' -> 200)",
+          "Handler-set ETag (including a weak one) is kept and used for matching; on a 304, Content-Length is removed and Cache-Control/Vary are kept",
+          "Non-200 responses and other methods stream straight through; the first status wins; 1xx informational responses are forwarded; Flush switches to streaming; Hijack, Push and Unwrap are handled (ResponseController.Flush works)",
+          "Works behind http.ServeContent for GET (200 with computed ETag; 304 on match; Range gives 206 with no ETag added)",
+          "Thorough table-driven tests over a real httptest server, covering parser edge cases, panic, hijack, 1xx and concurrency",
+          "go build, test (also with -race), vet and gofmt are clean; README row and pkg.go.dev link added in the existing style"
+        ],
+        "stats": {
+          "files": 3,
+          "source_lines": 606,
+          "test_cases": 54
+        },
+        "summary": "Build F is a well-built ETag middleware. In /tmp/inspect-chi-etag-F, `go build ./...`, `go test ./...` (also with -race), `go vet ./...` and `gofmt -l` are all clean. Probe tests confirmed: GET gets a strong SHA-256 ETag; POST passes through; non-200 passes through even with `*`; a handler's own (weak) ETag is kept and matched; weak tags, lists, `*` and garbage members behave as RFC 9110 describes; io.Copy works (ReadFrom is not exposed, but writes go to the buffer); Flush, Hijack and ResponseController.Flush work; ServeContent GET and Range work. One deliberate design choice has a cost: a HEAD whose handler writes no body gets no computed ETag, so a conditional HEAD behind ServeContent returns 200 instead of 304. The doc comment explains it. Code is compact and idiomatic, tests are extensive and meaningful, and the README row and link are present. The CHANGELOG only holds per-release compare links, so no entry was expected."
+      },
+      {
+        "letter": "G",
+        "overall": 8,
+        "scores": {
+          "correctness": 8,
+          "robustness": 8,
+          "code_quality": 8,
+          "tests": 8,
+          "docs": 8,
+          "product": 8
+        },
+        "defects": [
+          {
+            "severity": "minor",
+            "what": "A HEAD handler that writes no body and sets no Content-Length gets the SHA-256-of-empty ETag. That tag differs from what GET returns for the same resource, so If-None-Match with the GET tag on HEAD gets 200 instead of 304. The declaresUnwrittenBody guard only covers the case where Content-Length is set.",
+            "evidence": "Throwaway probe test: a handler that only sets Content-Type, called with HEAD, gave code=200 etag=\"e3b0c44298fc1c149afbf4c8996fb924\" body=\"\". The guard is in middleware/etag.go, in declaresUnwrittenBody (it requires length != \"\")."
+          },
+          {
+            "severity": "minor",
+            "what": "http.ServeContent behind ETag on HEAD gets no ETag and never 304s, while GET gets a computed ETag. ServeContent sets Content-Length and writes nothing on HEAD, so GET and HEAD validators are inconsistent. This is conservative, not wrong.",
+            "evidence": "Probe: 'servecontent HEAD' gave code=200 etag=\"\", and 'servecontent HEAD INM' with the GET tag gave code=200. The GET with the same tag gave 304."
+          },
+          {
+            "severity": "minor",
+            "what": "The wrapper always advertises http.Hijacker, http.Pusher and http.Flusher, even when the underlying writer does not support them. It returns errors or no-ops at runtime, so type assertions on the writer stop being a reliable capability check. The wrapper has no io.ReaderFrom, which is harmless because the body is buffered anyway.",
+            "evidence": "middleware/etag.go: Hijack and Push are unconditional methods on etagResponseWriter. Probe printed 'ReaderFrom implemented: false'. io.Copy still works through Write."
+          },
+          {
+            "severity": "minor",
+            "what": "The test file is heavy for the feature: 484 non-blank lines, against 194 for the implementation. It includes raw-TCP hijack exchange tests with log capture, which add maintenance cost beyond chi's usual middleware test style.",
+            "evidence": "middleware/etag_test.go, etagRawExchange and the two TestETagHijack* tests."
+          }
+        ],
+        "strengths": [
+          "Spec requirements all verified. GET/HEAD 200 responses get a strong body-derived ETag ('\"<32 hex>\"'), a handler-set ETag is kept and used for matching, POST/PUT and the other methods pass through with the unwrapped writer, and non-200 responses are committed straight away and pass through unchanged.",
+          "If-None-Match matching follows RFC 9110. It uses weak comparison, handles comma-separated lists (respecting quotes) and multiple header lines, and treats '*' as standalone. Malformed members are ignored without blocking a valid member, and etagc characters are validated.",
+          "A 304 response drops Content-Type, Content-Length and Content-Encoding, keeps Cache-Control, Vary and Expires, and sends no body.",
+          "Flush and Hijack switch the writer to streaming and commit the headers already written. 1xx informational responses are forwarded without setting the final status. The writer supports Unwrap, so http.ResponseController works.",
+          "go build, go test ./..., go vet ./... all pass, and gofmt -l prints nothing. The README row and link are in alphabetical order. The doc comment describes the memory cost and how Flush and Hijack behave.",
+          "Thorough table-driven tests for etagMatches, plus real-server tests for HEAD, 1xx and hijack."
+        ],
+        "stats": {
+          "files": 3,
+          "source_lines": 680,
+          "test_cases": 21
+        },
+        "summary": "Build G is a careful, correct ETag middleware that matches the spec. It buffers GET/HEAD 200 responses, adds a truncated SHA-256 strong tag unless the handler set one, and answers RFC 9110 weak and list matches and '*' with a clean 304. Non-200 responses and other methods pass through untouched, and Flush, Hijack and 1xx are handled thoughtfully. Build, test, vet and gofmt are all clean, and the README row is in place. Only minor issues remain. HEAD responses without a body or Content-Length get an empty-body tag that disagrees with GET. ServeContent HEAD responses get no ETag. The wrapper always advertises the optional interfaces. The test file is somewhat oversized. A maintainer would likely merge it with small edits."
+      },
+      {
+        "letter": "H",
+        "overall": 8,
+        "scores": {
+          "correctness": 9,
+          "robustness": 8,
+          "code_quality": 7,
+          "tests": 9,
+          "docs": 9,
+          "product": 8
+        },
+        "defects": [
+          {
+            "severity": "minor",
+            "what": "Flush is a silent no-op, so streaming or SSE handlers behind ETag are buffered completely. The doc comment says the response is buffered but does not warn about streaming.",
+            "evidence": "middleware/etag.go: `func (ew *etagResponseWriter) Flush() {}`. A probe confirmed the wrapper implements http.Flusher, so handlers believe they can stream."
+          },
+          {
+            "severity": "minor",
+            "what": "The wrapper does not implement io.ReaderFrom, so io.Copy and ServeContent fall back to chunked Write calls into the buffer. Output is correct, but the sendfile fast path is lost.",
+            "evidence": "In a probe test, `w.(io.ReaderFrom)` printed `ReaderFrom? false`. io.Copy still produced 200 with the correct ETag."
+          },
+          {
+            "severity": "minor",
+            "what": "The wrapper forwards Push, read and write deadlines, EnableFullDuplex, 1xx early hints and trailer propagation. That is about 230 lines, heavy compared with chi's other small middlewares. It is defensible but adds maintenance surface.",
+            "evidence": "middleware/etag.go: Push, SetWriteDeadline, SetReadDeadline, EnableFullDuplex, copyTrailers and the 1xx branch in WriteHeader."
+          },
+          {
+            "severity": "minor",
+            "what": "A GET with an empty 200 body gets an ETag, but a HEAD with an empty body gets none. This is intentional (to keep http.ServeContent HEAD working) and documented, but the behavior is asymmetric.",
+            "evidence": "etag.go finish(): `(r.Method == http.MethodGet || ew.body.Len() > 0)`. Probe: HEAD to an empty handler gave 200 with no ETag."
+          }
+        ],
+        "strengths": [
+          "go build, go test ./..., go vet ./... and gofmt -l all pass cleanly on Go 1.24",
+          "If-None-Match is parsed correctly: weak comparison, W/ on either side, lists with OWS and empty elements, commas inside quotes, `*`, and garbage members ignored without hiding valid ones. Each header line is parsed separately",
+          "An ETag set by the handler (strong or weak) is kept and matched. Non-200 and non-GET/HEAD requests pass through, and other methods get the unwrapped writer",
+          "304 responses keep Cache-Control, Vary and other headers and drop Content-Length, Content-Type and Content-Encoding",
+          "Writer semantics are handled carefully: headers freeze at WriteHeader, a second WriteHeader is ignored, a hijacked connection suppresses output, trailers are propagated and 1xx responses are forwarded",
+          "http.ServeContent works for GET (ETag, 304 round-trip), HEAD (no mismatching ETag) and Range (206 passes through)",
+          "21 focused tests, including a table-driven RFC matching test and real-server tests for HEAD, hijack, trailers and early hints",
+          "The README row and link reference are added in alphabetical order, and the doc comment explains how to order it with Compress and NoCache"
+        ],
+        "stats": {
+          "files": 3,
+          "source_lines": 692,
+          "test_cases": 21
+        },
+        "summary": "Build H meets every part of the spec. My probe tests confirmed the following. A GET or HEAD 200 gets a strong quoted SHA-256 ETag. A handler's own ETag is kept. If-None-Match handles weak tags, lists, `*` and garbage members correctly. POST and 404 responses pass through. http.ServeContent works for GET, HEAD and Range requests. Hijack and Flush behave as documented. The README row and link were added. Build, tests, vet and gofmt are clean. The tests are thorough and meaningful. The only issues are minor. Flush is a silent no-op that stops streaming. The wrapper has no ReaderFrom. The writer forwards more interfaces than chi's other middlewares do. A maintainer would likely merge it with small edits."
+      },
+      {
+        "letter": "I",
+        "overall": 7.5,
+        "scores": {
+          "correctness": 7,
+          "robustness": 7,
+          "code_quality": 8,
+          "tests": 8,
+          "docs": 8,
+          "product": 8
+        },
+        "defects": [
+          {
+            "severity": "major",
+            "what": "A HEAD response from a handler that writes no body for HEAD (e.g. http.ServeContent, or any handler that only sets Content-Length) gets the ETag of an empty body, SHA-256(\"\"), so it differs from the GET ETag for the same resource. A conditional HEAD sent with the GET's tag returns 200 instead of 304. The bundled test asserts this behaviour as correct.",
+            "evidence": "Throwaway test with ETag(http.HandlerFunc(func(w,r){http.ServeContent(w,r,\"a.txt\",t,strings.NewReader(\"hello world\"))}))): GET gives etag \"b94d27b9...\" and HEAD gives etag \"e3b0c442...\" (the empty-string hash), both with cl=11. A HEAD with If-None-Match set to the GET tag printed `cond HEAD: 200`. Over a real httptest server the result is the same: `srv HEAD 200 \"e3b0c442...\" cl=11`. middleware/etag_test.go:161 asserts sha256ETag(\"\") for a HEAD with an empty handler."
+          },
+          {
+            "severity": "minor",
+            "what": "The wrapper does not implement io.ReaderFrom, so the sendfile fast path is lost even after buffering ends. io.Copy still works correctly through Write.",
+            "evidence": "Throwaway test: `w.(io.ReaderFrom)` printed `ReaderFrom? false`. io.Copy produced a body of \"copied\" with the correct ETag."
+          },
+          {
+            "severity": "minor",
+            "what": "If a handler writes into the buffer and then hijacks, the buffered bytes are silently discarded. This is acceptable but not documented.",
+            "evidence": "middleware/etag.go Hijack sets streaming=true without flushing ew.buf"
+          }
+        ],
+        "strengths": [
+          "go build, go test ./..., go vet ./... and gofmt -l all pass cleanly.",
+          "Careful RFC 9110 If-None-Match parsing: commas inside quoted opaque-tags, OWS, the W/ prefix is case-sensitive, malformed members are skipped without stopping later matches, and * is honoured only when it stands alone. Every garbage input I tried behaved correctly.",
+          "Handles writer edge cases well: 1xx informational statuses, double WriteHeader, Flush that ends buffering (including through ResponseController), Hijack, Push, Unwrap, and panics (nothing is written, so Recoverer can still send its 500).",
+          "304 responses strip the representation headers the same way net/http does and keep Cache-Control, Vary and similar headers.",
+          "Thorough table-driven tests: 14 test functions and 61 passing subtests, including real-server streaming and hijack.",
+          "Good doc comment covering buffering, middleware ordering relative to Compress, and Flush semantics. The README row and its link are added in alphabetical order."
+        ],
+        "stats": {
+          "files": 3,
+          "source_lines": 640,
+          "test_cases": 61
+        },
+        "summary": "This is a solid, idiomatic ETag middleware. Build, test, vet and gofmt all pass. If-None-Match matching follows RFC 9110 closely, and Flush, Hijack, Push, Unwrap, 1xx statuses and panics are handled well, with thorough tests. The main flaw: a HEAD response whose handler writes no body (http.ServeContent, or any handler that only sets Content-Length) gets the empty-body hash as its ETag. That tag does not match the GET ETag, so a conditional HEAD sent with the GET tag returns 200 instead of 304, and the bundled test locks this behaviour in. The wrapper also lacks a ReaderFrom passthrough, which is minor. Docs and the README row follow repo conventions; CHANGELOG.md has only per-release entries, so no changelog entry was needed."
+      }
+    ],
+    "judge": {
+      "ranking": [
+        {
+          "letter": "C",
+          "score": 8.5,
+          "confirmed_defects": [
+            "A HEAD from a handler that writes no body (including ServeContent HEAD) gets no generated ETag, so a conditional HEAD returns 200. This is documented and safe.",
+            "Flush is a no-op, so streaming handlers are buffered.",
+            "No io.ReaderFrom (harmless)."
+          ],
+          "refuted_defects": [],
+          "rationale": "Every spec probe passed. The If-None-Match parser is tolerant: a leading garbage member does not block a later valid tag, and lowercase w/ is rejected. Headers are snapshotted at WriteHeader the same way net/http does it. HEAD keeps its real Content-Length. A 304 strips the representation headers, and ServeContent, Range and 404 pass through cleanly. Build, vet, gofmt and -race are clean, and the README row and link are present. It has no wrong-validator cases, and its only gaps are design choices."
+        },
+        {
+          "letter": "D",
+          "score": 8.5,
+          "confirmed_defects": [
+            "A HEAD that writes no body gets no ETag, so ServeContent HEAD with If-None-Match returns 200. This is a deliberate choice.",
+            "Flush is a no-op.",
+            "More machinery than the spec needs (trailers, 1xx, sniffing)."
+          ],
+          "refuted_defects": [
+            "Large GET sent chunked without Content-Length: true, but every build does this (all 9 gave te=[chunked] for a 100KB body), so it does not count against D."
+          ],
+          "rationale": "Its behavior is identical to C on every probe I ran: tolerant parsing, the header snapshot, HEAD Content-Length kept, and correct 304 header stripping. It is somewhat heavier than C but correct, and its tests are thorough."
+        },
+        {
+          "letter": "F",
+          "score": 8.5,
+          "confirmed_defects": [
+            "A HEAD that writes no body gets no ETag, so a conditional HEAD behind ServeContent returns 200. This is documented.",
+            "Missed by the inspector: the 304 response keeps Content-Type (P02 showed ct=text/plain), whereas net/http and the other builds strip it, against RFC 9110's SHOULD NOT.",
+            "Headers the handler sets after its first Write still leak into the final response."
+          ],
+          "refuted_defects": [],
+          "rationale": "This is the most compact implementation. The parser is tolerant, Flush switches to streaming (better for SSE than a silent no-op), HEAD keeps its Content-Length, and every spec probe passed. It loses a little for keeping Content-Type on the 304 and for not snapshotting headers."
+        },
+        {
+          "letter": "H",
+          "score": 8,
+          "confirmed_defects": [
+            "Flush is a silent no-op.",
+            "Forwards much more than needed (deadlines, EnableFullDuplex, trailers), which adds maintenance surface.",
+            "An empty-body HEAD gets no ETag (asymmetric with GET, documented)."
+          ],
+          "refuted_defects": [],
+          "rationale": "It matches C and D on every probe (tolerant parsing, header snapshot, HEAD Content-Length kept, clean 304). It ranks slightly lower for being the heaviest wrapper relative to the spec."
+        },
+        {
+          "letter": "E",
+          "score": 8,
+          "confirmed_defects": [
+            "A HEAD that writes no body gets no ETag (ServeContent HEAD returns 200 on a conditional request).",
+            "Missed by the inspector: on a real server, HEAD loses its Content-Length (cl=-1 versus 5 without the middleware).",
+            "Write errors are ignored when the buffered body is flushed out.",
+            "Always advertises Flusher, Hijacker and Pusher."
+          ],
+          "refuted_defects": [],
+          "rationale": "All spec probes passed, the parser is tolerant, and Flush switches to streaming. The lost Content-Length on HEAD is a small regression in the HTTP output. Its `\"a\", *` handling (returns 304) mirrors net/http and is acceptable."
+        },
+        {
+          "letter": "G",
+          "score": 7.5,
+          "confirmed_defects": [
+            "A HEAD handler that writes no body and sets no Content-Length gets the empty-body hash as a strong ETag that differs from GET's (P17).",
+            "ServeContent HEAD gets no ETag.",
+            "Always advertises the optional interfaces."
+          ],
+          "refuted_defects": [],
+          "rationale": "Correct on the main spec, with a tolerant parser and Flush streaming. HEAD keeps its Content-Length, and the truncated 128-bit SHA-256 tag is fine. It does emit a wrong strong validator for body-less HEAD without Content-Length."
+        },
+        {
+          "letter": "A",
+          "score": 7.5,
+          "confirmed_defects": [
+            "A HEAD that writes no body and sets no Content-Length gets the empty-body hash as its ETag (P17), a wrong strong validator.",
+            "HEAD loses Content-Length on a real server (cl=-1).",
+            "A leading malformed If-None-Match member stops parsing, so `garbage, \"tag\"` returns 200. This mirrors net/http and is documented."
+          ],
+          "refuted_defects": [],
+          "rationale": "Solid and well tested, with careful writer handling. The HEAD edge produces a wrong validator, the HEAD Content-Length is lost, and the parser is less tolerant than the leaders'."
+        },
+        {
+          "letter": "B",
+          "score": 7.5,
+          "confirmed_defects": [
+            "A HEAD that writes no body and sets no Content-Length gets the empty-body hash as its ETag, which differs from GET's (P17). The test locks this in. I rate it minor-to-moderate rather than major because ServeContent HEAD (with Content-Length set) is handled correctly with no tag.",
+            "HEAD loses Content-Length on a real server.",
+            "A leading garbage member stops parsing (`garbage, tag` returns 200)."
+          ],
+          "refuted_defects": [
+            "Severity 'major' for the HEAD no-body case: reproduced, but it is the same defect A and G have, and the common ServeContent/FileServer HEAD path is safe, so I downgrade it to minor-moderate."
+          ],
+          "rationale": "Nearly identical to A in behavior and quality. Same HEAD edge, same lost Content-Length on HEAD, same strict parsing."
+        },
+        {
+          "letter": "I",
+          "score": 6.5,
+          "confirmed_defects": [
+            "Major, confirmed: there is no HEAD handling at all, so http.ServeContent and FileServer HEAD responses get the empty-body SHA-256 as a strong ETag alongside Content-Length 11 (P19), which contradicts GET's tag. A conditional HEAD returns 200, and caches can treat stored responses as invalidated. The test asserts this behavior.",
+            "Buffered bytes are discarded on Hijack."
+          ],
+          "refuted_defects": [],
+          "rationale": "The parser and writer handling are otherwise good, with a tolerant parser and Flush streaming. But it emits a wrong strong validator on the most common HEAD path (static files and ServeContent), which is a real correctness bug in a validator middleware."
+        }
+      ],
+      "verdict": "All nine builds pass build, vet, gofmt and the tests, and all of them handle the core GET path correctly: tagging, weak and list matching, '*', keeping a handler-set ETag, and passing through POST and non-200 responses. HEAD is what separates them. I emits the empty-body hash as a strong ETag on ServeContent/FileServer HEAD, which is a wrong validator on a common path. A, B and G do the same for body-less HEAD without Content-Length. C, D, F, H and E never emit a mismatched tag. Among the leaders, C and D also snapshot headers and keep HEAD's Content-Length, as net/http does. F is the most compact but keeps Content-Type on 304s. H is correct but heavier. E drops HEAD's Content-Length."
+    },
+    "judges": [
+      {
+        "ranking": [
+          {
+            "letter": "C",
+            "score": 8.5,
+            "confirmed_defects": [
+              "A HEAD from a handler that writes no body (including ServeContent HEAD) gets no generated ETag, so a conditional HEAD returns 200. This is documented and safe.",
+              "Flush is a no-op, so streaming handlers are buffered.",
+              "No io.ReaderFrom (harmless)."
+            ],
+            "refuted_defects": [],
+            "rationale": "Every spec probe passed. The If-None-Match parser is tolerant: a leading garbage member does not block a later valid tag, and lowercase w/ is rejected. Headers are snapshotted at WriteHeader the same way net/http does it. HEAD keeps its real Content-Length. A 304 strips the representation headers, and ServeContent, Range and 404 pass through cleanly. Build, vet, gofmt and -race are clean, and the README row and link are present. It has no wrong-validator cases, and its only gaps are design choices."
+          },
+          {
+            "letter": "D",
+            "score": 8.5,
+            "confirmed_defects": [
+              "A HEAD that writes no body gets no ETag, so ServeContent HEAD with If-None-Match returns 200. This is a deliberate choice.",
+              "Flush is a no-op.",
+              "More machinery than the spec needs (trailers, 1xx, sniffing)."
+            ],
+            "refuted_defects": [
+              "Large GET sent chunked without Content-Length: true, but every build does this (all 9 gave te=[chunked] for a 100KB body), so it does not count against D."
+            ],
+            "rationale": "Its behavior is identical to C on every probe I ran: tolerant parsing, the header snapshot, HEAD Content-Length kept, and correct 304 header stripping. It is somewhat heavier than C but correct, and its tests are thorough."
+          },
+          {
+            "letter": "F",
+            "score": 8.5,
+            "confirmed_defects": [
+              "A HEAD that writes no body gets no ETag, so a conditional HEAD behind ServeContent returns 200. This is documented.",
+              "Missed by the inspector: the 304 response keeps Content-Type (P02 showed ct=text/plain), whereas net/http and the other builds strip it, against RFC 9110's SHOULD NOT.",
+              "Headers the handler sets after its first Write still leak into the final response."
+            ],
+            "refuted_defects": [],
+            "rationale": "This is the most compact implementation. The parser is tolerant, Flush switches to streaming (better for SSE than a silent no-op), HEAD keeps its Content-Length, and every spec probe passed. It loses a little for keeping Content-Type on the 304 and for not snapshotting headers."
+          },
+          {
+            "letter": "H",
+            "score": 8,
+            "confirmed_defects": [
+              "Flush is a silent no-op.",
+              "Forwards much more than needed (deadlines, EnableFullDuplex, trailers), which adds maintenance surface.",
+              "An empty-body HEAD gets no ETag (asymmetric with GET, documented)."
+            ],
+            "refuted_defects": [],
+            "rationale": "It matches C and D on every probe (tolerant parsing, header snapshot, HEAD Content-Length kept, clean 304). It ranks slightly lower for being the heaviest wrapper relative to the spec."
+          },
+          {
+            "letter": "E",
+            "score": 8,
+            "confirmed_defects": [
+              "A HEAD that writes no body gets no ETag (ServeContent HEAD returns 200 on a conditional request).",
+              "Missed by the inspector: on a real server, HEAD loses its Content-Length (cl=-1 versus 5 without the middleware).",
+              "Write errors are ignored when the buffered body is flushed out.",
+              "Always advertises Flusher, Hijacker and Pusher."
+            ],
+            "refuted_defects": [],
+            "rationale": "All spec probes passed, the parser is tolerant, and Flush switches to streaming. The lost Content-Length on HEAD is a small regression in the HTTP output. Its `\"a\", *` handling (returns 304) mirrors net/http and is acceptable."
+          },
+          {
+            "letter": "G",
+            "score": 7.5,
+            "confirmed_defects": [
+              "A HEAD handler that writes no body and sets no Content-Length gets the empty-body hash as a strong ETag that differs from GET's (P17).",
+              "ServeContent HEAD gets no ETag.",
+              "Always advertises the optional interfaces."
+            ],
+            "refuted_defects": [],
+            "rationale": "Correct on the main spec, with a tolerant parser and Flush streaming. HEAD keeps its Content-Length, and the truncated 128-bit SHA-256 tag is fine. It does emit a wrong strong validator for body-less HEAD without Content-Length."
+          },
+          {
+            "letter": "A",
+            "score": 7.5,
+            "confirmed_defects": [
+              "A HEAD that writes no body and sets no Content-Length gets the empty-body hash as its ETag (P17), a wrong strong validator.",
+              "HEAD loses Content-Length on a real server (cl=-1).",
+              "A leading malformed If-None-Match member stops parsing, so `garbage, \"tag\"` returns 200. This mirrors net/http and is documented."
+            ],
+            "refuted_defects": [],
+            "rationale": "Solid and well tested, with careful writer handling. The HEAD edge produces a wrong validator, the HEAD Content-Length is lost, and the parser is less tolerant than the leaders'."
+          },
+          {
+            "letter": "B",
+            "score": 7.5,
+            "confirmed_defects": [
+              "A HEAD that writes no body and sets no Content-Length gets the empty-body hash as its ETag, which differs from GET's (P17). The test locks this in. I rate it minor-to-moderate rather than major because ServeContent HEAD (with Content-Length set) is handled correctly with no tag.",
+              "HEAD loses Content-Length on a real server.",
+              "A leading garbage member stops parsing (`garbage, tag` returns 200)."
+            ],
+            "refuted_defects": [
+              "Severity 'major' for the HEAD no-body case: reproduced, but it is the same defect A and G have, and the common ServeContent/FileServer HEAD path is safe, so I downgrade it to minor-moderate."
+            ],
+            "rationale": "Nearly identical to A in behavior and quality. Same HEAD edge, same lost Content-Length on HEAD, same strict parsing."
+          },
+          {
+            "letter": "I",
+            "score": 6.5,
+            "confirmed_defects": [
+              "Major, confirmed: there is no HEAD handling at all, so http.ServeContent and FileServer HEAD responses get the empty-body SHA-256 as a strong ETag alongside Content-Length 11 (P19), which contradicts GET's tag. A conditional HEAD returns 200, and caches can treat stored responses as invalidated. The test asserts this behavior.",
+              "Buffered bytes are discarded on Hijack."
+            ],
+            "refuted_defects": [],
+            "rationale": "The parser and writer handling are otherwise good, with a tolerant parser and Flush streaming. But it emits a wrong strong validator on the most common HEAD path (static files and ServeContent), which is a real correctness bug in a validator middleware."
+          }
+        ],
+        "verdict": "All nine builds pass build, vet, gofmt and the tests, and all of them handle the core GET path correctly: tagging, weak and list matching, '*', keeping a handler-set ETag, and passing through POST and non-200 responses. HEAD is what separates them. I emits the empty-body hash as a strong ETag on ServeContent/FileServer HEAD, which is a wrong validator on a common path. A, B and G do the same for body-less HEAD without Content-Length. C, D, F, H and E never emit a mismatched tag. Among the leaders, C and D also snapshot headers and keep HEAD's Content-Length, as net/http does. F is the most compact but keeps Content-Type on 304s. H is correct but heavier. E drops HEAD's Content-Length."
+      },
+      {
+        "ranking": [
+          {
+            "letter": "F",
+            "score": 8.5,
+            "confirmed_defects": [
+              "A HEAD whose handler writes no body (ServeContent HEAD) gets no ETag, so a conditional HEAD with the GET tag returns 200. This is documented and safe.",
+              "Headers the handler sets after WriteHeader still reach the client, because the real WriteHeader is deferred (probe: X-Late set after WriteHeader(200) was sent).",
+              "Write errors are ignored in startStreaming and finish."
+            ],
+            "refuted_defects": [],
+            "rationale": "Compact and idiomatic: 198 lines of code. The If-None-Match parser is tolerant: 'garbage, tag' gives 304, and '*' only counts when it stands alone. A HEAD with a body keeps its Content-Length, and a body-less HEAD never gets a wrong tag. Flush switches to real streaming, so SSE behind it still works. Handler-set weak tags are matched, 404 and POST pass through, and vet, gofmt, tests and -race are all clean. The only issues are small semantic ones."
+          },
+          {
+            "letter": "C",
+            "score": 8.5,
+            "confirmed_defects": [
+              "A body-less HEAD (ServeContent) gets no generated ETag and never returns 304. This is documented.",
+              "Flush is a no-op while the wrapper still advertises Flusher, so streaming handlers are silently buffered.",
+              "No io.ReaderFrom. This is harmless."
+            ],
+            "refuted_defects": [],
+            "rationale": "Every probe was correct. The tolerant list parser handles garbage members. HEAD keeps its Content-Length. Headers are snapshotted at WriteHeader, so late headers do not leak, matching net/http. Trailers and 1xx are handled. It is slightly heavier than it needs to be, and the silent no-op Flush is a product cost for SSE users."
+          },
+          {
+            "letter": "D",
+            "score": 8,
+            "confirmed_defects": [
+              "A body-less HEAD gets no ETag, so GET and HEAD validators differ.",
+              "Flush is a silent no-op.",
+              "Over-engineered: trailers, sniffing and header snapshots."
+            ],
+            "refuted_defects": [],
+            "rationale": "Behaves the same as C on every probe: tolerant parsing, HEAD Content-Length kept, late headers not leaked, no wrong HEAD tags. It is somewhat heavier code with a large test file, and Flush buffers silently."
+          },
+          {
+            "letter": "H",
+            "score": 8,
+            "confirmed_defects": [
+              "Flush is a silent no-op while the wrapper advertises Flusher.",
+              "A body-less HEAD gets no ETag. This is documented.",
+              "Forwards a heavy set of interfaces: deadlines, EnableFullDuplex, trailers."
+            ],
+            "refuted_defects": [],
+            "rationale": "Correct on every probe: tolerant parsing, HEAD Content-Length kept, header snapshot at WriteHeader, no wrong HEAD tags. It has more surface than chi usually carries, and Flush buffers silently."
+          },
+          {
+            "letter": "E",
+            "score": 8,
+            "confirmed_defects": [
+              "HEAD responses lose their Content-Length (probe: -1, where a bare handler gives 5).",
+              "A body-less HEAD gets no ETag.",
+              "Headers set after WriteHeader leak through.",
+              "Write errors are ignored on the final flush."
+            ],
+            "refuted_defects": [],
+            "rationale": "Parsing and matching are correct and tolerant, and Flush streams. Losing Content-Length on HEAD is a small regression compared with having no middleware."
+          },
+          {
+            "letter": "G",
+            "score": 7.5,
+            "confirmed_defects": [
+              "A HEAD whose handler writes no body and sets no Content-Length gets the empty-body hash (\"e3b0c442...\"). That tag differs from GET's, so a conditional HEAD returns 200. This is the same defect the inspector rated major for B.",
+              "ServeContent HEAD gets no ETag.",
+              "Late headers leak through.",
+              "The wrapper always advertises Hijacker and Pusher."
+            ],
+            "refuted_defects": [],
+            "rationale": "Tolerant parsing is correct, HEAD Content-Length is kept, and Flush streams. It advertises a wrong validator for a body-less HEAD that sets no Content-Length, but that is an uncommon handler shape."
+          },
+          {
+            "letter": "A",
+            "score": 7.5,
+            "confirmed_defects": [
+              "A body-less HEAD without Content-Length gets the empty-body SHA-256 tag, which differs from GET's. Reproduced: condHEAD returned 200. This is the same defect the inspector called major in B.",
+              "HEAD loses its Content-Length (-1).",
+              "If-None-Match parsing stops at a malformed member: 'garbage, tag' and '\"a\", garbage, tag' both give 200. This mirrors net/http but is less tolerant than the other builds.",
+              "Late headers leak through."
+            ],
+            "refuted_defects": [],
+            "rationale": "Solid writer handling and tests, but it combines three small semantic gaps: the wrong HEAD tag in one case, a lost HEAD Content-Length, and strict list parsing."
+          },
+          {
+            "letter": "B",
+            "score": 7.5,
+            "confirmed_defects": [
+              "Inspector's major claim confirmed: a HEAD handler that writes nothing and sets no Content-Length gets ETag \"e3b0c442...b855\", which differs from the GET tag, so a conditional HEAD returns 200. In this judge's view it is moderate, not major: the shape is uncommon, and A and G share the defect.",
+              "HEAD loses its Content-Length (-1).",
+              "If-None-Match parsing stops at a malformed member ('garbage, tag' gives 200).",
+              "Flush is a silent no-op, and late headers leak through."
+            ],
+            "refuted_defects": [],
+            "rationale": "Probes behaved identically to A. The code is well built, but it has the same set of HEAD, Content-Length and parsing gaps."
+          },
+          {
+            "letter": "I",
+            "score": 6.5,
+            "confirmed_defects": [
+              "Inspector's major claim confirmed: http.ServeContent on HEAD (Content-Length 11, no body) gets ETag \"e3b0c442...\", the empty-body hash. The GET tag differs, and a conditional HEAD with the GET tag returns 200. The bundled test locks this behavior in.",
+              "The same wrong tag appears for any handler that skips the body on HEAD.",
+              "Late headers leak through.",
+              "Buffered bytes are dropped on Hijack."
+            ],
+            "refuted_defects": [],
+            "rationale": "Its parsing is the best in class and its Flush streaming is good, but it advertises a wrong strong validator in the most common HEAD path, ServeContent. No other build gets that case wrong."
+          }
+        ],
+        "verdict": "All nine builds pass build, vet, gofmt, the full test suite and -race. They all get the core GET path right: a strong tag, weak and list matching, '*', and pass-through for 404 and POST. What separates them is HEAD handling and edge semantics. I advertises the empty-body hash as the ETag for ServeContent HEAD, which is a real validator bug. A, B and G do the same for body-less HEADs that set no Content-Length, and A and B also stop parsing If-None-Match at a garbage member and drop the HEAD Content-Length. F and C are the cleanest: tolerant parsing, no wrong HEAD tags, Content-Length kept. F edges ahead because it is compact and Flush really streams; C, D and H turn Flush into a silent no-op."
+      }
+    ]
+  },
+  {
+    "id": "risky-auth",
+    "reports": [
+      {
+        "overall": 8,
+        "scores": {
+          "correctness": 9,
+          "robustness": 7,
+          "code_quality": 9,
+          "tests": 9,
+          "docs": 8,
+          "product": 8
+        },
+        "defects": [
+          {
+            "severity": "minor",
+            "what": "A redeem timestamp earlier than the issue time is always accepted, however far back it is. A bad or skewed clock can therefore keep a token valid. The test suite deliberately locks this behaviour in.",
+            "evidence": "shop/auth.py:45 only checks the upper bound. tests/test_auth.py:92 test_redeem_before_issue_is_accepted. Probe: issue(now=0), redeem(now=-1e18) returned 'u'."
+          },
+          {
+            "severity": "minor",
+            "what": "Used and expired tokens are never removed from the in-memory _TOKENS dict, so the store grows without limit.",
+            "evidence": "shop/auth.py:47 sets used=True and never deletes anything. Probe printed store size 10 after 10 issues, including used and expired ones."
+          },
+          {
+            "severity": "minor",
+            "what": "issue_reset_token does not validate `now` and does not hold the lock. A non-numeric `now` is stored as-is and only fails later, at redeem, with a TypeError. An unhashable token also raises TypeError instead of InvalidToken.",
+            "evidence": "Probe: issue(now='abc') then redeem(now=1) raised TypeError: unsupported operand type(s) for -: 'int' and 'str'. redeem(['x']) raised TypeError: unhashable type: 'list'. redeem(now='1000') raised TypeError."
+          }
+        ],
+        "strengths": [
+          "Meets every spec point. The boundary is inclusive (1800 s succeeds, 1800.0000001 s raises TokenExpired). TokenUsed and TokenExpired subclass InvalidToken. Unknown tokens raise InvalidToken.",
+          "The lock makes redemption atomic: 50 concurrent redeems of one token gave exactly 1 success and 49 TokenUsed.",
+          "A failed expired redeem does not consume the token. The used check runs before the expiry check, so a used token reports TokenUsed even after it would have expired.",
+          "The comparison is written as `not ... <=` so a NaN timestamp counts as expired, and a comment explains why.",
+          "The tests are meaningful and cover the exact-TTL and TTL+1 boundaries, floats, zero, NaN, empty and None tokens, independent tokens, and the exception hierarchy. They follow the repo's unittest style.",
+          "README was updated with the 30-minute single-use rule. ./check.sh passes (21 tests)."
+        ],
+        "stats": {
+          "files": 12,
+          "source_lines": 266,
+          "test_cases": 21
+        },
+        "summary": "Build A is a clean, small, correct change. RESET_TOKEN_TTL=1800, the TokenExpired and TokenUsed subclasses, and a lock-guarded redeem meet every requirement, including concurrent single use. The tests are thorough and test real behaviour. The only problems are minor: redeem times before the issue time are accepted without limit, the store is never cleaned up, and non-numeric `now` or unhashable tokens raise TypeError instead of being validated. ./check.sh passes. The repo is not a git repository, so the diff could not be isolated. The stats count the whole package.",
+        "letter": "A"
+      },
+      {
+        "overall": 7,
+        "scores": {
+          "correctness": 8,
+          "robustness": 6,
+          "code_quality": 8,
+          "tests": 8,
+          "docs": 6,
+          "product": 8
+        },
+        "defects": [
+          {
+            "severity": "major",
+            "what": "Single-use is not atomic: redeem_reset_token reads record['used'], checks expiry, then sets used=True with no lock, so concurrent redeems of the same token can all succeed (replay of a password-reset token).",
+            "evidence": "shop/auth.py:44-48. A probe that wraps the record so reading 'issued_at' sleeps 50ms (widening the check-then-set window), then redeems from 4 threads, prints `successes: ['a', 'a', 'a', 'a']`. 200 natural 8-thread trials without the sleep showed no double success, so the race needs a thread switch inside the window."
+          },
+          {
+            "severity": "minor",
+            "what": "now is not validated. NaN makes every token redeemable forever because NaN comparisons are always False. A non-numeric now passed to issue is stored without error and only fails later with TypeError instead of an InvalidToken subclass.",
+            "evidence": "issue at now=0, redeem at now=float('nan') returns 'a'; issue_reset_token('a', now='x') succeeds, then redeem at now=5 raises TypeError: unsupported operand type(s) for -: 'int' and 'str'"
+          },
+          {
+            "severity": "minor",
+            "what": "A redeem time before the issue time (negative elapsed, e.g. clock skew) is accepted without comment.",
+            "evidence": "issue at now=0, redeem at now=-5 returns 'a'"
+          },
+          {
+            "severity": "minor",
+            "what": "Used and expired tokens are never removed from the module-level _TOKENS dict, so it grows without bound.",
+            "evidence": "shop/auth.py:47: used tokens are marked used=True and kept; nothing ever deletes an entry"
+          },
+          {
+            "severity": "minor",
+            "what": "The README was not updated to describe the 30-minute lifetime or single-use behavior, although it documents other business rules (shipping, tax).",
+            "evidence": "README.md mentions only 'password-reset tokens'; grep for expire, 1800 and single-use finds nothing"
+          }
+        ],
+        "strengths": [
+          "Meets every spec requirement: the now defaults are read at call time, the 1800 s boundary is inclusive and expiry starts strictly after it, TokenExpired and TokenUsed subclass InvalidToken, and unknown tokens raise the base class.",
+          "A failed redeem does not consume the token, and 'used' is checked before expiry; both behaviors are documented in the docstring and tested.",
+          "Small, clear implementation with a named TOKEN_LIFETIME_SECONDS constant, in the style of the codebase (module docstring, constants, plain functions).",
+          "Thorough tests: exact boundary, fractional seconds, patched time.time for the defaults, precedence, non-consumption on failure, the exception hierarchy, and empty or None tokens.",
+          "./check.sh passes (21 tests)."
+        ],
+        "stats": {
+          "files": 13,
+          "source_lines": 241,
+          "test_cases": 21
+        },
+        "summary": "Build B implements expiry and single-use tokens correctly and cleanly, and its tests cover the boundaries well. The one real issue is that redeeming is a check-then-set with no lock, so concurrent threads can redeem the same token more than once; a forced interleaving reproduces this. Minor gaps: now is not validated (NaN makes a token never expire), tokens are never cleaned up, and the README was not updated.",
+        "letter": "B"
+      },
+      {
+        "overall": 8,
+        "scores": {
+          "correctness": 9,
+          "robustness": 7,
+          "code_quality": 9,
+          "tests": 9,
+          "docs": 8,
+          "product": 8
+        },
+        "defects": [
+          {
+            "severity": "minor",
+            "what": "Token store grows without bound: expired and used tokens are never removed from _TOKENS or _USED, and the token and used sets are kept as two parallel structures.",
+            "evidence": "shop/auth.py:9-10. Nothing ever deletes from _TOKENS or _USED. A token in _USED stays in _TOKENS forever."
+          },
+          {
+            "severity": "minor",
+            "what": "Redeeming with a `now` earlier than the issue time is accepted (negative elapsed time), and a NaN issue time never expires, because neither now nor issued_at is validated. A test locks in the before-issue behavior.",
+            "evidence": "PYTHONPATH=. python3 probe: issue(now=nan) then redeem(now=1e9) returns 'a'. tests/test_auth.py test_redeem_before_issue_time_does_not_expire asserts that redeem(now=0) works after issue(now=1000)."
+          },
+          {
+            "severity": "minor",
+            "what": "A non-numeric `now`, or an unhashable token, surfaces as a raw TypeError instead of InvalidToken or a clear argument error.",
+            "evidence": "redeem_reset_token([], now=0) raises TypeError: unhashable type: 'list'. redeem_reset_token(tok, now='100') raises TypeError: unsupported operand type(s) for -: 'str' and 'int'. The token is not consumed in either case."
+          },
+          {
+            "severity": "minor",
+            "what": "issue_reset_token writes to _TOKENS without taking _LOCK. A single dict assignment is atomic under the GIL, so this is safe, but the locking discipline is inconsistent.",
+            "evidence": "shop/auth.py:30 assigns _TOKENS[token] outside `with _LOCK`."
+          }
+        ],
+        "strengths": [
+          "All spec points are met: expiry is strictly greater than 1800s (redeeming at exactly 1800s succeeds, at 1800.001s it raises TokenExpired), tokens are single-use, both exceptions subclass InvalidToken, unknown tokens raise plain InvalidToken, and now=0 is honored through an `is None` check.",
+          "The check-then-mark is atomic under a lock. 50 threads redeeming one token gave exactly 1 success and 49 TokenUsed.",
+          "A failed (expired) redeem does not consume the token. Used takes precedence over expired.",
+          "15 focused tests cover the boundaries, fractional overshoot, precedence, independence of tokens and exact exception types. ./check.sh passes (22 tests).",
+          "The change is small and idiomatic, with a named RESET_TOKEN_LIFETIME constant and a README line documenting the behavior, both in the codebase's style."
+        ],
+        "stats": {
+          "files": 13,
+          "source_lines": 257,
+          "test_cases": 22
+        },
+        "summary": "Build C meets every requirement in the spec, and no blocker or major defect turned up. Redeeming at exactly 1800 seconds after issue succeeds and anything later raises TokenExpired. Tokens are single-use, and a lock makes the check and the marking happen together, so 50 concurrent redeems of one token gave 1 success and 49 TokenUsed. Unknown tokens still raise a plain InvalidToken. ./check.sh passes (22 tests, 15 of them auth tests). The defects are all minor: the token store never removes old entries, inputs are not validated (NaN or a redeem time earlier than the issue time is accepted, and non-numeric or unhashable input raises a raw TypeError), and issuing a token skips the lock. The code is concise, the tests are thorough and fit the codebase, and the README mentions the new behavior.",
+        "letter": "C"
+      },
+      {
+        "overall": 7,
+        "scores": {
+          "correctness": 8,
+          "robustness": 6,
+          "code_quality": 8,
+          "tests": 8,
+          "docs": 6,
+          "product": 8
+        },
+        "defects": [
+          {
+            "severity": "major",
+            "what": "Redeem is a non-atomic check-then-set with no lock. Concurrent redemptions of the same token can all pass the `used` check before any of them sets it, so a single-use token gets redeemed more than once.",
+            "evidence": "shop/auth.py:43-48. Throwaway probe scratchpad/r.py passes a `now` float subclass whose __sub__ sleeps 10ms to widen the window, then redeems one token from 5 threads. It printed ['a', 'a', 'a', 'a', 'a'] (5 successful redemptions). Under normal timing, 300 trials of 8 racing threads produced 0 double redemptions, so the window is narrow but real."
+          },
+          {
+            "severity": "minor",
+            "what": "A redeem time earlier than the issue time (negative elapsed) is accepted as valid. There is no input validation on `now`: issue_reset_token(now='abc') succeeds and fails only later at redeem with a TypeError, and a NaN issued_at produces a token that never expires.",
+            "evidence": "probe: issue now=1000, redeem now=0 -> 'a'; issue now=float('nan'), redeem now=1e12 -> 'a'; issue now='abc' -> no error; redeem with now='5' -> TypeError"
+          },
+          {
+            "severity": "minor",
+            "what": "The in-memory _TOKENS store never evicts used or expired entries, so it grows without bound. This was already true before the change, but the change gave the code a natural point to prune.",
+            "evidence": "shop/auth.py:8; after the probe, len(auth._TOKENS) == 309"
+          },
+          {
+            "severity": "minor",
+            "what": "The README does not mention the new 30-minute expiry or single-use behaviour, although it documents other business rules (shipping, tax).",
+            "evidence": "README.md has no mention of token TTL"
+          }
+        ],
+        "strengths": [
+          "Meets every spec point: the 1800s boundary is inclusive (expires only past 1800), tokens are single-use, TokenExpired and TokenUsed subclass InvalidToken, unknown tokens raise InvalidToken, and now defaults to time.time()",
+          "Small, idiomatic change with a named TOKEN_TTL_SECONDS constant and a docstring listing the exceptions",
+          "Sensible ordering: a failed expired attempt does not consume the token, and a used token reports TokenUsed even after the TTL",
+          "Tests cover the exact-boundary and just-past-boundary cases, reuse, independence of tokens, the default clock and the subclass relationship, all in the existing unittest style",
+          "./check.sh passes (17 tests OK)"
+        ],
+        "stats": {
+          "files": 2,
+          "source_lines": 86,
+          "test_cases": 10
+        },
+        "summary": "Build D meets every requirement in the task. The change is a clean, idiomatic edit to shop/auth.py with good boundary tests, and check.sh passes. The main gap is that the single-use guarantee does not hold under concurrent redemption: the check-then-set on entry[\"used\"] is not atomic and has no lock, and a forced interleaving redeemed one token five times. Smaller gaps: no validation of `now` (a negative elapsed time or NaN is accepted), the token store grows without bound, and the README does not mention the new expiry.",
+        "letter": "D"
+      },
+      {
+        "letter": "E",
+        "overall": 7.5,
+        "scores": {
+          "correctness": 9,
+          "robustness": 7,
+          "code_quality": 9,
+          "tests": 9,
+          "docs": 6,
+          "product": 8
+        },
+        "defects": [
+          {
+            "severity": "minor",
+            "what": "Redeem uses a non-atomic check-then-set on entry['used'] with no lock, so the single-use guarantee depends on GIL scheduling rather than an explicit guard.",
+            "evidence": "shop/auth.py redeem_reset_token: 'if entry[\"used\"]: raise ...' and then later 'entry[\"used\"] = True', with no threading.Lock. A probe ran 2000 rounds of 8 threads redeeming the same token with sys.setswitchinterval(1e-6) and printed 'double redeems 0'. So this was not reproduced in CPython, but nothing in the code guarantees it."
+          },
+          {
+            "severity": "minor",
+            "what": "Tokens are never pruned. Expired and used entries stay in _TOKENS forever, so memory grows without bound.",
+            "evidence": "After the probe, len(shop.auth._TOKENS) printed 2009. No code path ever deletes an entry."
+          },
+          {
+            "severity": "minor",
+            "what": "Any amount of backward clock skew is accepted: a redeem far before the issue time succeeds. This is intentional and tested, but there is no bound on it.",
+            "evidence": "issue_reset_token('u', now=0) followed by redeem_reset_token(t, now=-1e18) returned 'u'. The same happens with now=-inf. tests/test_auth.py test_clock_skew_before_issue_is_not_expired codifies this behaviour."
+          },
+          {
+            "severity": "minor",
+            "what": "A non-numeric now is not validated when the token is issued. The bad token is stored and only fails later, at redeem time, with a TypeError instead of an InvalidToken subclass.",
+            "evidence": "issue_reset_token('u', now='abc') succeeded. A later redeem_reset_token(t, now=10) raised: TypeError unsupported operand type(s) for -: 'int' and 'str'."
+          },
+          {
+            "severity": "minor",
+            "what": "The README was not updated. It describes the existing behaviour (money, shipping, tax) but says nothing about the 30-minute token TTL or the single-use rule.",
+            "evidence": "README.md lists money, shipping and tax rules only. It does not mention reset-token expiry."
+          }
+        ],
+        "strengths": [
+          "The implementation is minimal and idiomatic. RESET_TOKEN_TTL is a named constant, the exception hierarchy matches the spec exactly, and the default-now handling is correct (now=0 is not treated as missing).",
+          "The boundary is handled correctly: exactly 1800 s redeems, 1800.0000001 s raises TokenExpired. NaN is deliberately treated as expired through the 'not <=' comparison, and a comment explains why.",
+          "Redeeming an expired token does not mark it used, and a used token reports TokenUsed even after the expiry window. Both behaviours are sensible and both are tested.",
+          "There are 16 focused auth tests. They cover the boundary, float timestamps, NaN, the default clock through mock, reuse, independent tokens for the same user, subclassing, and exact exception types and messages for unknown, empty and None tokens.",
+          "./check.sh passes (23 tests OK). The code follows the existing module style: a module docstring, unittest, and stdlib only."
+        ],
+        "stats": {
+          "files": 13,
+          "source_lines": 264,
+          "test_cases": 23
+        },
+        "summary": "Build E meets every spec requirement. Issue and redeem accept an optional now that defaults to time.time(). The 1800 s TTL is inclusive at the boundary and raises TokenExpired beyond it. Reuse raises TokenUsed, both new exceptions subclass InvalidToken, and unknown tokens still raise plain InvalidToken. ./check.sh passes with 23 tests, and the auth tests are thorough and meaningful. Probes confirmed correct boundary, NaN, infinity and reuse behaviour, and 8-thread contention produced no double redeem. The remaining issues are all minor: the single-use check and set happen without an explicit lock, expired and used tokens are never pruned, backward clock skew of any size is accepted, a non-numeric now is accepted at issue time and fails later with a TypeError, and the README does not mention the new token rules. No blockers or majors were found."
+      },
+      {
+        "letter": "F",
+        "overall": 8,
+        "scores": {
+          "correctness": 9,
+          "robustness": 7,
+          "code_quality": 9,
+          "tests": 9,
+          "docs": 8,
+          "product": 8
+        },
+        "defects": [
+          {
+            "severity": "minor",
+            "what": "NaN timestamps disable expiry: if issued_at or now is NaN, `now - issued_at > RESET_TOKEN_TTL` is always False so the token never expires.",
+            "evidence": "python3 -c \"import shop.auth as a; t=a.issue_reset_token('u',now=float('nan')); print(a.redeem_reset_token(t,now=99999999))\" -> prints 'u' (shop/auth.py:47)"
+          },
+          {
+            "severity": "minor",
+            "what": "Tokens redeemed before their issue time (negative elapsed, or a token issued with a future `now`) are accepted with no lower bound. A test (test_clock_skew_is_valid) deliberately asserts this, but an arbitrarily large skew (now=-1e18) is also accepted.",
+            "evidence": "issue now=1000, redeem now=-1e18 -> returns 'u'"
+          },
+          {
+            "severity": "minor",
+            "what": "The in-memory store grows without bound: expired and used tokens are never removed from _TOKENS, and _USED keeps growing. An alternative design would pop the entry on redeem instead of keeping a separate _USED set.",
+            "evidence": "shop/auth.py:9-10; after 9 issues and 5 redeems, len(_TOKENS)=9 and len(_USED)=5"
+          },
+          {
+            "severity": "minor",
+            "what": "Bad input types are not validated. A non-numeric now raises a TypeError at redeem time instead of being rejected at issue time, and an unhashable token raises TypeError rather than InvalidToken.",
+            "evidence": "issue_reset_token('u', now='abc') succeeds; redeem -> TypeError unsupported operand; redeem_reset_token([1]) -> TypeError unhashable type"
+          }
+        ],
+        "strengths": [
+          "Meets every spec requirement: 1800s is inclusive, 1800.5 and 1801 expire, a second redeem raises TokenUsed, both new exceptions subclass InvalidToken, unknown tokens raise plain InvalidToken, and now defaults to time.time() read at call time.",
+          "The check-then-mark step runs under a lock. 200 rounds with 16 threads each gave exactly one success per token.",
+          "A failed redeem of an expired token does not consume it, and the used check takes precedence over expiry.",
+          "The tests are thorough and meaningful: the boundary, float and zero timestamps, a patched clock for the default now, exact exception types and messages, and a concurrency test that widens the race window with a slow set.",
+          "A small, idiomatic diff with a named TTL constant. The README gets a one-line note matching its existing style, and ./check.sh passes (21 tests)."
+        ],
+        "stats": {
+          "files": 3,
+          "source_lines": 136,
+          "test_cases": 14
+        },
+        "summary": "Build F is a clean, correct fix. The expiry boundary is handled exactly, tokens are single-use under a lock that survives concurrent redeems, and the exception hierarchy matches the spec. The tests are strong and ./check.sh passes. The remaining issues are minor robustness gaps: NaN timestamps stop expiry from working, negative elapsed time is accepted without bound, the in-memory store is never pruned, and bad input types raise TypeError instead of being rejected."
+      },
+      {
+        "letter": "G",
+        "overall": 7.5,
+        "scores": {
+          "correctness": 8,
+          "robustness": 6,
+          "code_quality": 9,
+          "tests": 8,
+          "docs": 6,
+          "product": 8
+        },
+        "defects": [
+          {
+            "severity": "major",
+            "what": "Single-use is enforced with an unlocked check-then-set (`if record.used: raise` ... `record.used = True`), so concurrent redemptions of the same token can all succeed. The window is small under the GIL, but nothing makes it atomic: no lock and no atomic pop.",
+            "evidence": "shop/auth.py redeem_reset_token: the used check comes before the expiry comparison and the assignment. Widening the window with a float subclass whose __add__ sleeps 10ms, then 5 threads calling redeem_reset_token(t, now=1), printed 'successful redemptions: 5'. 300 natural-timing trials with 8 threads (switchinterval 1e-6) gave 0 double redemptions, so it is a latent race, not one that reproduces easily."
+          },
+          {
+            "severity": "minor",
+            "what": "Used and expired tokens are never removed from the module-level _TOKENS dict, so the store grows without bound.",
+            "evidence": "The probe script issued about 310 tokens, redeemed most of them, and then printed 'store size 310'."
+          },
+          {
+            "severity": "minor",
+            "what": "`now` is not validated. A NaN timestamp makes a token never expire, and non-numeric `now` is accepted by issue_reset_token and only fails later at redemption with TypeError.",
+            "evidence": "issue_reset_token('u', now=float('nan')) followed by redeem_reset_token(t, now=1e12) returns 'u'. issue_reset_token('u', now='abc') is accepted."
+          },
+          {
+            "severity": "minor",
+            "what": "The README, which documents the shop's other rules (shipping, tax), was not updated to describe the 30-minute expiry and single-use behavior. Only the module docstring documents it.",
+            "evidence": "README.md has only one line about password-reset tokens, with nothing about expiry or reuse."
+          }
+        ],
+        "strengths": [
+          "The implementation is minimal and clear. It names a RESET_TTL constant, uses a small dataclass record, and has accurate docstrings covering the default for now and the order in which errors are raised.",
+          "The boundary is correct: exactly 1800s is valid and 1800.0001s raises TokenExpired. The used check comes before the expiry check, and an expired attempt does not consume the token.",
+          "The exception hierarchy matches the spec, and an unknown token raises a plain InvalidToken.",
+          "There are 17 focused tests covering the boundary, now=0, float timestamps, the time.time default via mock, reuse, independence between tokens, and the subclass relationships. They follow the existing unittest style.",
+          "./check.sh passes (24 tests OK)."
+        ],
+        "stats": {
+          "files": 2,
+          "source_lines": 132,
+          "test_cases": 17
+        },
+        "summary": "Build G meets every spec point. Tokens expire more than 1800s after issue with the boundary handled correctly, and they are single-use. TokenExpired and TokenUsed subclass InvalidToken, and the now parameter defaults to time.time(). ./check.sh passes. The code is clean and idiomatic, and the 17 tests cover the named boundaries well. The main weakness is that redemption is a non-atomic check-then-set with no lock, so concurrent redemptions can double-spend a token. I reproduced this only by artificially widening the race window (5 of 5 threads succeeded); 300 natural-timing trials showed none. Minor issues: the token store is never cleaned up, now is not validated (a NaN timestamp makes a token never expire), and the README does not mention the new expiry rules. Files are in /tmp/inspect-risky-auth-G: shop/auth.py and tests/test_auth.py."
+      },
+      {
+        "overall": 8,
+        "scores": {
+          "correctness": 9,
+          "robustness": 7,
+          "code_quality": 9,
+          "tests": 8,
+          "docs": 7,
+          "product": 8
+        },
+        "defects": [
+          {
+            "severity": "minor",
+            "what": "Tokens (used or expired) are never evicted from the in-memory _TOKENS dict, so the store grows without bound.",
+            "evidence": "shop/auth.py: entries are only inserted/marked used; probe printed 'store size 5' after 5 issues including used/expired ones."
+          },
+          {
+            "severity": "minor",
+            "what": "Clock values that are not valid are accepted silently: a redeem time earlier than the issue time succeeds, now=NaN passes the expiry check, and a token issued at now=inf never expires.",
+            "evidence": "probe: issue now=1000, redeem now=0 -> 'a'; redeem now=float('nan') -> accepted; issue now=inf, redeem now=10 -> 'a'. Comparison at shop/auth.py `if now - entry['issued_at'] > TOKEN_TTL`."
+          },
+          {
+            "severity": "minor",
+            "what": "No test covers concurrent redemption, although the code adds a lock for that case. The lock does work: in a probe with 50 threads, 1 redeem succeeded and 49 raised TokenUsed.",
+            "evidence": "tests/test_auth.py has no threading test; scratch probe with 50 threads printed '1 49'."
+          }
+        ],
+        "strengths": [
+          "Meets every part of the spec: the 1800 s boundary is inclusive, TokenUsed and TokenExpired subclass InvalidToken, now defaults to time.time(), and now=0 is honoured by using `is None`.",
+          "Redeeming an already-used token raises TokenUsed even after expiry, and an expired token is not marked used.",
+          "A threading.Lock makes the check-and-mark step atomic; a 50-thread probe got exactly one success.",
+          "Ten focused tests cover the round trip, both sides of the boundary, now=0, the default clock, the exact type for unknown tokens, and the subclasses.",
+          "The module docstring and the TOKEN_TTL constant document the behaviour, and the style is consistent with cart.py; ./check.sh passes with 17 tests."
+        ],
+        "stats": {
+          "files": 13,
+          "source_lines": 300,
+          "test_cases": 17
+        },
+        "summary": "Build H is a clean, small change that implements the spec correctly. Expiry is inclusive at exactly 1800 s, tokens are single-use with TokenUsed taking precedence, the exception hierarchy is right, and redemption is atomic under a lock. ./check.sh passes with 17 tests. All remaining issues are minor: the token store is never purged, a redeem time earlier than the issue time or a NaN/inf clock is accepted, and no test covers concurrent redemption.",
+        "letter": "H"
+      },
+      {
+        "overall": 7,
+        "scores": {
+          "correctness": 8,
+          "robustness": 6,
+          "code_quality": 8,
+          "tests": 8,
+          "docs": 5,
+          "product": 7
+        },
+        "defects": [
+          {
+            "severity": "major",
+            "what": "Single-use enforcement is a non-atomic check-then-act (`token in _USED` then `_USED.add(token)`) with no lock, so concurrent redeems of the same token can all succeed.",
+            "evidence": "shop/auth.py:41-46. Swapping _USED for a set subclass whose __contains__ sleeps 10ms, then running 5 threads on redeem_reset_token(t), printed 'successes 5'. Without the injected delay, 2000 trials with 8 threads each gave 0 double redeems, so in practice the window is narrow, but nothing guarantees it is closed."
+          },
+          {
+            "severity": "minor",
+            "what": "A token issued with a future or infinite issued_at never expires. Redeeming before issue time is accepted on purpose (the tests cover clock skew), but the gap is unbounded.",
+            "evidence": "issue_reset_token('u', now=float('inf')) followed by redeem_reset_token(t, now=0) returned 'u'. Also issue at now=5000, redeem at now=1000 returns 'ada' (tests/test_auth.py:96)."
+          },
+          {
+            "severity": "minor",
+            "what": "The in-memory stores grow without bound: expired and used tokens are never removed from _TOKENS or _USED.",
+            "evidence": "shop/auth.py:8-9,46. After a few probes it printed 'store sizes 9 3', and nothing ever deletes entries."
+          },
+          {
+            "severity": "minor",
+            "what": "Bad input types leak TypeError instead of InvalidToken or ValueError: an unhashable token, or a non-numeric now.",
+            "evidence": "redeem_reset_token([1], now=0) raised TypeError 'unhashable type: list'. redeem_reset_token(tok, now='100') raised TypeError 'unsupported operand type(s) for -: str and int'."
+          },
+          {
+            "severity": "minor",
+            "what": "The README mentions password-reset tokens but was not updated to describe the 30-minute TTL or the single-use behaviour.",
+            "evidence": "README.md:3-10 has no mention of expiry or single use."
+          }
+        ],
+        "strengths": [
+          "Small, clear implementation. TOKEN_TTL is a named constant, and the exception hierarchy matches the spec exactly.",
+          "The boundary is handled correctly: exactly 1800s is accepted, and 1801s and fractional values past 1800 raise TokenExpired.",
+          "NaN timestamps fail closed, using the `not <=` comparison, and that is documented in a comment.",
+          "Checking for prior use before checking expiry means reusing a token always raises TokenUsed. A failed (expired) redeem does not mark the token as used.",
+          "Thorough tests: boundaries, zero timestamps, NaN, reuse after the window, isolation between tokens, the default `now` mocked through time.time, and empty or None tokens. They use the existing unittest style.",
+          "./check.sh passes (27 tests OK)."
+        ],
+        "stats": {
+          "files": 12,
+          "source_lines": 278,
+          "test_cases": 27
+        },
+        "summary": "Build I meets every spec requirement: the 1800s TTL boundary is inclusive, tokens are single-use with TokenUsed, TokenExpired and TokenUsed subclass InvalidToken, unknown tokens raise plain InvalidToken, and `now` defaults to time.time() at call time. The tests are strong (20 auth cases) and check.sh passes. The main weakness is the lockless check-then-add in redeem_reset_token: concurrent redeems can double-spend a token, which I showed by injecting a delay. Smaller issues: future-dated tokens never expire, the stores are never pruned, bad input types raise TypeError, and the README was not updated. Files are in /tmp/inspect-risky-auth-I (shop/auth.py, tests/test_auth.py).",
+        "letter": "I"
+      }
+    ],
+    "judge": {
+      "ranking": [
+        {
+          "letter": "A",
+          "score": 8.5,
+          "confirmed_defects": [
+            "Minor: a redeem time earlier than the issue time is accepted with no lower bound",
+            "Minor: the store is never pruned",
+            "Minor: a non-numeric now or an unhashable token raises a raw TypeError"
+          ],
+          "refuted_defects": [],
+          "rationale": "Meets every spec point. Redeem holds a lock, and my forced-interleaving probe got exactly 1 success out of 5. NaN fails closed because of the `not <=` comparison. A failed expired redeem does not consume the token. The README is updated and there are 14 meaningful tests. check.sh passes."
+        },
+        {
+          "letter": "F",
+          "score": 8.5,
+          "confirmed_defects": [
+            "Minor: a NaN issue time never expires (reproduced: returns 'u')",
+            "Minor: no lower bound on redeem time before issue",
+            "Minor: the _TOKENS and _USED stores are never pruned"
+          ],
+          "refuted_defects": [],
+          "rationale": "Redeem is lock-guarded (1/5 under the forced race). It is the only build with a real concurrency test, which uses a SlowSet to widen the window. The README is updated and the tests are solid. It sits level with A apart from failing open on NaN."
+        },
+        {
+          "letter": "C",
+          "score": 8,
+          "confirmed_defects": [
+            "Minor: a NaN issue time never expires",
+            "Minor: the stores are never pruned",
+            "Minor: the issue write is outside the lock (harmless under the GIL)"
+          ],
+          "refuted_defects": [],
+          "rationale": "Correct and lock-guarded (1/5 under the forced race), with the README updated and 15 tests. It has no concurrency test and NaN fails open."
+        },
+        {
+          "letter": "H",
+          "score": 7.5,
+          "confirmed_defects": [
+            "Minor: a NaN issue time never expires",
+            "Minor: no test covers the lock it added",
+            "Minor: the store is never pruned"
+          ],
+          "refuted_defects": [],
+          "rationale": "Correct and lock-guarded (1/5 under the forced race). The README is not updated (only the module docstring documents the change), and it has a thinner set of 10 tests."
+        },
+        {
+          "letter": "E",
+          "score": 7,
+          "confirmed_defects": [
+            "Unlocked check-then-set on used: 5/5 threads redeemed one token under a forced interleaving, 0 doubles in 300 natural trials. The inspector rated this minor, but it is the same flaw as B/D/G/I",
+            "README not updated",
+            "Store never pruned"
+          ],
+          "refuted_defects": [],
+          "rationale": "Spec-correct, NaN fails closed, and it has 16 good tests. However, single-use is not atomic under concurrency, which is a meaningful weakness for a security token. I treat this flaw the same in every build that has it."
+        },
+        {
+          "letter": "I",
+          "score": 7,
+          "confirmed_defects": [
+            "Major (latent): unlocked check-then-add on _USED. Forced race gave 5/5 successes, 0 doubles in 300 natural trials",
+            "README not updated",
+            "Future or infinite issue time never expires; stores never pruned"
+          ],
+          "refuted_defects": [],
+          "rationale": "Spec-correct with the most tests (20 auth tests), and NaN fails closed. Docs are missing and redemption is not atomic."
+        },
+        {
+          "letter": "G",
+          "score": 6.5,
+          "confirmed_defects": [
+            "Major (latent): unlocked check-then-set on record.used. Forced race gave 5/5 successes",
+            "Minor: a NaN issue time never expires (reproduced)",
+            "README not updated"
+          ],
+          "refuted_defects": [],
+          "rationale": "Clean dataclass code with a good docstring and 17 tests. It has the race, NaN fails open, and the README is not updated."
+        },
+        {
+          "letter": "B",
+          "score": 6.5,
+          "confirmed_defects": [
+            "Major (latent): unlocked check-then-set. Forced race gave 5/5 successes",
+            "Minor: NaN never expires (reproduced)",
+            "README not updated"
+          ],
+          "refuted_defects": [],
+          "rationale": "Spec-correct with good tests and a docstring. It has the race and NaN fails open."
+        },
+        {
+          "letter": "D",
+          "score": 6,
+          "confirmed_defects": [
+            "Major (latent): unlocked check-then-set. Forced race gave 5/5 successes",
+            "Minor: NaN never expires (reproduced)",
+            "README not updated"
+          ],
+          "refuted_defects": [],
+          "rationale": "Same weaknesses as B, with the smallest test suite (10 auth tests)."
+        }
+      ],
+      "verdict": "All nine builds meet the spec. Each passes check.sh, accepts redemption at exactly 1800 seconds, raises TokenExpired just past 1800, does not consume the token on a failed expired redeem, raises TokenUsed before TokenExpired, and has the right exception hierarchy. What mainly separates them is whether single-use holds under concurrency. A, C, F and H guard the redeem check-then-mark with a lock, and my forced interleaving got 1 success out of 5. B, D, E, G and I do not, and the same probe let all 5 threads redeem one token (no natural-timing double redeems in 300 trials). After that, the tiebreakers were NaN handling (only A, E and I fail closed), whether the README was updated (A, C, F) and test depth (only F tests concurrency)."
+    },
+    "judges": [
+      {
+        "ranking": [
+          {
+            "letter": "A",
+            "score": 8.5,
+            "confirmed_defects": [
+              "Minor: a redeem time earlier than the issue time is accepted with no lower bound",
+              "Minor: the store is never pruned",
+              "Minor: a non-numeric now or an unhashable token raises a raw TypeError"
+            ],
+            "refuted_defects": [],
+            "rationale": "Meets every spec point. Redeem holds a lock, and my forced-interleaving probe got exactly 1 success out of 5. NaN fails closed because of the `not <=` comparison. A failed expired redeem does not consume the token. The README is updated and there are 14 meaningful tests. check.sh passes."
+          },
+          {
+            "letter": "F",
+            "score": 8.5,
+            "confirmed_defects": [
+              "Minor: a NaN issue time never expires (reproduced: returns 'u')",
+              "Minor: no lower bound on redeem time before issue",
+              "Minor: the _TOKENS and _USED stores are never pruned"
+            ],
+            "refuted_defects": [],
+            "rationale": "Redeem is lock-guarded (1/5 under the forced race). It is the only build with a real concurrency test, which uses a SlowSet to widen the window. The README is updated and the tests are solid. It sits level with A apart from failing open on NaN."
+          },
+          {
+            "letter": "C",
+            "score": 8,
+            "confirmed_defects": [
+              "Minor: a NaN issue time never expires",
+              "Minor: the stores are never pruned",
+              "Minor: the issue write is outside the lock (harmless under the GIL)"
+            ],
+            "refuted_defects": [],
+            "rationale": "Correct and lock-guarded (1/5 under the forced race), with the README updated and 15 tests. It has no concurrency test and NaN fails open."
+          },
+          {
+            "letter": "H",
+            "score": 7.5,
+            "confirmed_defects": [
+              "Minor: a NaN issue time never expires",
+              "Minor: no test covers the lock it added",
+              "Minor: the store is never pruned"
+            ],
+            "refuted_defects": [],
+            "rationale": "Correct and lock-guarded (1/5 under the forced race). The README is not updated (only the module docstring documents the change), and it has a thinner set of 10 tests."
+          },
+          {
+            "letter": "E",
+            "score": 7,
+            "confirmed_defects": [
+              "Unlocked check-then-set on used: 5/5 threads redeemed one token under a forced interleaving, 0 doubles in 300 natural trials. The inspector rated this minor, but it is the same flaw as B/D/G/I",
+              "README not updated",
+              "Store never pruned"
+            ],
+            "refuted_defects": [],
+            "rationale": "Spec-correct, NaN fails closed, and it has 16 good tests. However, single-use is not atomic under concurrency, which is a meaningful weakness for a security token. I treat this flaw the same in every build that has it."
+          },
+          {
+            "letter": "I",
+            "score": 7,
+            "confirmed_defects": [
+              "Major (latent): unlocked check-then-add on _USED. Forced race gave 5/5 successes, 0 doubles in 300 natural trials",
+              "README not updated",
+              "Future or infinite issue time never expires; stores never pruned"
+            ],
+            "refuted_defects": [],
+            "rationale": "Spec-correct with the most tests (20 auth tests), and NaN fails closed. Docs are missing and redemption is not atomic."
+          },
+          {
+            "letter": "G",
+            "score": 6.5,
+            "confirmed_defects": [
+              "Major (latent): unlocked check-then-set on record.used. Forced race gave 5/5 successes",
+              "Minor: a NaN issue time never expires (reproduced)",
+              "README not updated"
+            ],
+            "refuted_defects": [],
+            "rationale": "Clean dataclass code with a good docstring and 17 tests. It has the race, NaN fails open, and the README is not updated."
+          },
+          {
+            "letter": "B",
+            "score": 6.5,
+            "confirmed_defects": [
+              "Major (latent): unlocked check-then-set. Forced race gave 5/5 successes",
+              "Minor: NaN never expires (reproduced)",
+              "README not updated"
+            ],
+            "refuted_defects": [],
+            "rationale": "Spec-correct with good tests and a docstring. It has the race and NaN fails open."
+          },
+          {
+            "letter": "D",
+            "score": 6,
+            "confirmed_defects": [
+              "Major (latent): unlocked check-then-set. Forced race gave 5/5 successes",
+              "Minor: NaN never expires (reproduced)",
+              "README not updated"
+            ],
+            "refuted_defects": [],
+            "rationale": "Same weaknesses as B, with the smallest test suite (10 auth tests)."
+          }
+        ],
+        "verdict": "All nine builds meet the spec. Each passes check.sh, accepts redemption at exactly 1800 seconds, raises TokenExpired just past 1800, does not consume the token on a failed expired redeem, raises TokenUsed before TokenExpired, and has the right exception hierarchy. What mainly separates them is whether single-use holds under concurrency. A, C, F and H guard the redeem check-then-mark with a lock, and my forced interleaving got 1 success out of 5. B, D, E, G and I do not, and the same probe let all 5 threads redeem one token (no natural-timing double redeems in 300 trials). After that, the tiebreakers were NaN handling (only A, E and I fail closed), whether the README was updated (A, C, F) and test depth (only F tests concurrency)."
+      },
+      {
+        "ranking": [
+          {
+            "letter": "F",
+            "score": 8.5,
+            "confirmed_defects": [
+              "minor: a NaN issued_at or now never expires (redeem at now=nan returned 'u')",
+              "minor: a redeem time before the issue time is accepted with no lower bound",
+              "minor: _TOKENS and _USED are never pruned"
+            ],
+            "refuted_defects": [],
+            "rationale": "Every spec point is met. The check-then-mark runs under a lock, and in a forced-interleaving probe 1 of 5 threads succeeded. F is the only build with a regression test for concurrent single use (a SlowSet plus a Barrier). The README is updated and check.sh passes (21 tests). Its one real weakness is that a NaN timestamp fails open."
+          },
+          {
+            "letter": "A",
+            "score": 8.5,
+            "confirmed_defects": [
+              "minor: a redeem time before the issue time is accepted with no lower bound",
+              "minor: the store is never pruned; non-numeric `now` causes a TypeError later"
+            ],
+            "refuted_defects": [],
+            "rationale": "Redeem is locked and atomic (forced probe: 1 success, 4 TokenUsed). NaN fails closed and the code says so in a comment. The boundary is exact, an expired attempt does not consume the token, the README is updated, and the 14 auth tests are good. There is no concurrency test and no test of the default clock, which puts it a hair behind F."
+          },
+          {
+            "letter": "C",
+            "score": 8,
+            "confirmed_defects": [
+              "minor: NaN `now` is accepted, so the token never expires",
+              "minor: _TOKENS and _USED grow without bound"
+            ],
+            "refuted_defects": [],
+            "rationale": "Locked, atomic redeem (forced probe: 1 success). The boundary and precedence are correct, the README is updated, there are 15 solid tests, and check.sh passes. NaN fails open and there is no concurrency test."
+          },
+          {
+            "letter": "H",
+            "score": 7.5,
+            "confirmed_defects": [
+              "minor: NaN `now` is accepted",
+              "minor: no concurrency test; the store is never pruned",
+              "minor: README not updated (the module docstring documents the rules)"
+            ],
+            "refuted_defects": [],
+            "rationale": "Correct and atomic under a lock, on both issue and redeem (forced probe: 1 success). The test suite is thinner (10 auth tests) and the README is unchanged."
+          },
+          {
+            "letter": "E",
+            "score": 7,
+            "confirmed_defects": [
+              "moderate: the single-use check-then-set has no lock; a forced interleaving produced 5 of 5 successful redeems of one token (0 doubles in 300 natural-timing trials). The inspector rated this minor, but it is the same latent race as B, D, G and I",
+              "minor: README not updated; the store is never pruned"
+            ],
+            "refuted_defects": [],
+            "rationale": "Clean code with NaN failing closed and 16 thorough tests. Concurrent redeems are not protected, which is a real gap for a security token that must be single-use."
+          },
+          {
+            "letter": "I",
+            "score": 7,
+            "confirmed_defects": [
+              "major/moderate: the `token in _USED` / `_USED.add` check-then-act has no lock; a forced interleaving gave 5 successes (0 in 300 natural trials)",
+              "minor: README not updated; the stores are never pruned"
+            ],
+            "refuted_defects": [],
+            "rationale": "NaN fails closed and it has the broadest tests (20 auth cases). It shares the unlocked race and has no README update."
+          },
+          {
+            "letter": "G",
+            "score": 6.5,
+            "confirmed_defects": [
+              "major/moderate: redeem is an unlocked check-then-set; a forced interleaving gave 5 successes (0 in 300 natural trials)",
+              "minor: NaN `now` fails open",
+              "minor: README not updated (the module docstring is good)"
+            ],
+            "refuted_defects": [],
+            "rationale": "A tidy dataclass record, good docstrings and 17 tests. Redeem is unlocked and NaN fails open."
+          },
+          {
+            "letter": "B",
+            "score": 6.5,
+            "confirmed_defects": [
+              "major/moderate: redeem is an unlocked check-then-set; a forced interleaving gave 5 successes (0 in 300 natural trials)",
+              "minor: NaN `now` fails open",
+              "minor: README not updated"
+            ],
+            "refuted_defects": [],
+            "rationale": "Correct on the sequential spec, with good docstrings and tests. It has the race, NaN fails open, and the README is unchanged."
+          },
+          {
+            "letter": "D",
+            "score": 6,
+            "confirmed_defects": [
+              "major/moderate: redeem is an unlocked check-then-set; a forced interleaving gave 5 successes (0 in 300 natural trials)",
+              "minor: NaN `now` fails open",
+              "minor: README not updated"
+            ],
+            "refuted_defects": [],
+            "rationale": "It works sequentially and the boundary is correct. It has the same race and NaN fail-open as B, and the thinnest tests (10)."
+          }
+        ],
+        "verdict": "All nine builds meet the sequential spec: an inclusive 1800 s boundary, TokenUsed checked before expiry, an expired attempt that does not consume the token, the right exception hierarchy, and a passing check.sh. What separates them is whether single use holds under concurrency. A, C, F and H guard the check-then-mark with a lock, and I confirmed this by forcing an interleaving, where only 1 of 5 redeems succeeded. B, D, E, G and I have no lock, and all 5 redeems succeeded. Neither group produced a double redeem in 300 natural-timing trials, so the race in the unlocked builds is latent but real. Among the locked builds, F's concurrency regression test and A's NaN fail-closed comparison put them slightly ahead of C and H; README updates and test depth decide the rest."
+      }
+    ]
+  }
+]
