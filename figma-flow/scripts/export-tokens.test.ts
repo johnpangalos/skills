@@ -54,10 +54,10 @@ test("a product file built from a library throws, naming the library's collectio
   const spacing: Collection = { id: "c:9", name: "Spacing", remote: true, modes: [{ modeId: "m:9" }] };
   const space: Variable = { ...gray, id: "v:9", name: "spacing/6", variableCollectionId: "c:9", resolvedType: "FLOAT", valuesByMode: { "m:9": 24 } };
   await assert.rejects(run({ remote: [{ collection: spacing, variable: space }] }), {
-    message: "This file has no variables or styles of its own; its nodes use a library's (Spacing). Run export-tokens on the file that defines them, the library's.",
+    message: "This file has no variables or styles of its own; its nodes use a library's (Spacing). Run export-tokens on the library's file.",
   });
 });
 
 test("an empty file throws too", async () => {
-  await assert.rejects(run({}), /has no variables or styles of its own\. Run export-tokens/);
+  await assert.rejects(run({}), { message: "This file has no variables or styles of its own. Run export-tokens on the file that defines them." });
 });

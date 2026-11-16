@@ -46,7 +46,7 @@ Rules:
   system's CSS variables only, never a raw value>
 - A value with no variable in Figma is a question for the designer, not a magic number.
 - The font is <FAMILY AND VERSION, the one Figma uses>, served from <WHERE>. A spec waits for it
-  (`document.fonts.load`) before measuring.
+  (`document.fonts.load`) before measuring text.
 
 ### Building something from Figma
 

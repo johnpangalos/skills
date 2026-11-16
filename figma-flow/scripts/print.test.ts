@@ -37,7 +37,13 @@ test("check fails a file changed by one character", () => {
 test("check refuses a file with no hash line, such as the token snapshot", () => {
   const ran = check('{\n  "Colors": {}\n}\n');
   assert.equal(ran.status, 1);
-  assert.match(ran.stderr, /no hash line/);
+  assert.match(ran.stderr, /doesn't end in a hash line/);
+});
+
+test("check refuses a file with anything after its hash line", () => {
+  const ran = check(`${withHash('{\n  "node": "3:311",\n  "variants": {},\n')}extra\n`);
+  assert.equal(ran.status, 1);
+  assert.match(ran.stderr, /doesn't end in a hash line/);
 });
 
 test("the printed code starts at the script, without the comment at the top of its file", () => {

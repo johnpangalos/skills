@@ -32,7 +32,10 @@ test("every Figma variable resolves in the app to Figma's value", async ({ page 
     };
     return all.map(({ name, value, web }) => {
       if (web === null) return { name, problem: "has no WEB code syntax in Figma" };
-      const undefinedProps = [...web.matchAll(/var\((--[\w-]+)\)/g)].map((m) => m[1]!).filter((p) => root.getPropertyValue(p).trim() === "");
+      // A line height is resolved with its font size (below), so that one has to be defined too.
+      const lineHeight = web.match(/^var\((--[\w-]+)--line-height\)$/);
+      const used = `${web} ${lineHeight ? `var(${lineHeight[1]})` : ""}`;
+      const undefinedProps = [...used.matchAll(/var\((--[\w-]+)\)/g)].map((m) => m[1]!).filter((p) => root.getPropertyValue(p).trim() === "");
       if (undefinedProps.length > 0) return { name, problem: `${web}: the app's CSS doesn't define ${undefinedProps.join(", ")}` };
       const probe = document.createElement("div");
       document.body.append(probe);
@@ -50,7 +53,6 @@ test("every Figma variable resolves in the app to Figma's value", async ({ page 
           probe.style.fontFamily = web;
           return { name, value, actual: getComputedStyle(probe).fontFamily.split(",")[0]!.replaceAll(/["']/g, "").trim(), kind: "exact" };
         }
-        const lineHeight = web.match(/^var\((--[\w-]+)--line-height\)$/);
         if (lineHeight) {
           // Often a ratio of its font size (`calc(1.25 / 0.875)`), so it's resolved with that size.
           probe.style.fontSize = `var(${lineHeight[1]})`;
@@ -58,6 +60,8 @@ test("every Figma variable resolves in the app to Figma's value", async ({ page 
           return { name, value, actual: parseFloat(getComputedStyle(probe).lineHeight), kind: "length" };
         }
         probe.style.width = web;
+        // A value that isn't a length (a bare ratio) leaves the width unset: say so, not a false drift.
+        if (probe.style.width === "") return { name, problem: `${web} isn't a length; compare it by hand` };
         return { name, value, actual: parseFloat(getComputedStyle(probe).width), kind: "length" };
       } finally {
         probe.remove();

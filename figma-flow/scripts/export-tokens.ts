@@ -35,8 +35,9 @@ export default async function exportTokens(): Promise<string> {
     }
     throw new Error(
       "This file has no variables or styles of its own" +
-        (names.size > 0 ? `; its nodes use a library's (${[...names].join(", ")})` : "") +
-        ". Run export-tokens on the file that defines them, the library's.",
+        (names.size > 0
+          ? `; its nodes use a library's (${[...names].join(", ")}). Run export-tokens on the library's file.`
+          : ". Run export-tokens on the file that defines them."),
     );
   }
   const blocks = collections.map((collection) => {

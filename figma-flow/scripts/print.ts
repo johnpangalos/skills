@@ -39,9 +39,10 @@ if (name === "hash") {
   // The same check the project's tests make when they load an export or a lint.
   const text = readFileSync(rest[0]!, "utf8");
   const at = text.lastIndexOf('  "hash"');
-  const expected = at < 0 ? undefined : (/"hash":\s*"([0-9a-f]+)"/.exec(text.slice(at))?.[1]);
+  // The hash line closes the file: anything after it would fail the project's JSON.parse.
+  const expected = at < 0 ? undefined : /^  "hash": "([0-9a-f]+)"\n}\n?$/.exec(text.slice(at))?.[1];
   if (expected === undefined) {
-    console.error(`${rest[0]} has no hash line: only an export or a lint can be checked; for tokens.json use --hash and hash`);
+    console.error(`${rest[0]} doesn't end in a hash line: only an export or a lint can be checked; for tokens.json use --hash and hash`);
     process.exit(1);
   }
   const actual = djb2(text.slice(0, at));

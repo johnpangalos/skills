@@ -27,7 +27,7 @@ type stripping, Claude Code mods), with evals. No CI: the checks below are run b
 - Change to a figma-flow script: its behaviour described in the comment at the top of the script
   and in figma-flow/SKILL.md's script list; a test in `figma-flow/scripts/*.test.ts`.
 - Change to the setup skill's templates: the eval app's copies (`evals/workers-comp-pages/tests/figma.ts`,
-  `tests/tokens.figma.spec.ts`) updated to match, and its `test:figma` passing.
+  `tests/lint.figma.spec.ts`, `tests/tokens.figma.spec.ts`) updated to match, and its `test:figma` passing.
 - Plugin versions (`.claude-plugin/marketplace.json`, each plugin's `plugin.json`) are bumped in a
   PR of their own.
 - An eval records what was run, on what, and what happened, in its README, with each agent's log.

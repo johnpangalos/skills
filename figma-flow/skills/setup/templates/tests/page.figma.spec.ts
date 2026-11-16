@@ -20,8 +20,8 @@ test.beforeEach(async ({ page }) => {
   // The page frame's width and height from the export's first entry.
   await page.setViewportSize({ width: <WIDTH>, height: <HEIGHT> });
   await page.goto("<PAGE URL>");
-  // Wait for the design's font, in every weight the page uses; before it loads, text has the
-  // fallback font's width.
+  // Wait for the design's font, in every weight the page uses (one entry per weight, from the
+  // export's text entries); before it loads, text has the fallback font's width.
   await page.evaluate(async () => {
     for (const font of ["400 <SIZE>px <FAMILY>", "600 <SIZE>px <FAMILY>"]) await document.fonts.load(font);
     await document.fonts.ready;

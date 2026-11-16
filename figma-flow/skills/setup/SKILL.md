@@ -92,6 +92,8 @@ is expected, and the hashes below show whether what ran and what was saved are e
    - The config reuses a server already answering on its port (`reuseExistingServer`), whatever app
      it is. Before the first run, check that nothing else holds the port; if something does, use
      a free one (in the config and the dev server's own setting) rather than measuring another app.
+     Where the dev server can be told to fail on a busy port (Vite's `--strictPort`), put that in
+     `<DEV SERVER COMMAND>`.
    - Chromium for Playwright: run `playwright install chromium` with the repo's package runner.
      If that can't run here (no network, not allowed) and a Chromium is installed elsewhere, don't
      put its path in the config: the config already reads `PW_CHROMIUM`, so run the tests as
@@ -116,7 +118,8 @@ is expected, and the hashes below show whether what ran and what was saved are e
      the same way.
    - The app serves a different version: report it, and don't swap it. That is the user's
      decision; until then, text widths won't match.
-   - Every spec waits for the font before measuring (`document.fonts.load`, as the templates do).
+   - Every spec that measures text waits for the font first (`document.fonts.load`, as the page
+     and component templates do).
 7. **The token check.** `tests/tokens.figma.spec.ts` resolves each variable's WEB code syntax in
    the running app and compares it with Figma's value, whatever defines the custom properties (a
    design system package's CSS, a Tailwind theme, the app's own). It runs with `test:figma`.
@@ -146,13 +149,19 @@ is expected, and the hashes below show whether what ran and what was saved are e
      the test can open. If the page uses a library component with no code, stop and report it;
      don't build it. The export has sizes and styles but not the instances' text properties
      (labels, descriptions, placeholders, error messages): read those from the instances'
-     `componentProperties` with a read-only `use_figma` call. Figma's auto layout doesn't
+     `componentProperties` with a read-only `use_figma` call. Build what the frame draws: where a
+     property and the drawn text differ (a `value` set, a placeholder shown), the drawn text;
+     where Figma has nothing to say (a Select's options), sample data, named as such in the
+     report. Figma's auto layout doesn't
      stretch a child unless it is set to fill, and CSS flex does (`align-items: stretch`), so
      give each flex container the alignment its Figma frame has (`items-start`,
      `align-items: flex-start` for the default). A child set to fill its parent's width is
      `width: 100%` (`w-full`), stated on the element itself: a library component may set a width
-     of its own, which the parent's stretch doesn't override. The page's root is the frame, from the
-     viewport's top left: if no CSS in the app removes the body's margin, the page does. Add a
+     of its own, which the parent's stretch doesn't override. The page's root is the frame, drawn from the
+     viewport's top left, so the browser's default body margin has to go: if no CSS in the app
+     removes it, the page's own CSS does. Figma's sizes include padding and stroke, as CSS's
+     `box-sizing: border-box` does: Tailwind's preflight sets that; without it, the page's CSS
+     sets it on the page's elements. Add a
      spec from `templates/tests/page.figma.spec.ts`: the viewport set to the frame's size,
      `expectPageToMatchFigma` with an element or `skip("why")` for every key of the export (copy
      the keys from the file). A skip is for an entry the helper can't read, never for one whose
