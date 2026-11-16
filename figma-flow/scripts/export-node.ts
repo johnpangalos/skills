@@ -246,11 +246,11 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
     };
   }
 
-  // Format 2: a field at its default is left out, and the reader puts it back. `rings`, `shadows`
-  // and `unmeasured` default to an empty list; the rest to the value here.
+  // Format 2: a field at its default is left out, and the reader puts it back. `rings` and `shadows`
+  // default to an empty list; the rest to the value here.
   const defaults: Record<string, unknown> = {
     fill: null, stroke: null, strokeWeight: 0, radius: 0, rings: [], label: null, opacity: 1, shadows: [],
-    letterSpacing: 0, textCase: "none", textDecoration: "none", strokeAlign: "inside", outline: null, unmeasured: [],
+    letterSpacing: 0, textCase: "none", textDecoration: "none", strokeAlign: "inside",
   };
   const isDefault = (key: string, value: unknown) =>
     key in defaults && (Array.isArray(defaults[key]) ? Array.isArray(value) && value.length === 0 : value === defaults[key]);
@@ -338,7 +338,7 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
   }
 
   // A ring is a frame or a rectangle: the only kinds of child a focus ring is drawn as.
-  const isRing = (child: SceneNode): child is FrameNode | RectangleNode =>
+  const isRingShape = (child: SceneNode): child is FrameNode | RectangleNode =>
     child.type === "FRAME" || child.type === "RECTANGLE";
   // A box's corner radii as CSS draws them: where two adjacent radii are longer than the side between
   // them, all four are scaled by one factor (CSS's corner overlap rule), so a radius past half a side
@@ -379,41 +379,37 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
     const gap = child.strokeAlign === "OUTSIDE" ? inset : child.strokeAlign === "INSIDE" ? inset - weight : inset - weight / 2;
     return { width: round(weight), offset: round(gap), color };
   };
-  // A box's outline, and the absolutely positioned children no entry can describe. A box has one
-  // outline: a ring, when it is the only one and the box has no outside stroke of its own. Every
-  // other such child (a second ring included) is named in `unmeasured`, by layer.
-  async function outlineOf(node: Box) {
+  // A component's entry: its box, and its outline and unmeasured children. The absolutely positioned
+  // children are those auto layout doesn't place, and every child of a box with no auto layout. A box
+  // has one outline: a ring, when it is the only one and the box has no outside stroke of its own.
+  // Every other such child (a second ring included) is named in `unmeasured`, by layer.
+  async function entryOf(node: Box) {
+    const described: Record<string, unknown> = await describe(node, true);
     const placed = node.children.filter(
       (child) => child.visible && (node.layoutMode === "NONE" || ("layoutPositioning" in child && child.layoutPositioning === "ABSOLUTE")),
     );
-    const rings = placed.filter(isRing).flatMap((child) => {
+    const rings = placed.filter(isRingShape).flatMap((child) => {
       const outline = ringOutline(node, child);
       return outline ? [{ child, outline }] : [];
     });
     const ownOutline = solid(node.strokes) !== null && node.strokeAlign === "OUTSIDE";
     const ring = rings.length === 1 && !ownOutline ? rings[0] : undefined;
     const unmeasured = placed.filter((child) => child !== ring?.child).map((child) => child.name);
-    const tokens: Record<string, unknown> = {};
-    if (!ring) return { outline: null, unmeasured, tokens };
-    const colour = await paintToken(ring.child, "strokes");
-    const weight = await fourNames((ring.child.boundVariables ?? {}) as Record<string, VariableAlias | undefined>, [
-      "strokeTopWeight", "strokeRightWeight", "strokeBottomWeight", "strokeLeftWeight",
-    ]);
-    if (colour !== null) tokens.outline = colour;
-    if (weight !== null) tokens.outlineWidth = weight;
-    return { outline: ring.outline, unmeasured, tokens };
-  }
-  // A component's entry: its box, its outline and unmeasured children, and the tokens of the outline.
-  async function entryOf(node: Box) {
-    const { outline, unmeasured, tokens } = await outlineOf(node);
-    const described: Record<string, unknown> = await describe(node, true);
-    const merged = {
+    const outlineTokens: Record<string, unknown> = {};
+    if (ring) {
+      const colour = await paintToken(ring.child, "strokes");
+      const weight = await fourNames((ring.child.boundVariables ?? {}) as Record<string, VariableAlias | undefined>, [
+        "strokeTopWeight", "strokeRightWeight", "strokeBottomWeight", "strokeLeftWeight",
+      ]);
+      if (colour !== null) outlineTokens.outline = colour;
+      if (weight !== null) outlineTokens.outlineWidth = weight;
+    }
+    return {
       ...described,
-      outline,
-      unmeasured,
-      ...(Object.keys(tokens).length > 0 && { tokens: { ...(described.tokens as object | undefined), ...tokens } }),
+      ...(ring && { outline: ring.outline }),
+      ...(unmeasured.length > 0 && { unmeasured }),
+      ...(Object.keys(outlineTokens).length > 0 && { tokens: { ...(described.tokens as object | undefined), ...outlineTokens } }),
     };
-    return withoutDefaults(merged);
   }
 
   // A text node on a page: where it sits, its size, and its type. `wraps` is true when its width
