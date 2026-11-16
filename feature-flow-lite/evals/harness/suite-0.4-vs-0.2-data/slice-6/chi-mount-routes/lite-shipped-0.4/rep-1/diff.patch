@@ -1,0 +1,106 @@
+diff --git a/tree.go b/tree.go
+index 74ff43d..9b7cc32 100644
+--- a/tree.go
++++ b/tree.go
+@@ -133,6 +133,10 @@ type endpoint struct {
+ 
+ 	// parameter keys recorded on handler nodes
+ 	paramKeys []string
++
++	// stub is true when the handler was set by a Mount() stub (mALL|mSTUB)
++	// rather than registered for this method directly
++	stub bool
+ }
+ 
+ func (s endpoints) Value(method methodTyp) *endpoint {
+@@ -365,17 +369,20 @@ func (n *node) setEndpoint(method methodTyp, handler http.Handler, pattern strin
+ 		h.handler = handler
+ 		h.pattern = pattern
+ 		h.paramKeys = paramKeys
++		h.stub = method&mSTUB == mSTUB
+ 		for _, m := range methodMap {
+ 			h := n.endpoints.Value(m)
+ 			h.handler = handler
+ 			h.pattern = pattern
+ 			h.paramKeys = paramKeys
++			h.stub = method&mSTUB == mSTUB
+ 		}
+ 	} else {
+ 		h := n.endpoints.Value(method)
+ 		h.handler = handler
+ 		h.pattern = pattern
+ 		h.paramKeys = paramKeys
++		h.stub = false
+ 	}
+ }
+ 
+@@ -629,15 +636,15 @@ func (n *node) routes() []Route {
+ 	rts := []Route{}
+ 
+ 	n.walk(func(eps endpoints, subroutes Routes) bool {
+-		if eps[mSTUB] != nil && eps[mSTUB].handler != nil && subroutes == nil {
+-			return false
+-		}
++		// A Mount() stub node without subroutes only reports the methods
++		// registered on it directly, e.g. r.Get() on the mounted pattern.
++		isStub := eps[mSTUB] != nil && eps[mSTUB].handler != nil && subroutes == nil
+ 
+ 		// Group methodHandlers by unique patterns
+ 		pats := make(map[string]endpoints)
+ 
+ 		for mt, h := range eps {
+-			if h.pattern == "" {
++			if h.pattern == "" || (isStub && (mt == mSTUB || h.stub)) {
+ 				continue
+ 			}
+ 			p, ok := pats[h.pattern]
+diff --git a/tree_test.go b/tree_test.go
+index c07e830..449ac36 100644
+--- a/tree_test.go
++++ b/tree_test.go
+@@ -4,6 +4,8 @@ import (
+ 	"fmt"
+ 	"log"
+ 	"net/http"
++	"reflect"
++	"sort"
+ 	"testing"
+ )
+ 
+@@ -522,6 +524,36 @@ func TestWalker(t *testing.T) {
+ 	}
+ }
+ 
++func TestWalkRouteOnMountPattern(t *testing.T) {
++	handler := func(w http.ResponseWriter, r *http.Request) {}
++
++	r := NewRouter()
++	r.Route("/foo", func(r Router) {
++		r.Route("/bar", func(r Router) {
++			r.Get("/{id}", handler)
++		})
++		r.Get("/bar", handler)
++		r.Route("/baz", func(r Router) {
++			r.Get("/{id}", handler)
++		})
++	})
++
++	var got []string
++	err := Walk(r, func(method string, route string, handler http.Handler, middlewares ...func(http.Handler) http.Handler) error {
++		got = append(got, method+" "+route)
++		return nil
++	})
++	if err != nil {
++		t.Fatal(err)
++	}
++	sort.Strings(got)
++
++	want := []string{"GET /foo/bar", "GET /foo/bar/{id}", "GET /foo/baz/{id}"}
++	if !reflect.DeepEqual(got, want) {
++		t.Fatalf("got %v, want %v", got, want)
++	}
++}
++
+ func TestWalkInlineMiddlewaresAcrossSubrouter(t *testing.T) {
+ 	mw := func(next http.Handler) http.Handler { return next }
+ 	handler := func(w http.ResponseWriter, r *http.Request) {}
