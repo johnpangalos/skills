@@ -1,0 +1,1425 @@
+[
+ {
+  "id": "risky-inventory",
+  "reports": [
+   {
+    "overall": 8.5,
+    "scores": {
+     "correctness": 9,
+     "robustness": 9,
+     "code_quality": 9,
+     "tests": 9,
+     "docs": 7,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "A SKU that cannot be hashed, such as a list, raises TypeError instead of UnknownProduct from available() and reserve(). The error comes from catalog.lookup, which the rest of the codebase also uses, so the behavior is inherited.",
+      "evidence": "Inventory({'MUG':5}).reserve(['x'],1) -> TypeError (probe script in the scratchpad dir)"
+     },
+     {
+      "severity": "minor",
+      "what": "The constructor rejects any SKU in the stock dict that is not in the catalog, raising UnknownProduct, and rejects counts that are not ints, raising ValueError. The spec does not ask for either check. Both are reasonable, but they go beyond the spec and are not documented in the README.",
+      "evidence": "shop/inventory.py:44-50; tests/test_inventory.py ConstructionTest"
+     },
+     {
+      "severity": "minor",
+      "what": "Settling a reservation leaves a zero entry in _held. The dict keeps one key per SKU that was ever reserved. This is harmless.",
+      "evidence": "shop/inventory.py:94"
+     },
+     {
+      "severity": "minor",
+      "what": "The README describes reserve, commit and release in a single sentence. It does not mention thread safety, the exceptions raised, or that each reservation can be settled only once.",
+      "evidence": "README.md paragraph 2"
+     }
+    ],
+    "strengths": [
+     "A single lock guards every check-then-act sequence. available() is computed under the lock, and commit and release both go through one _close helper, so settling twice or settling one reservation both ways is rejected atomically.",
+     "Open reservations are tracked by object identity in a set. Reservations from another inventory, forged Reservation objects, and look-alike objects are all rejected, and no state changes.",
+     "Input validation happens before any state changes. bool, float, Decimal and str quantities are rejected, very large ints work, and a failed reserve holds nothing.",
+     "Reservation is read-only (properties only), and the constructor copies the caller's dict.",
+     "The tests are thorough and meaningful. They cover all four double-settle combinations, foreign and forged reservations, barrier-synchronized races for reserve, settle and reserve+commit, and check exact messages and that state is unchanged after an error.",
+     "check.sh passes with ruff, all 30 tests pass, and a 20x4000-operation thread-pool stress probe stayed consistent."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 271,
+     "test_cases": 21
+    },
+    "summary": "Build A is a clean, correct implementation and fully meets the spec. available, reserve, commit and release are all lock-protected and atomic, and each reservation can be settled exactly once, enforced through an identity-based set of open reservations. Edge-case probes found no spec failures: zero, negative, bool, float, NaN, Decimal and str quantities are rejected, huge ints work, unknown SKUs raise UnknownProduct, and a catalog SKU missing from the dict has 0 on hand. A thread-pool stress probe stayed consistent. The 21 tests are meaningful, and three of them are real concurrency tests that synchronize threads with a barrier. The only gaps are minor: TypeError for unhashable SKUs (inherited from catalog.lookup), constructor validation that the spec does not ask for, and a brief README note.",
+    "letter": "A"
+   },
+   {
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 8,
+     "tests": 9,
+     "docs": 6,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "available() and reserve() recompute held units by scanning every open reservation (all SKUs) while holding the global lock. Cost is O(open reservations) per call, so heavy use grows quadratically and the lock is held longer under contention.",
+      "evidence": "shop/inventory.py:_free: `sum(r.qty for r in self._open if r.sku == sku)`. Probe: 20,000 sequential reserve('MUG',1) on Inventory({'MUG':100000}) took 6.1 s. A per-SKU held counter would make this O(1)."
+     },
+     {
+      "severity": "minor",
+      "what": "An unhashable SKU (list, dict) raises TypeError rather than UnknownProduct, because catalog.lookup fails on the dict lookup. This comes from existing catalog behavior and is an edge case.",
+      "evidence": "inv.available([1]) -> TypeError: unhashable type: 'list'"
+     },
+     {
+      "severity": "minor",
+      "what": "The public Inventory methods and the exception classes have no docstrings. catalog.lookup and the module headers use docstrings. The README mentions inventory only in its one-line feature list and does not describe the reserve/commit/release lifecycle or thread-safety.",
+      "evidence": "shop/inventory.py: methods available/reserve/commit/release have no docstrings; README.md adds only 'stock inventory with reservations'"
+     },
+     {
+      "severity": "minor",
+      "what": "The constructor adds validation the spec did not ask for: it rejects negative, non-int and bool unit counts. Non-catalog SKUs in the stock dict are accepted without complaint. This is reasonable, but it goes beyond the spec and is applied inconsistently.",
+      "evidence": "shop/inventory.py __init__; tests test_constructor_rejects_bad_units and test_constructor_accepts_non_catalog_sku"
+     }
+    ],
+    "strengths": [
+     "Every spec requirement is met: the ValueError subclasses, UnknownProduct for unknown SKUs, 0 for catalog SKUs missing from the dict, positive-int qty validation (bool and float rejected), OutOfStock, and single settlement via membership in an open set.",
+     "All reads and mutations happen under one lock, so check-then-reserve and settle are atomic. Probes with ThreadPoolExecutor (1000 reserves, then mixed commit/release) kept the books exactly balanced.",
+     "Reservation is a frozen dataclass with eq=False, so identity hashing correctly rejects forged reservations and reservations from another Inventory.",
+     "Failed operations leave state unchanged (OutOfStock, bad qty, double settle), and the tests assert this.",
+     "The tests are strong: boundaries, every double-settle combination, a cross-inventory reservation, a barrier-synchronized oversell test, a commit-vs-release race, and a randomized churn test with a lowered switch interval.",
+     "The module is concise (54 lines) and idiomatic, and fits the existing stdlib-only, unittest-based style. ./check.sh passes with 32 tests."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 251,
+     "test_cases": 23
+    },
+    "summary": "Build B is correct and thread-safe, and its tests are thorough. ./check.sh passes (32 tests). Probes for invalid quantities, huge values, forged and foreign reservations, double settlement and concurrent thread-pool use all behaved as the spec requires. The weaknesses are small: available/reserve scan all open reservations under the lock (O(n), measured 6.1 s for 20k reserves); unhashable SKUs raise TypeError; and the public methods and README say little about the reservation lifecycle. A maintainer would likely merge it, perhaps after asking for a per-SKU held counter and docstrings.",
+    "letter": "B"
+   },
+   {
+    "letter": "C",
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 9,
+     "code_quality": 8,
+     "tests": 8,
+     "docs": 6,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "available() recomputes held units by scanning every open reservation of every SKU, so each reserve/available call is O(open reservations) while holding the lock. A per-SKU held counter would be O(1).",
+      "evidence": "shop/inventory.py available(): sum(qty for held_sku, qty in self._open.values() if held_sku == sku). It is fast enough in practice: with 20k open holds, one reserve took about 0.66 ms."
+     },
+     {
+      "severity": "minor",
+      "what": "Some code exists only to guard against tampering: the hostile int subclass handling (`int(units)` / `int(qty)` after the isinstance checks) and storing a duplicate (sku, qty) copy in _open. The matching tests (the Liar class, object.__setattr__ mutation) defend against threats that are unlikely in practice. This adds weight a reviewer may question.",
+      "evidence": "shop/inventory.py: `units = int(units)` and `qty = int(qty)`, and `self._open[reservation] = (sku, qty)`. tests/test_inventory.py: the Liar class and the test_mutated_reservation_* and test_*liar* tests."
+     },
+     {
+      "severity": "minor",
+      "what": "The documentation is thin. The README adds only the words 'stock tracking'. Nothing documents the reserve/commit/release lifecycle, the exceptions, or thread-safety, and the Reservation and Inventory classes have no docstrings.",
+      "evidence": "README.md line 4: 'stock tracking, and password-reset tokens'. There is no other mention of inventory."
+     },
+     {
+      "severity": "minor",
+      "what": "available() passes an unhashable SKU straight to the catalog lookup, so it raises TypeError instead of UnknownProduct. This matches the existing catalog behaviour.",
+      "evidence": "inv.available(['x']) -> TypeError unhashable type: 'list'"
+     }
+    ],
+    "strengths": [
+     "Every spec requirement checked out. Both exception classes subclass ValueError. available() raises UnknownProduct for a non-catalog SKU and returns 0 for a catalog SKU missing from the dict. reserve() rejects bad qty (0, negative, float, str, bool, None, inf) with a plain ValueError and raises OutOfStock for 10**100.",
+     "Reservations are frozen dataclasses with eq=False, so they are matched by identity. Two holds with the same SKU and qty stay distinct, and forged or foreign reservations raise ReservationError.",
+     "Settling is atomic: _close pops the reservation under the lock, so a reservation can be settled at most once even under a race. Failed calls leave state unchanged.",
+     "Stress test: 32 threads ran random reserve/commit/release with a 1 µs switch interval. On hand plus units committed added up to the starting stock exactly, and no reservations were left open.",
+     "The tests are thorough and meaningful. They include barrier-synchronised races for overselling, double commit, and commit racing release.",
+     "./check.sh passes (42 tests). The module follows the codebase's style: a module docstring, dataclasses, and catalog lookup reuse."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 300,
+     "test_cases": 36
+    },
+    "summary": "Build C is a correct, carefully thread-safe implementation. An RLock guards all state, reservations are matched by identity, and settling is atomic. Every boundary the spec names behaves as specified, and a randomized 32-thread stress test kept stock exactly balanced. The tests are strong and include real concurrency races, although some are aimed at unlikely tampering scenarios. The weak points are thin docs (the README adds only a two-word mention), an O(n) scan of open holds in available(), and some defensive extra code. No blocker or major defects were found."
+   },
+   {
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 9,
+     "code_quality": 8,
+     "tests": 8,
+     "docs": 7,
+     "product": 7
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "Public Inventory methods (available, reserve, commit, release, on_hand) and the class itself have no docstrings, while the codebase documents its functions (e.g. catalog.lookup). The exception classes are also undocumented.",
+      "evidence": "shop/inventory.py:30-73 has no method docstrings; shop/catalog.py:19 has \"Return (name, unit_price) for a SKU.\""
+     },
+     {
+      "severity": "minor",
+      "what": "Reservation is a plain mutable object. The inventory correctly ignores mutated fields, but callers reading reservation.qty after mutating it get values that no longer match the units actually held. A frozen dataclass would fit the codebase's dataclass use (cart.LineItem) and make the _open entries' copied sku/qty unnecessary.",
+      "evidence": "shop/inventory.py:16-21; tests/test_inventory.py test_mutating_reservation_fields_does_not_change_settlement sets reservation.qty = 3 and the settlement uses 1"
+     },
+     {
+      "severity": "minor",
+      "what": "The test file has 259 non-blank lines for 64 lines of source and includes adversarial tests (a forged subclass that overrides __eq__/__hash__, an unhashable subclass) that guard against threats unlikely in this codebase. Existing test files are 13-31 lines.",
+      "evidence": "tests/test_inventory.py test_forged_subclass_cannot_settle_victim and test_unhashable_subclass_is_rejected_not_crashing"
+     },
+     {
+      "severity": "minor",
+      "what": "Reservations that are never committed or released stay in _open and _held for the life of the Inventory. Nothing expires or cleans them up, so an abandoned checkout keeps its stock held.",
+      "evidence": "shop/inventory.py:41 _open dict; there is no removal path except commit or release"
+     },
+     {
+      "severity": "minor",
+      "what": "README mentions the module in one sentence. It does not cover the thread-safety guarantee, the exceptions, or the at-most-once settlement rule.",
+      "evidence": "README.md lines 6-7"
+     }
+    ],
+    "strengths": [
+     "A single lock covers every read-check-write. My stress probe ran 32 threads x 2000 reserve/commit/release cycles with switchinterval=1e-6 and ended consistent: on_hand == available, held == 0.",
+     "Settlement is keyed by object identity, and the stored entry keeps the object alive so its id cannot be reused. The is-check rejects foreign, hand-built and forged reservations. In my probe, 16 threads concurrently committing 500 reservations produced exactly 500 successful commits.",
+     "Input validation is strict and correct: bool, float, str, None, 0 and negative qty raise ValueError; unhashable and non-str SKUs raise UnknownProduct instead of TypeError; 10**30 is handled.",
+     "A failed operation changes nothing. The tests assert state is unchanged after every error path.",
+     "Both exceptions subclass ValueError and messages are exact. A catalog SKU missing from the dict gives 0 on hand, as specified. ./check.sh passes (33 tests OK)."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 323,
+     "test_cases": 23
+    },
+    "summary": "Build D is a correct and carefully thread-safe implementation. Every spec requirement holds: available, reserve, commit and release work as specified, unknown SKUs raise UnknownProduct, catalog SKUs missing from the dict have 0 on hand, qty is validated, and each reservation settles at most once. My throwaway probes found no correctness or concurrency defects: tiny-switch-interval stress runs, concurrent double commits, huge quantities and bad SKU types all behaved correctly. ./check.sh passes. All remaining issues are minor: missing method docstrings, a mutable Reservation where a frozen dataclass would fit the codebase, a test suite heavier than the rest of the repo with somewhat paranoid adversarial cases, abandoned reservations held forever, and a one-line README mention.",
+    "letter": "D"
+   },
+   {
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 8,
+     "tests": 8,
+     "docs": 7,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "available() and reserve() add up every open reservation (all SKUs) while holding the global lock. That is O(open holds) per call, so the lock is held longer as holds pile up under load. A per-SKU held counter would make it O(1).",
+      "evidence": "shop/inventory.py _available: sum(r.qty for r in self._open if r.sku == sku). Probe: 1000 available() calls with 20000 open holds took 0.62s."
+     },
+     {
+      "severity": "minor",
+      "what": "The constructor accepts stock keys that are not in the catalog without complaint. Those units can never be reserved, and the only sign of the problem is UnknownProduct when the SKU is queried later. The tests deliberately lock this behaviour in.",
+      "evidence": "Inventory({'NOPE': 3}) builds fine, then available('NOPE') raises UnknownProduct (tests/test_inventory.py test_non_catalog_key_builds_then_raises_unknown_product)."
+     },
+     {
+      "severity": "minor",
+      "what": "Passing a non-mapping stock gives a raw AttributeError instead of a clear error.",
+      "evidence": "Inventory(None) and Inventory([('MUG',1)]) both raise AttributeError ('items')."
+     },
+     {
+      "severity": "minor",
+      "what": "The concurrency tests patch private methods (_available, _close) through mock.patch.multiple, which ties them to implementation details. They also add about 5s to ./check.sh, where the rest of the suite runs almost instantly.",
+      "evidence": "tests/test_inventory.py slow() helper; ./check.sh: 'Ran 33 tests in 5.262s'."
+     },
+     {
+      "severity": "minor",
+      "what": "Exception classes and Inventory methods have no docstrings. The rest of the codebase gives its functions short docstrings (e.g. catalog.lookup, money.to_cents).",
+      "evidence": "shop/inventory.py: OutOfStock, ReservationError, Inventory and its methods have no docstrings."
+     }
+    ],
+    "strengths": [
+     "Every spec point is met. Errors subclass ValueError. available() is on hand minus open holds. Unknown SKUs raise UnknownProduct, and a catalog SKU missing from the dict counts as 0. qty validation rejects bool, float, str, None, zero and negatives.",
+     "Settling happens once and atomically: whichever of commit or release removes the reservation from the open set under the lock wins. Repeat, crossed, foreign and forged reservations all raise ReservationError and leave state unchanged.",
+     "Reservation is frozen and compared by identity, so a forged Reservation('MUG',2) cannot settle a real hold.",
+     "All mutation and every read of shared state happens under one lock. Probes with ThreadPoolExecutor (5000 mixed reserve/commit/release jobs) gave exact balances.",
+     "Thorough tests: exact boundaries (reserve exactly available, one over), validation tables with message checks, and races widened with a barrier and a tiny switch interval across 100 trials.",
+     "The implementation is small and idiomatic (57 lines), and the README gains a one-line note."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 316,
+     "test_cases": 24
+    },
+    "summary": "Build E is a correct, compact, thread-safe inventory. ./check.sh passes (33 tests, ruff clean). My probes found no spec violations: large ints, NaN/inf/float/bytes qty, unknown SKU plus bad qty, double/crossed/foreign/forged settlement and a 32-worker thread pool all behaved correctly. The remaining issues are minor: available() scans every open hold under the global lock, the constructor accepts non-catalog keys without complaint, a non-dict stock gives a raw AttributeError, the race tests are slow and patch private methods, and the docstrings are sparse.",
+    "letter": "E"
+   },
+   {
+    "letter": "F",
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 8,
+     "tests": 9,
+     "docs": 7,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "available() and reserve() add up every open reservation on each call (O(open reservations)) while holding the global lock, so reserving gets slower the more holds are open and all checkout threads wait on that work. A per-SKU held counter would make it O(1).",
+      "evidence": "shop/inventory.py:_available_locked does sum(qty for held_sku, qty in self._open.values() if held_sku == sku). Probe: 20,000 sequential inv.reserve('MUG',1) on Inventory({'MUG':100000}) took 6.72 s, which is quadratic growth."
+     },
+     {
+      "severity": "minor",
+      "what": "_check_sku repeats catalog.lookup's KeyError-to-UnknownProduct mapping instead of reusing it. It exists only to also catch TypeError for unhashable SKUs.",
+      "evidence": "shop/inventory.py _check_sku vs shop/catalog.py lookup()"
+     },
+     {
+      "severity": "minor",
+      "what": "The strict type(qty) is not int check rejects int subclasses such as IntEnum. This is defensible, since it also rejects bool, but it is stricter than 'positive int'.",
+      "evidence": "Probe: Inventory({'MUG':5}).reserve('MUG', IntEnum member A=1) printed 'intenum rejected qty must be a positive int'"
+     },
+     {
+      "severity": "minor",
+      "what": "The constructor accepts non-catalog SKUs in the stock dict without complaint. They can never be queried. A test documents this, but a typo in the stock config goes unnoticed.",
+      "evidence": "tests/test_inventory.py test_non_catalog_key_constructs_but_lookup_raises; Inventory({'NOPE':3}) constructs fine"
+     }
+    ],
+    "strengths": [
+     "Every spec point is met. OutOfStock and ReservationError subclass ValueError. Unknown SKUs raise UnknownProduct. A catalog SKU missing from the dict has 0 on hand. qty must be a positive int (bool, float and str are rejected). Commit and release each settle a reservation once, in any combination.",
+     "Every read and write of state happens under one lock, and the check-then-act in reserve is atomic. A 16-thread random reserve/commit/release stress run ended consistent (available 0/0, no open reservations left), and the bundled tests' 200-thread race never oversold.",
+     "Reservations are frozen dataclasses with eq=False, so they compare by identity. Settlement uses the sku and qty recorded at reserve time, so a tampered or forged Reservation, or one from another Inventory, is rejected or ignored safely.",
+     "Failed calls change nothing: OutOfStock, a bad qty, and a double settle all leave available() unchanged, and the tests assert this.",
+     "21 focused tests cover boundaries (exact availability, huge qty, zero, negative), the four double-settle orders, foreign and fake reservations, and barrier-synchronized races for both overselling and concurrent settling. ./check.sh passes (30 tests OK).",
+     "The module is small and idiomatic, with docstrings that match the codebase style. The README is updated to mention inventory reservations."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 253,
+     "test_cases": 21
+    },
+    "summary": "Build F meets the spec in full and is thread-safe: one lock guards all state, and checking stock and recording a reservation happen atomically. Settlement is single-use and keyed by identity, and it uses the qty recorded at reserve time, so tampered reservations have no effect. ./check.sh passes with 30 tests, 21 of them new and meaningful, including barrier-based races. My own probes found no spec failure: large numbers, bad inputs, foreign or fake reservations, and a mixed multi-thread stress run all behaved correctly. The main weakness is speed: availability is computed by summing all open reservations under the global lock, so reserve slows down as more holds are open (20k reserves took 6.7 s). There are also small points: the SKU check repeats catalog.lookup, int subclasses are rejected, and non-catalog keys are accepted at construction without complaint. Work is in /tmp/inspect-risky-inventory-F, with shop/inventory.py and tests/test_inventory.py as the main files."
+   },
+   {
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 8,
+     "tests": 9,
+     "docs": 5,
+     "product": 7
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "README not updated to mention stock tracking/inventory; README still lists only catalog, cart totals, receipts and reset tokens.",
+      "evidence": "README.md lines 1-4 unchanged; no mention of inventory."
+     },
+     {
+      "severity": "minor",
+      "what": "Unhashable SKU (e.g. a list) raises TypeError from catalog.lookup instead of UnknownProduct.",
+      "evidence": "Inventory({'MUG':10}).available([1]) -> TypeError unhashable type: 'list' (probe script)."
+     },
+     {
+      "severity": "minor",
+      "what": "Public methods (available/reserve/commit/release) lack docstrings, so the API contract (exceptions raised, at-most-once settlement) is documented only in tests; catalog.lookup in the repo does carry a docstring.",
+      "evidence": "shop/inventory.py:36-61"
+     }
+    ],
+    "strengths": [
+     "All spec requirements met: available = on hand minus holds, UnknownProduct for non-catalog SKUs, 0 for missing catalog SKU, OutOfStock/ReservationError subclass ValueError, strict positive-int qty check rejects bool/float/str/None",
+     "Single lock guards check-and-hold and settlement; stress probe with 32-64 thread pool and setswitchinterval(1e-6) shows no oversell (100 reserved of 100, available 0) and holds return to 0",
+     "At-most-once settlement enforced by popping the reservation from an identity-keyed open map; foreign/forged reservations rejected; settlement uses values recorded at reserve time, so mutating the token cannot corrupt stock",
+     "Validation happens before any state change, so failed calls leave nothing changed (tests assert this)",
+     "Thorough tests (19) covering boundaries, bad inputs, double/cross settlement, forged tokens, and concurrent reserve/settle with barriers; ./check.sh passes (28 tests)"
+    ],
+    "stats": {
+     "files": 2,
+     "source_lines": 238,
+     "test_cases": 19
+    },
+    "summary": "Build G's inventory module is correct, compact and thread-safe, and I'd score it 8/10 overall. I ran ./check.sh in the copy and it passed all 28 tests. My throwaway probes found no spec failures:\n- A 1e30 quantity reserved and committed correctly.\n- A 2000-operation thread-pool mix of reserve, commit and release left zero units held.\n- With very aggressive thread switching, 1000 threads competing for 100 units reserved exactly 100 and never oversold.\n\nDouble settlement, cross settlement and forged or foreign reservations all raise ReservationError, and failed calls leave stock unchanged. The 19 new tests are meaningful and cover concurrency with barriers. I found only three minor issues:\n- The README doesn't mention inventory.\n- The public methods have no docstrings.\n- An unhashable SKU (e.g. a list) raises TypeError rather than UnknownProduct.",
+    "letter": "G"
+   },
+   {
+    "letter": "H",
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 8,
+     "tests": 9,
+     "docs": 7,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "available() sums over every open reservation on each call, and does it while holding the global lock, so reserve() is O(open reservations) and gets quadratic when many holds are open. That serializes the checkout pool behind a linear scan.",
+      "evidence": "shop/inventory.py:41-43 (_available sums self._held.values()). Probe: 20,000 back-to-back reserve('MUG',1) calls on Inventory({'MUG':10**6}) took 6.17 s. A per-SKU held counter would make it O(1)."
+     },
+     {
+      "severity": "minor",
+      "what": "An unhashable SKU raises TypeError instead of UnknownProduct from available() and reserve(). This comes from the existing catalog.lookup, but the inventory API passes it on.",
+      "evidence": "python3 probe.py: inv.available([1]) -> TypeError unhashable type: 'list'"
+     },
+     {
+      "severity": "minor",
+      "what": "The public Inventory methods and the exception classes have no docstrings, while the codebase documents its public functions (for example catalog.lookup). There is also no CHANGELOG, but the repo has none to update.",
+      "evidence": "shop/inventory.py:11-17, 51-76"
+     }
+    ],
+    "strengths": [
+     "Every spec point is met. available() raises UnknownProduct for SKUs outside the catalog and returns 0 for catalog SKUs missing from the dict. reserve() checks qty strictly (bool and float are rejected). OutOfStock and ReservationError both subclass ValueError.",
+     "Reservations are tracked by identity in an inventory-owned map (frozen dataclass with eq=False). That makes double-settle, cross-type settle, a reservation from another inventory, a forged Reservation and a tampered reservation all safe.",
+     "One lock covers check-then-update in reserve and covers settle. Stress test: 16 threads mixing reserve, commit and release kept committed + available == on-hand exactly.",
+     "The constructor validates and copies the stock dict, and failure paths change no state.",
+     "Tests are thorough and meaningful: 25 inventory cases, including a SlowInventory subclass that widens the race window, barrier-synchronized races, and assertions on exact error messages.",
+     "./check.sh passes (34 tests), and the README gains a concise note in the existing style."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 245,
+     "test_cases": 25
+    },
+    "summary": "This is a clean, correct implementation that is safe across threads. The code is small (56 lines), uses one lock around all the critical sections, and tracks reservations by identity, so each one can be settled only once. I found no spec failures. Concurrency stress tests and probes with invalid, zero, negative, very large and wrong-type inputs all behaved correctly. The remaining issues are minor: available() scans every open reservation, so reserve gets quadratic under many open holds; an unhashable SKU raises TypeError, which comes from the catalog; and there are no method docstrings. Tests are strong, and they include a deliberately slowed subclass to prove the lock matters."
+   },
+   {
+    "overall": 8.5,
+    "scores": {
+     "correctness": 9,
+     "robustness": 9,
+     "code_quality": 9,
+     "tests": 9,
+     "docs": 8,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "qty validation uses `type(qty) is not int`, so int subclasses (IntEnum, custom int types) are rejected as invalid even though they are ints. This is defensible because it is how the build excludes bool, but it is stricter than needed (`isinstance(qty, int) and not isinstance(qty, bool)` would accept them).",
+      "evidence": "class I(int): pass; Inventory({'MUG':5}).reserve('MUG', I(1)) -> ValueError 'qty must be a positive int' (probe /tmp/claude-0/probeE/p.py)"
+     },
+     {
+      "severity": "minor",
+      "what": "An unhashable SKU leaks a TypeError from catalog.lookup instead of raising UnknownProduct. The same behaviour already exists in the catalog, so this is not new to the change.",
+      "evidence": "inv.available([]) -> TypeError unhashable type: 'list'"
+     },
+     {
+      "severity": "minor",
+      "what": "The constructor raises AttributeError, not a clear error, when it gets a non-mapping. It also adds validation the spec did not ask for (UnknownProduct for SKUs not in the catalog, ValueError for negative or non-int units). That is reasonable but undocumented.",
+      "evidence": "Inventory(None) -> AttributeError 'NoneType' object has no attribute 'items'; shop/inventory.py:27-31"
+     },
+     {
+      "severity": "minor",
+      "what": "Inventory, Reservation and the public methods have no docstrings, and the public on_hand() method the build added is not mentioned in the README. There is only the module docstring, while catalog.lookup has a docstring.",
+      "evidence": "shop/inventory.py:18-50"
+     }
+    ],
+    "strengths": [
+     "Every mutation and read happens under one lock. The check for available stock and the hold are atomic, so concurrent reserves cannot oversell. A 20-trial stress run (32 threads, mixed commit/release) kept on_hand and available consistent.",
+     "Settling once is enforced by popping from an _open map keyed by reservation identity (eq=False). This rejects double commit or release, commit after release (and the reverse), reservations from another inventory, and forged reservations equal in value to a real one.",
+     "The reserved qty is stored inside the inventory, so tampering with the frozen dataclass cannot skew the counts. A test covers this.",
+     "Validation runs before any state changes, and tests check that a failed reserve leaves nothing changed.",
+     "The tests are strong: 23 cases covering bool, float, str, None, 0, -1 and 10**30 qty, a SKU absent from the stock dict, an unknown SKU, all four double-settle orderings, and barrier-synchronised thread races for reserve and settle.",
+     "The code is compact (58 lines) and idiomatic, and it matches the repo's unittest style and its README conventions. ./check.sh passes (32 tests)."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 254,
+     "test_cases": 23
+    },
+    "summary": "Build I meets every spec requirement. available() subtracts open holds, UnknownProduct is raised for SKUs not in the catalog, and a catalog SKU missing from the dict has 0 on hand. reserve raises OutOfStock or ValueError as required, and each reservation can be settled at most once, which raises ReservationError otherwise. Both error classes subclass ValueError. A single lock makes the code thread-safe, and that held up under a stress test. ./check.sh passes with 32 tests. I found only minor issues: it rejects int subclasses, an unhashable SKU leaks a TypeError, the constructor gives an unclear error for a non-mapping, and the docstrings are sparse. The tests are thorough and include races synchronised with a barrier. The README was updated. A maintainer would likely merge it with little or no change.",
+    "letter": "I"
+   }
+  ],
+  "judge": {
+   "ranking": [
+    {
+     "letter": "A",
+     "score": 8.5,
+     "confirmed_defects": [
+      "Unhashable SKU raises TypeError (inherited from catalog.lookup); minor",
+      "Constructor raises UnknownProduct for stock keys not in the catalog, which the spec does not ask for; minor"
+     ],
+     "refuted_defects": [],
+     "rationale": "Passes every spec point in my shared probe and in a 32-thread pool stress test (no oversell, exactly one settle per reservation under racing commit/release). Keeps a per-SKU held counter, so 10k reserves take 0.01s. Reservation is read-only and the README describes the lifecycle. The code is clean and has docstrings. check.sh passes with 30 tests."
+    },
+    {
+     "letter": "I",
+     "score": 8.5,
+     "confirmed_defects": [
+      "Unhashable SKU raises TypeError; minor",
+      "Constructor raises UnknownProduct for non-catalog stock keys; minor",
+      "Strict type(qty) is int check rejects int subclasses; minor"
+     ],
+     "refuted_defects": [],
+     "rationale": "Every probe and stress test passed. Settlement uses an O(1) held counter, takes sku and qty from values recorded at reserve time so tampering cannot skew counts, and deletes zero entries. The README mentions thread safety. The only downsides are sparse method docstrings and an extra on_hand() method nobody asked for."
+    },
+    {
+     "letter": "D",
+     "score": 8.3,
+     "confirmed_defects": [
+      "Reservation is a mutable plain object, but settlement ignores mutations; minor",
+      "Constructor raises UnknownProduct for non-catalog keys; minor",
+      "Tests are heavy and include adversarial cases; minor"
+     ],
+     "refuted_defects": [],
+     "rationale": "Correct and thread-safe, with an O(1) held counter. Settlement checks identity through an id map that also stores the object. It is the only build besides E and F that maps unhashable SKUs to UnknownProduct. A frozen dataclass would be cleaner than the mutable Reservation, and the methods have no docstrings."
+    },
+    {
+     "letter": "G",
+     "score": 8,
+     "confirmed_defects": [
+      "README not updated",
+      "Public methods have no docstrings",
+      "Unhashable SKU raises TypeError"
+     ],
+     "refuted_defects": [],
+     "rationale": "The implementation is about as good as A and I: O(1) held counter, values recorded at reserve time, and every probe and stress test passed. It lacks any README mention and has no method docstrings, so it ranks lowest of the O(1) group."
+    },
+    {
+     "letter": "F",
+     "score": 8,
+     "confirmed_defects": [
+      "available() scans all open reservations under the lock (O(n)); 10k reserves took 1.58s",
+      "Rejects int subclasses for qty"
+     ],
+     "refuted_defects": [],
+     "rationale": "Correct and thread-safe. It has docstrings, maps unhashable SKUs to UnknownProduct, and accepts non-catalog stock keys as the spec implies. Availability is O(open holds) per call under the global lock, which slows checkout as holds pile up."
+    },
+    {
+     "letter": "H",
+     "score": 7.8,
+     "confirmed_defects": [
+      "O(n) scan of open holds under the lock (1.51s for 10k reserves)",
+      "Unhashable SKU raises TypeError",
+      "No method docstrings"
+     ],
+     "refuted_defects": [],
+     "rationale": "Correct and thread-safe, with identity-keyed settlement, and every probe passed. The README note is good and the tests include a slowed subclass to prove the lock matters. The O(n) availability scan is the main weakness."
+    },
+    {
+     "letter": "C",
+     "score": 7.8,
+     "confirmed_defects": [
+      "O(n) scan of open holds (1.56s for 10k reserves)",
+      "Unneeded defensive int() coercions and tests aimed at tampering",
+      "README mentions the feature in two words only"
+     ],
+     "refuted_defects": [],
+     "rationale": "Correct and race-free; uses an RLock so reserve can call the public available(). It has the largest test suite (42 tests), but some of it guards against unlikely tampering. Availability is O(n) and the docs are thin."
+    },
+    {
+     "letter": "B",
+     "score": 7.7,
+     "confirmed_defects": [
+      "O(n) scan of open holds under the lock (1.76s for 10k reserves)",
+      "No method docstrings; README mention is minimal",
+      "Unhashable SKU raises TypeError"
+     ],
+     "refuted_defects": [],
+     "rationale": "A minimal, correct design: an open set plus a frozen eq=False dataclass. All probes and stress tests passed. It loses points for O(n) availability and almost no documentation."
+    },
+    {
+     "letter": "E",
+     "score": 7.6,
+     "confirmed_defects": [
+      "O(n) scan of open holds under the lock (1.83s for 10k reserves)",
+      "Race tests patch private methods and add about 6.8s to check.sh",
+      "No method docstrings",
+      "Non-mapping stock raises a bare AttributeError"
+     ],
+     "refuted_defects": [],
+     "rationale": "Correct and thread-safe, and it maps unhashable SKUs to UnknownProduct. Its tests depend on private method names and make the suite slow, and availability is O(n)."
+    }
+   ],
+   "verdict": "No blocker or major defects were claimed, and I reproduced none. All nine builds pass check.sh, every spec edge case in a shared probe, and a 32-thread pool stress test with no oversell and exactly one settlement per reservation. What separates them is quality. A, I, D and G keep an O(1) per-SKU held counter (10k reserves in 0.01s). B, C, E, F and H re-sum every open reservation under the global lock, which takes 1.5-1.8s for the same workload and makes checkout slow as holds grow. After that, the builds differ on docs and test hygiene: G never updated the README, and E's race tests patch private methods and are slow."
+  },
+  "judges": [
+   {
+    "ranking": [
+     {
+      "letter": "A",
+      "score": 8.5,
+      "confirmed_defects": [
+       "Unhashable SKU raises TypeError (inherited from catalog.lookup); minor",
+       "Constructor raises UnknownProduct for stock keys not in the catalog, which the spec does not ask for; minor"
+      ],
+      "refuted_defects": [],
+      "rationale": "Passes every spec point in my shared probe and in a 32-thread pool stress test (no oversell, exactly one settle per reservation under racing commit/release). Keeps a per-SKU held counter, so 10k reserves take 0.01s. Reservation is read-only and the README describes the lifecycle. The code is clean and has docstrings. check.sh passes with 30 tests."
+     },
+     {
+      "letter": "I",
+      "score": 8.5,
+      "confirmed_defects": [
+       "Unhashable SKU raises TypeError; minor",
+       "Constructor raises UnknownProduct for non-catalog stock keys; minor",
+       "Strict type(qty) is int check rejects int subclasses; minor"
+      ],
+      "refuted_defects": [],
+      "rationale": "Every probe and stress test passed. Settlement uses an O(1) held counter, takes sku and qty from values recorded at reserve time so tampering cannot skew counts, and deletes zero entries. The README mentions thread safety. The only downsides are sparse method docstrings and an extra on_hand() method nobody asked for."
+     },
+     {
+      "letter": "D",
+      "score": 8.3,
+      "confirmed_defects": [
+       "Reservation is a mutable plain object, but settlement ignores mutations; minor",
+       "Constructor raises UnknownProduct for non-catalog keys; minor",
+       "Tests are heavy and include adversarial cases; minor"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct and thread-safe, with an O(1) held counter. Settlement checks identity through an id map that also stores the object. It is the only build besides E and F that maps unhashable SKUs to UnknownProduct. A frozen dataclass would be cleaner than the mutable Reservation, and the methods have no docstrings."
+     },
+     {
+      "letter": "G",
+      "score": 8,
+      "confirmed_defects": [
+       "README not updated",
+       "Public methods have no docstrings",
+       "Unhashable SKU raises TypeError"
+      ],
+      "refuted_defects": [],
+      "rationale": "The implementation is about as good as A and I: O(1) held counter, values recorded at reserve time, and every probe and stress test passed. It lacks any README mention and has no method docstrings, so it ranks lowest of the O(1) group."
+     },
+     {
+      "letter": "F",
+      "score": 8,
+      "confirmed_defects": [
+       "available() scans all open reservations under the lock (O(n)); 10k reserves took 1.58s",
+       "Rejects int subclasses for qty"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct and thread-safe. It has docstrings, maps unhashable SKUs to UnknownProduct, and accepts non-catalog stock keys as the spec implies. Availability is O(open holds) per call under the global lock, which slows checkout as holds pile up."
+     },
+     {
+      "letter": "H",
+      "score": 7.8,
+      "confirmed_defects": [
+       "O(n) scan of open holds under the lock (1.51s for 10k reserves)",
+       "Unhashable SKU raises TypeError",
+       "No method docstrings"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct and thread-safe, with identity-keyed settlement, and every probe passed. The README note is good and the tests include a slowed subclass to prove the lock matters. The O(n) availability scan is the main weakness."
+     },
+     {
+      "letter": "C",
+      "score": 7.8,
+      "confirmed_defects": [
+       "O(n) scan of open holds (1.56s for 10k reserves)",
+       "Unneeded defensive int() coercions and tests aimed at tampering",
+       "README mentions the feature in two words only"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct and race-free; uses an RLock so reserve can call the public available(). It has the largest test suite (42 tests), but some of it guards against unlikely tampering. Availability is O(n) and the docs are thin."
+     },
+     {
+      "letter": "B",
+      "score": 7.7,
+      "confirmed_defects": [
+       "O(n) scan of open holds under the lock (1.76s for 10k reserves)",
+       "No method docstrings; README mention is minimal",
+       "Unhashable SKU raises TypeError"
+      ],
+      "refuted_defects": [],
+      "rationale": "A minimal, correct design: an open set plus a frozen eq=False dataclass. All probes and stress tests passed. It loses points for O(n) availability and almost no documentation."
+     },
+     {
+      "letter": "E",
+      "score": 7.6,
+      "confirmed_defects": [
+       "O(n) scan of open holds under the lock (1.83s for 10k reserves)",
+       "Race tests patch private methods and add about 6.8s to check.sh",
+       "No method docstrings",
+       "Non-mapping stock raises a bare AttributeError"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct and thread-safe, and it maps unhashable SKUs to UnknownProduct. Its tests depend on private method names and make the suite slow, and availability is O(n)."
+     }
+    ],
+    "verdict": "No blocker or major defects were claimed, and I reproduced none. All nine builds pass check.sh, every spec edge case in a shared probe, and a 32-thread pool stress test with no oversell and exactly one settlement per reservation. What separates them is quality. A, I, D and G keep an O(1) per-SKU held counter (10k reserves in 0.01s). B, C, E, F and H re-sum every open reservation under the global lock, which takes 1.5-1.8s for the same workload and makes checkout slow as holds grow. After that, the builds differ on docs and test hygiene: G never updated the README, and E's race tests patch private methods and are slow."
+   },
+   {
+    "ranking": [
+     {
+      "letter": "A",
+      "score": 8.5,
+      "confirmed_defects": [
+       "Minor: an unhashable SKU raises TypeError, which comes from catalog.lookup",
+       "Minor: the constructor rejects stock-dict SKUs that are not in the catalog; the spec does not ask for this",
+       "Minor: the README note is short"
+      ],
+      "refuted_defects": [],
+      "rationale": "Every spec probe passed. A 32-thread stress run and the oversell race were exact, and a double settle raced against a settle never succeeded twice. Each SKU has an O(1) held counter, and one _close helper handles both commit and release. Reservation is read-only, identity is tracked in a set, there are clear docstrings, and the README has a paragraph on reservations. check.sh passes and the tests run fast."
+     },
+     {
+      "letter": "I",
+      "score": 8.5,
+      "confirmed_defects": [
+       "Minor: the type(qty) is int check rejects int subclasses",
+       "Minor: an unhashable SKU raises TypeError, which comes from catalog",
+       "Minor: the public methods have no docstrings"
+      ],
+      "refuted_defects": [],
+      "rationale": "All probes passed and stress runs were exact. It keeps an O(1) held counter per SKU and settles from the (sku, qty) recorded at reserve time, so tampering with a reservation cannot change the counts. It adds an on_hand() helper and updates the README. It is compact and clean. The tests are strong and fast."
+     },
+     {
+      "letter": "D",
+      "score": 8,
+      "confirmed_defects": [
+       "Minor: Reservation is mutable, though settlement ignores changes to it",
+       "Minor: the methods have no docstrings",
+       "Minor: the test suite is heavy, with some paranoid adversarial cases"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct and thread-safe, with O(1) counters. It is the only build that maps unhashable or non-str SKUs to UnknownProduct as well as rejecting forged reservations by identity. The id()-keyed map is a little more contrived than a frozen eq=False dataclass. The README describes the lifecycle."
+     },
+     {
+      "letter": "H",
+      "score": 8,
+      "confirmed_defects": [
+       "Minor: available() scans every open reservation while holding the lock, so it is O(n)",
+       "Minor: an unhashable SKU raises TypeError",
+       "Minor: there are no method docstrings"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct on every probe and exact under stress. It is small and clean, and settlement uses the values recorded at reserve time. The README is updated well. The only cost is the linear scan under the global lock."
+     },
+     {
+      "letter": "F",
+      "score": 8,
+      "confirmed_defects": [
+       "Minor: the held count is an O(n) sum while holding the lock",
+       "Minor: _check_sku duplicates catalog.lookup",
+       "Minor: int subclasses are rejected"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct and thread-safe, with good docstrings and focused tests. It maps unhashable SKUs to UnknownProduct. Like H, its availability check is a linear scan."
+     },
+     {
+      "letter": "G",
+      "score": 7.5,
+      "confirmed_defects": [
+       "Minor: the README is not updated",
+       "Minor: there are no method docstrings",
+       "Minor: an unhashable SKU raises TypeError"
+      ],
+      "refuted_defects": [],
+      "rationale": "The code is as good as A and I: O(1) counters, recorded (sku, qty), and exact results under stress. It ranks lower only on documentation: the README does not mention the feature and the methods have no docstrings."
+     },
+     {
+      "letter": "B",
+      "score": 7.5,
+      "confirmed_defects": [
+       "Minor: _free sums all open reservations under the lock, which is O(n)",
+       "Minor: docs are sparse",
+       "Minor: commit reads sku and qty from the reservation object rather than from recorded values; this is safe only because the dataclass is frozen"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct and thread-safe, and it is concise. The O(n) scan, the absence of docstrings, and the README mentioning the feature only in one line hold it back slightly."
+     },
+     {
+      "letter": "C",
+      "score": 7.5,
+      "confirmed_defects": [
+       "Minor: available() does an O(n) scan",
+       "Minor: defensive extras (int() re-coercion, an RLock with re-entrant available(), tests against a Liar int subclass) add weight",
+       "Minor: the README mention is two words"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct and race-free under every probe. Some of the code and tests guard against tampering that is unlikely in practice, and the documentation is thin."
+     },
+     {
+      "letter": "E",
+      "score": 7.5,
+      "confirmed_defects": [
+       "Minor: the held count is an O(n) scan under the lock",
+       "Minor: the race tests patch private methods and add about 6.7 s to check.sh",
+       "Minor: the constructor accepts non-catalog keys without complaint"
+      ],
+      "refuted_defects": [],
+      "rationale": "The implementation is correct and maps unhashable SKUs to UnknownProduct. The test suite is slow and tied to private implementation details, which makes it the least maintainable of a set that is otherwise equivalent."
+     }
+    ],
+    "verdict": "No inspector reported a blocker or a major defect, and I could not find one either. All nine builds pass check.sh, return the right result for every spec edge case I probed, and stayed exact under aggressive-switch thread-pool stress, an oversell race and a double-settle race. What separates them is secondary. A, I, D and G keep an O(1) held counter per SKU, while B, C, E, F and H rescan every open hold under the global lock. A and I also add clean documentation and a README update. G loses points for leaving the README untouched, and E for slow tests that patch private methods."
+   }
+  ]
+ },
+ {
+  "id": "chi-mount-routes",
+  "reports": [
+   {
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 8,
+     "tests": 9,
+     "docs": 7,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "The `stubbed` node-level precondition in routes() is now mostly redundant: h.stub can only be true on endpoints written by a Mount stub, so `subroutes == nil && h.stub` would carry the same meaning. Keeping both conditions makes the filter a little harder to read than it needs to be.",
+      "evidence": "tree.go:640-646: `stubbed := eps[mSTUB] != nil && eps[mSTUB].handler != nil && subroutes == nil` followed by `if h.pattern == \"\" || (stubbed && h.stub)`"
+     },
+     {
+      "severity": "minor",
+      "what": "The regression tests only check what Walk/Routes report. They never check that requests to the colliding pattern are still served by the right handler, so a routing regression could slip past them. I checked routing separately and it is correct.",
+      "evidence": "tree_test.go TestWalkReportsMethodOnMountPattern only collects Walk output. My throwaway TestZZServe (GET /foo/bar -> \"bar\", POST /m -> raw mount, PATCH /b -> \"pb\", etc.) passed."
+     },
+     {
+      "severity": "minor",
+      "what": "The new test is fairly long (about 195 lines) for a 12-line fix, and some cases overlap (for example, Get+Post vs Get only). It is still readable and follows the table-driven style of the neighbouring TestWalkInlineMiddlewaresAcrossSubrouter.",
+      "evidence": "A.diff: tree_test.go +196 lines vs tree.go +12/-3"
+     }
+    ],
+    "strengths": [
+     "Correct root cause: routes() skipped every endpoint on any node that had a Mount stub handler, including methods registered on that pattern later. The fix tags each endpoint with whether a stub wrote it and skips only those.",
+     "Minimal and scoped change in setEndpoint/routes. I diffed Walk output against the original for a router with Use/With/Group/Route/Mount (sub-mux, raw handler, trailing-slash mount)/wildcards and no collisions, and the output was identical.",
+     "Handles every collision variant I tried: Get/Handle/MethodFunc/With after Route or Mount, raw-handler Mount followed by Get /m and Put /m/, nested collisions, repeated Get overrides. Each method/pattern is reported exactly once, and routing still resolves to the right handlers.",
+     "Correctly does not report a Get registered before Route on the same pattern, because the mount stub overwrites it and the Get is no longer routable. The test documents this.",
+     "The regression tests fail on the original code (7 Walk subtests plus the Routes test) and pass with the fix. They cover Walk and Routes(), middleware counts, and Handle's all-method expansion.",
+     "go test ./..., go vet ./... pass; gofmt -l is clean."
+    ],
+    "stats": {
+     "files": 2,
+     "source_lines": 200,
+     "test_cases": 10
+    },
+    "summary": "Build A fixes the root cause. Previously, node.routes() dropped every endpoint on a node that held a Mount stub handler. Now each endpoint records a `stub` flag in setEndpoint, and routes() skips only the stub-written endpoints, so methods registered later on the same pattern (Get, Handle, MethodFunc, With) are reported. I verified in a copy that go test, go vet and gofmt are all clean. The new tests fail on the original tree.go and pass with the fix. A before/after diff of Walk output for a non-colliding router (Use/With/Group/Route, sub-mux Mount, raw-handler Mount, trailing-slash Mount, wildcard) shows no change. Every collision scenario I tried reports each method/pattern once, and routing still serves the right handlers (GET /foo/bar -> Get handler, POST /m -> raw mount, PATCH /b -> MethodFunc, etc.). A Get registered before Route on the same path is correctly not reported, because the mount stub overrides it. Remaining issues are minor: a slightly redundant node-level `stubbed` guard, tests that check only the listing and not routing, and a somewhat long test table. A CHANGELOG entry isn't expected, since the repo's changelog only links compare ranges per release.",
+    "letter": "A"
+   },
+   {
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 8,
+     "tests": 6,
+     "docs": 7,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "The regression test only covers the Route()+Get() case through Walk. It does not exercise Router.Routes() directly, Mount() with a non-Mux handler, Handle() (mALL) on a mount pattern, or registration in the opposite order.",
+      "evidence": "tree_test.go:527-554 (TestWalkRouteOnMountPattern) is the only test added."
+     },
+     {
+      "severity": "minor",
+      "what": "The new `stub` local repeats the `method&mSTUB == mSTUB` check that sits on the very next line instead of reusing it, which is a small redundancy.",
+      "evidence": "tree.go:363-365: `stub := method&mSTUB == mSTUB` followed by `if method&mSTUB == mSTUB {`"
+     }
+    ],
+    "strengths": [
+     "Correct root cause: routes() used to drop the whole node whenever a Mount stub without subroutes was on it. The fix tags each endpoint with whether a stub registration set it, and skips only those endpoints.",
+     "The fix is small and local: one struct field, propagated in setEndpoint, plus one filter condition in routes(). Mux.Mount and Walk are not touched.",
+     "Behavior for routers without a collision is unchanged. A no-collision router gives the same Walk output before and after the change. Checked by stashing tree.go and diffing the output.",
+     "Override semantics are handled correctly. If Get or Handle comes after Mount, the endpoint gets stub=false and is reported. If Get comes before Route, the mount overwrites it, so it is correctly not reported, which matches routing (404).",
+     "The comment in routes() explains the intent clearly, and the test follows the existing Walk tests in tree_test.go."
+    ],
+    "stats": {
+     "files": 2,
+     "source_lines": 40,
+     "test_cases": 1
+    },
+    "summary": "The fix is correct and minimal. Each endpoint now records whether a Mount stub registration set it, and routes() skips only those stub endpoints instead of dropping the whole stub node. go test ./..., go vet ./... and gofmt -l all pass, with gofmt reporting no files. Throwaway tests used Route+Get/Post, Get-before-Route, Mount followed by Handle and Get on '/m/', Mount of a plain handler followed by Get, three-level nested Route with Get on the same pattern, Method PATCH on a Route pattern, and a router with no collision. In every case Walk and Routes() listed each servable endpoint once, and routing returned the expected handlers. Before the fix, Walk on the no-collision router gave the same output, while the collision cases were missing endpoints (for example, only 'GET /m/x' instead of /m and /m/). The only gaps are minor: the regression test covers one scenario and does not check Routes() or Mount+Handle, and one boolean check is redundant.",
+    "letter": "B"
+   },
+   {
+    "overall": 8,
+    "scores": {
+     "correctness": 8,
+     "robustness": 8,
+     "code_quality": 8,
+     "tests": 6,
+     "docs": 7,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "The regression test only checks chi.Walk with one registration order (Route then Get). It does not assert Router.Routes() output, the reverse order (Get then Route, where Mount overwrites GET and Walk must stay silent), Handle/Method on the mount pattern, or a plain-handler Mount. The spec names Routes() explicitly.",
+      "evidence": "tree_test.go TestWalkRouteOnMountPattern (+30 lines) is the only added test; it calls Walk and nothing else."
+     },
+     {
+      "severity": "minor",
+      "what": "Collision on the wildcard child of a mount is still misreported. This happens before the change too and is arguably outside the spec. With r.Route(\"/bar\", ...{Get(\"/{id}\")}) followed by r.Get(\"/bar/*\", star), GET /bar/1 is served by `star`, but Walk reports only `GET /bar/{id}` and never reports `GET /bar/*`. The cause is that routes() still treats the node as a pure subroutes node.",
+      "evidence": "Throwaway test case mount-then-getstar printed walk=[GET /bar/{id}] and GET /bar/1=200:star."
+     },
+     {
+      "severity": "minor",
+      "what": "The `mt == mSTUB` part of the skip condition is redundant. The mSTUB endpoint never gets a pattern because setEndpoint only sets its handler, so the `h.pattern == \"\"` check already skips it.",
+      "evidence": "tree.go:364-365 sets only .handler on the mSTUB entry; tree.go:647 checks `h.pattern == \"\" || (isStub && (mt == mSTUB || h.stub))`."
+     }
+    ],
+    "strengths": [
+     "It fixes the root cause in routes(). Before, a Mount stub node without subroutes was dropped entirely. Now the node reports only the method endpoints registered on it directly, which a new `stub` flag on endpoint tracks.",
+     "No new reports for routers without the collision. A stub node that holds only stub entries still produces nothing. This held in the plain-no-collision, mount-plain and nested cases.",
+     "It follows routing semantics in both orders. With Get then Route, Mount overwrites GET and Walk correctly omits it (GET /bar returns 404). With Route then Get, Walk reports GET /bar and routing serves it.",
+     "It handles Handle (all methods, reported as `*` plus each method), Method(PATCH), trailing-slash patterns, inline With() middleware and three-level nesting correctly. Mount of a plain http.Handler followed by Get also works.",
+     "The change is small and focused (about 11 lines in tree.go) and has clear comments. go test ./..., go vet ./... and gofmt -l are all clean."
+    ],
+    "stats": {
+     "files": 2,
+     "source_lines": 43,
+     "test_cases": 1
+    },
+    "summary": "Build C adds an `endpoint.stub` flag, set when setEndpoint is called with mALL|mSTUB. routes() now keeps stub nodes without subroutes and reports only the non-stub method endpoints on them. This fixes the root cause. Walk and Routes() list GET /foo/bar alongside /foo/bar/{id}, and routers without the collision report the same routes as before. I checked this with throwaway tests: Route then Get/Post/Handle/Method, Get then Route (correctly not reported, since Mount overwrites the GET and it returns 404), plain-handler Mount, trailing slash, With() middleware, three-level nesting, and a router with no collision. Each case listed every method and pattern once, and routing matched. go test, go vet and gofmt are clean. The gaps: there is only one regression test, it covers Walk only (no Routes() assertion and no reverse-order case), and the condition has a small redundant `mt == mSTUB` check. A related collision (Get on \"/bar/*\" after Route(\"/bar\")) is still misreported; that predates the change and is arguably out of scope. No CHANGELOG entry is expected, since the repo doesn't keep one per change.",
+    "letter": "C"
+   },
+   {
+    "overall": 8.5,
+    "scores": {
+     "correctness": 9,
+     "robustness": 9,
+     "code_quality": 9,
+     "tests": 8,
+     "docs": 7,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "The regression test is large: 13 table cases plus a second test function, about 245 lines for an 18-line fix. Several cases overlap (Route then Get, Post plus Get, With middleware, Use middleware). A maintainer might ask for it to be trimmed.",
+      "evidence": "git diff --stat: tree_test.go | 247 +++, tree.go | 18 +++--"
+     },
+     {
+      "severity": "minor",
+      "what": "One subtest name is awkwardly worded and hard to understand.",
+      "evidence": "tree_test.go: name \"Get then Route on the same pattern keeps the mount's GET overwritten\""
+     },
+     {
+      "severity": "minor",
+      "what": "Pre-existing gap the fix leaves alone (no regression): if a node has subroutes and also a non-stub method handler (e.g. Mount(\"/m\", sub) followed by Get(\"/m/*\", h)), Walk descends into the subroutes and never reports the explicit GET /m/*. The spec's 'no new reports for non-colliding routers' rule arguably puts this out of scope.",
+      "evidence": "tree.go walk(): when route.SubRoutes != nil it recurses and continues without emitting route.Handlers"
+     }
+    ],
+    "strengths": [
+     "Correct root cause: routes() dropped any node that had an mSTUB handler and no subroutes. That threw away real method handlers registered later on the same node. The fix marks stub status per endpoint and filters per method.",
+     "Minimal, readable change to setEndpoint/routes that keeps the existing structure and comment style",
+     "The spec example now reports GET /foo/bar and GET /foo/bar/{id}. Deep nesting, Mount plus Get/Post on the pattern and on pattern+'/', and Group plus Route collisions all report correctly, and routing still serves every one of them (checked with throwaway httptest requests).",
+     "No behavior change for routers without a collision: a 48-line Walk output over a mixed router (Handle, Method, Mount of a plain handler with and without a trailing slash, sub-router Mount, nested Route/Group/With, wildcard) is byte-identical before and after the change",
+     "The tests cover order sensitivity (Get before Route stays overwritten), trailing slash, Handle/mALL, plain Mount, middleware counts, param and root patterns, and the Routes() Handlers map directly",
+     "go test ./..., go test -race, go vet ./... all pass, and gofmt -l reports no files"
+    ],
+    "stats": {
+     "files": 2,
+     "source_lines": 245,
+     "test_cases": 14
+    },
+    "summary": "Build D finds the real root cause and fixes it. routes() used to skip every node that had an mSTUB handler and no subroutes, which also dropped method handlers registered later on the same pattern. The fix adds a per-endpoint `stub` flag in setEndpoint and filters stub endpoints one method at a time. Throwaway tests confirm that every collision case now reports every method and pattern exactly once: the spec example, nested Routes, Mount followed by Get/Post on the pattern with and without a trailing slash, and a Group collision. Routing still works for all of them. For a broad router without collisions, Walk output is identical to the original. Tests, vet, race and gofmt are all clean. No changelog entry was added, which fits this repo's CHANGELOG (it only has release headers with compare links). The only issues are minor: the regression test is verbose and one subtest name is awkward.",
+    "letter": "D"
+   },
+   {
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 8,
+     "tests": 8,
+     "docs": 7,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "The regression test calls RegisterMethod(\"CUSTOM\"), which changes the package-global methodMap for every test that runs after it. It also makes allMethodRoutes depend on that global state, so the expected method set for the Handle and Mount subtests changes with test order and with whatever other tests have registered.",
+      "evidence": "tree_test.go:554 `RegisterMethod(\"CUSTOM\")` inside TestWalkRouteStubCollisions. allMethodRoutes (tree_test.go:~529) ranges over the live methodMap. mux_test.go:1764 does the same with \"BOO\", so the pattern already exists in the repo, but it is still a leaky side effect."
+     },
+     {
+      "severity": "minor",
+      "what": "The fix stores a new per-endpoint `stub` flag. This partly duplicates the existing mSTUB endpoint slot, which setEndpoint still writes and which routes() no longer reads. The change does not mention that the mSTUB slot is now unused by routes(), so the two markers can drift apart.",
+      "evidence": "tree.go:362-366: `stub := method&mSTUB == mSTUB; if stub { n.endpoints.Value(mSTUB).handler = handler }`. routes() at tree.go:~644 now checks only `h.stub`."
+     },
+     {
+      "severity": "minor",
+      "what": "There is no CHANGELOG entry. The repo's CHANGELOG has not been updated since v5.0.12 and only links to compare views, so this matches the current convention.",
+      "evidence": "head CHANGELOG.md shows its latest entry is v5.0.12 (2024-02-16)."
+     }
+    ],
+    "strengths": [
+     "Correct root cause: the old routes() dropped the whole node whenever it carried a Route/Mount stub and had no subroutes. The fix tags each endpoint with whether a stub wrote it and filters per endpoint, so user handlers that share a stub node are reported again.",
+     "Small, focused change to tree.go: about 10 lines across setEndpoint, routes() and the endpoint struct.",
+     "Differential check against the unmodified repo: for a router with no collisions (Route, Mount of a subrouter, Mount of a plain handler, Mount with a trailing slash, Handle, Group, With middlewares), Walk and Routes() output is byte-identical. New entries appear only in collision cases.",
+     "Collision cases I checked each report every method/pattern exactly once with the correct middleware count, and routing still works. Cases: Route then Get; Mount then Post /m and Put /m/; Handle after Mount; three-level nested Route+Get+Patch; param pattern /u/{id}; Get next to a plain-handler Mount. A Get registered before Route is overwritten by the stub at routing time, and is correctly not reported.",
+     "The tests are table-driven and cover the reported case, ordering, trailing slash, Handle (all methods), a custom method, a plain-handler Mount, the no-collision invariant, middleware counts, and actual request serving.",
+     "go test ./..., go vet ./... and gofmt -l all pass cleanly (Go 1.24). The tests' use of slices/maps fits the go 1.23 minimum in go.mod."
+    ],
+    "stats": {
+     "files": 2,
+     "source_lines": 215,
+     "test_cases": 10
+    },
+    "summary": "Build E fixes the real root cause. Before, routes() skipped any tree node that had a Route/Mount stub handler and no subroutes, which hid user handlers registered on the same pattern. Now setEndpoint marks each endpoint with whether a stub wrote it, and routes() skips only those stub endpoints, still keeping them on subroute nodes. I compared the build with the unmodified repo using a throwaway test that dumps Walk and Routes() output. Routers without a collision produce identical output, so nothing new appears for them. Every collision variant I tried reports each method/pattern once with the correct middleware counts, and requests are still served correctly. Variants covered: Route+Get, Mount+Post/Put with a trailing slash, Handle after Mount, deep nesting, param patterns, and a plain-handler Mount. go test, go vet and gofmt are all clean. The issues are minor: a test mutates the global methodMap via RegisterMethod, the new stub flag partly duplicates the mSTUB slot, and there is no CHANGELOG entry, which the repo doesn't keep up anyway. A maintainer would likely merge it with little or no editing.",
+    "letter": "E"
+   },
+   {
+    "letter": "F",
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 8,
+     "tests": 8,
+     "docs": 7,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "A regression subtest asserts that Walk reports an endpoint that cannot be reached. In 'method on the wildcard after Route', r.Get(\"/bar/*\") overrides GET on the mount wildcard, so GET /foo/bar/{id} is served by the wildcard handler and never reaches the subrouter. The test still requires Walk to report 'GET /foo/bar/{id}'. Walk behaved the same way before this change, so the spec is not violated, but the test locks in an inaccurate report.",
+      "evidence": "Throwaway test: Route(\"/foo\"){ Route(\"/bar\"){Get(\"/{id}\",id)}; Get(\"/bar/*\",wild) } -> Walk = [GET /foo/bar/* GET /foo/bar/{id}], GET /foo/bar/1 -> '200 wild'. Asserted at tree_test.go in TestWalkRouteStubCollision, case 'method on the wildcard after Route'."
+     },
+     {
+      "severity": "minor",
+      "what": "The test calls RegisterMethod(\"BOO\"), which changes global method tables (methodMap and reverseMethodMap). The allMethods helper then reads reverseMethodMap, so the expected list depends on which methods other tests have already registered. Other tests in the repo do the same, but this makes the test depend on test order.",
+      "evidence": "tree_test.go TestWalkRouteStubCollision: RegisterMethod(\"BOO\") and allMethods ranges over reverseMethodMap"
+     },
+     {
+      "severity": "minor",
+      "what": "The fix does not mention the Routes()/Walk change anywhere a user would see it. There is no CHANGELOG entry, though the repo's CHANGELOG only lists releases, so leaving it out is acceptable.",
+      "evidence": "git status shows only tree.go and tree_test.go modified"
+     }
+    ],
+    "strengths": [
+     "Correct root cause. Mount/Route write stub endpoints (mALL|mSTUB) on pattern and pattern+'/'. A method registered later on the same node overwrites only its own method slot. The old guard dropped the whole node whenever an mSTUB handler existed. The new per-endpoint stub flag tells stub entries apart from user entries.",
+     "Small, focused change: one bool on endpoint, set in setEndpoint, and routes() split into stub and user groups. The pattern-grouping logic was moved into a helper (endpointRoutes) without changing what it does.",
+     "Output is unchanged for routers without a collision. A differential run against the original tree.go gave identical Walk and Routes() output for the plain Route/Mount/plain-handler/With router and the Route(\"/\") router.",
+     "Handles ordering correctly: a method registered before a Route on the same pattern is overwritten by the stub, is unroutable, and is still not reported. Methods registered after it are reported once each.",
+     "Checked by hand: nested Route/Mount collisions at several levels, Mount followed by Get/Put/Delete on /m and /m/, HandleFunc after Mount, and a Group with middleware after Route all report every routable endpoint exactly once, and routing still returns the expected handlers.",
+     "The regression tests are table-driven in tree_test.go and fail against the original tree.go. go test ./..., go vet ./... and gofmt -l are all clean."
+    ],
+    "stats": {
+     "files": 2,
+     "source_lines": 250,
+     "test_cases": 11
+    },
+    "summary": "Build F fixes the bug at its root. Each endpoint now records whether it was written by a Mount/Route stub, and routes() splits a node's endpoints into stub entries, which describe the subrouter, and user entries, which are always reported. The original code skipped the whole node when it found a stub. Checks run on a copy at /tmp/inspect-chi-mount-routes-F: go test ./..., go vet ./... and gofmt -l are all clean. Both new tests fail against the original tree.go. Throwaway tests with Get, Handle, HandleFunc, Route and Mount on the same and nested patterns, in different orders, found every routable endpoint reported once, routing unchanged, and identical output to the original for routers without a collision. Only minor issues remain. One subtest locks in Walk reporting a subrouter route that a later wildcard registration makes unreachable; Walk already did this before the change. The test also registers a global custom method. A maintainer would likely merge it with little or no editing."
+   },
+   {
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 8,
+     "tests": 6,
+     "docs": 7,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "The regression test checks only chi.Walk. It does not check Router.Routes() directly, does not check that GET /foo/bar is still routed, and does not cover other registration orders such as Handle() on the mount pattern, Method() with middleware, or 3-level nesting.",
+      "evidence": "tree_test.go TestWalkRouteOnMountPattern (diff lines +526..+552) has a single Walk assertion. I covered these cases with my own throwaway tests, which pass."
+     },
+     {
+      "severity": "minor",
+      "what": "The fix adds a per-endpoint `stub` bool that setEndpoint has to keep in sync on three branches. The skip condition `mountStub && h.stub` is correct, but it puts state on every endpoint to work around a reporting filter. The comment says why it is needed, so this is acceptable, but it costs a little extra code.",
+      "evidence": "tree.go setEndpoint sets h.stub = stub in the mALL loop and in the else branch. routes() skips when `h.pattern == \"\" || (mountStub && h.stub)`."
+     },
+     {
+      "severity": "minor",
+      "what": "When Get(\"/bar\") comes before Route(\"/bar\"), Mount silently overwrites the GET endpoint, and Walk does not report GET /bar. This is consistent with routing, because the request then goes to the subrouter. It is behavior from before this change and the change does not touch it, so it is not a spec failure.",
+      "evidence": "throwaway case getFirst: WALK [GET /bar/{id}], GET /bar -> 404 both before and after the change"
+     }
+    ],
+    "strengths": [
+     "Correct root cause: routes() dropped the whole node of a Mount stub (the stub handler, no subroutes), which also dropped user routes registered on the same pattern. The fix skips only the endpoints that the stub itself set.",
+     "No change for routers without a collision. In a differential run against the baseline, output changed only in the colliding cases: the plain-Mount, Mount-of-handler and getFirst scenarios match exactly.",
+     "Every collision variant I tried now reports correctly through both Walk and Routes(), and each method and pattern appears once: the task example, Handle() after Route(), Method()+With() middleware, Group(), 3-level nesting with DELETE/GET/PUT, Mount(handlerFunc) plus POST /x and GET /x/. Routing results did not change.",
+     "Small and focused diff with a clear comment explaining the skip. go test ./..., go vet ./... and gofmt -l are all clean.",
+     "The test also covers the trailing-slash pattern (POST /foo/bar/) and checks that an empty Mount stays unreported."
+    ],
+    "stats": {
+     "files": 2,
+     "source_lines": 45,
+     "test_cases": 1
+    },
+    "summary": "Build G fixes the bug correctly and minimally. A new endpoint.stub flag records handlers set by a Mount() stub, and routes() now skips only those handlers instead of the whole stub node. Routes registered on the same pattern as Route()/Mount() therefore appear in Walk and Routes(). The full suite, vet and gofmt pass. In a differential run against the baseline, output changed only for routers that have the collision, and every ordering and nesting I tried reported each method and pattern exactly once while routing stayed the same. The gaps are minor: the single regression test checks only Walk (not Routes() or routing) and only one registration order, and there is no changelog entry, which is consistent with the repo's stale CHANGELOG. A maintainer would likely merge it with at most small edits.",
+    "letter": "G"
+   },
+   {
+    "letter": "H",
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 8,
+     "tests": 8,
+     "docs": 7,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "Redundant write: setEndpoint sets `stub = true` on the mSTUB endpoint entry. That entry never gets a pattern, so routes() skips it through the `h.pattern == \"\"` check before the flag is ever read.",
+      "evidence": "tree.go:367-369 (`h := n.endpoints.Value(mSTUB); h.handler = handler; h.stub = true`). routes() at tree.go:651 skips entries with an empty pattern first."
+     },
+     {
+      "severity": "minor",
+      "what": "The regression test is heavier than the repo's usual table tests. It has a `setup func() (Router, Routes)` that returns an 'owner', a `stubKeys` side-check with an early-return/fatal flow, and an `everyMethod` built from methodMap. A plain Walk comparison would cover most of these cases more simply.",
+      "evidence": "tree_test.go TestWalkExplicitEndpointOnStubPattern: the stubKeys loop at the end of the t.Run body, and the setup closures that capture `foo`."
+     },
+     {
+      "severity": "minor",
+      "what": "The CHANGELOG has no entry and the Walk/Routes doc comments were not updated. The repo's CHANGELOG is stale (last entry v5.0.12) and only links to compare views, so the impact is small.",
+      "evidence": "git diff --stat touches only tree.go and tree_test.go."
+     }
+    ],
+    "strengths": [
+     "Finds the real root cause. Explicit registrations on a Route/Mount stub node were overwritten in the handler table, and routes() then dropped the whole node because it carried the mSTUB marker. The fix adds a per-endpoint `stub` flag and filters only the stub-written entries, so explicit Get/Post/Method/Handle entries on that node still show up.",
+     "Changes are limited to setEndpoint and routes() (about 15 lines of production code). Routing is unaffected. In a probe, every route still served the same handlers before and after: GET /foo/bar -> bar, GET /foo/bar/1 -> id, GET /a -> aget, POST /a -> apost, GET /a/ -> subroot.",
+     "No new reports for routers without a collision. A side-by-side probe against the original repo gave identical Walk and Routes() output for the 'normal', 'getThenMount' and 'plainHandlerMountNoCollision' routers, and 'mountTrailingSlash' was also unchanged.",
+     "Collision cases now report every endpoint exactly once with no duplicates: the issue example, Mount followed by Get+Post, three-level nested Route with PUT/DELETE on intermediate patterns, Group with PATCH, With(mw).Get, and Mount of a plain http.Handler followed by Get.",
+     "Getting the order right: a Get registered before Route/Mount, which really is overwritten and not routable, is still correctly left out.",
+     "The regression test covers the issue example, Mount with Get/Post/custom Method/Handle, a trailing-slash pattern, and the case with no collision. It also checks the Routes() handler keys.",
+     "go test ./..., go vet ./... and gofmt -l all pass cleanly."
+    ],
+    "stats": {
+     "files": 2,
+     "source_lines": 178,
+     "test_cases": 9
+    },
+    "summary": "Build H fixes the root cause cleanly. Route/Mount writes mALL|mSTUB on the pattern node, and a later explicit Get or Post replaces only that method's entry. Before the fix, routes() returned early for any node with an mSTUB handler and no subroutes, so those explicit entries were dropped. The fix adds an `endpoint.stub` flag and skips only stub-written entries on stub nodes. I tested this in a copy of the build. Tests, vet and gofmt all pass. A throwaway probe compared the build with the original repo across 11 router shapes: the issue example, Mount then Get/Post, Get then Mount, a subrouter root, three-level nesting, With middleware, a plain-handler mount with and without a collision, a trailing-slash mount, Group, and a normal router. Output changed only where a route collides with a Route/Mount pattern, every endpoint appeared exactly once, and routing gave the same results before and after. Remaining issues are small: one redundant flag assignment on the mSTUB entry, a somewhat convoluted test table, and no changelog note (the repo hardly keeps one anyway). A maintainer would likely merge it with at most small edits."
+   },
+   {
+    "letter": "I",
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 7,
+     "tests": 8,
+     "docs": 7,
+     "product": 7
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "Walk still descends into a mounted subrouter for a method that a later user handler on the mount's wildcard pattern now owns. After Mount(\"/bar\", sub) and Get(\"/bar/*\", wild), Walk reports both GET /bar/* and GET /bar/{id}, but GET /bar/1 is served by the wildcard handler, so GET /bar/{id} is not routable. The new test 'Mount then Get on the wildcard pattern' expects this output, which locks it in. The baseline has the same shadowing, so this is not a regression.",
+      "evidence": "Throwaway probe in the copy: Walk prints 'mountsub_then_getWild: GET /bar/*,GET /bar/{id}', and serving GET /bar/1 gives '200:wild'. tree_test.go adds the case with want {\"GET /bar/*\": \"wild\", \"GET /bar/{id}\": \"id\"}."
+     },
+     {
+      "severity": "minor",
+      "what": "The stub-first ordering in routes() is built with two passes over the map. A single sort, or appending the stub key explicitly, would be clearer. The comment on the endpoint.stub field is also long-winded.",
+      "evidence": "tree.go routes(): two 'for k := range pats' loops that build keys (around lines 664-675), and the field comment at tree.go:137-139."
+     },
+     {
+      "severity": "minor",
+      "what": "The regression tests are heavy for a small fix: about 340 lines with several helper closures (handleAll, merge, routesOn, methodsOf, shape). The test also loops 20 times to check that Routes() order is stable. This is more than the repo's usual Walk table tests.",
+      "evidence": "tree_test.go diff: +339 lines covering TestWalkRouteOnMountedPattern (15 cases) and TestRoutesRouteOnMountedPattern (2 subtests)."
+     }
+    ],
+    "strengths": [
+     "Correct root cause. The old routes() dropped a whole node whenever the node's mSTUB handler was set and it had no subroutes. Endpoints that a user later re-registered on the same pattern were dropped with it. The fix records a per-endpoint stub flag and groups by (pattern, stub).",
+     "No change for routers without a collision: a broad baseline router (Use, Route, nested Mount, plain-handler Mount, Handle wildcard, Group) gives the same Walk output before and after the fix.",
+     "Covers the issue case and its variants: Route or Mount followed by Get, Post, MethodFunc(PATCH), With().Head, trailing slash, the root mount, a nested mount, and a Handle on the wildcard. A Handle on the wildcard now correctly stops reporting the shadowed subrouter. No route is reported twice, and the output is deterministic across repeated calls.",
+     "Routing behavior is unchanged: the fix only touches routes(), plus a flag that setEndpoint writes and nothing else reads.",
+     "go test ./..., go vet ./... and gofmt -l all pass cleanly. The tests are table-driven and run the handlers to check that the right one is reported, and they also check middleware counts."
+    ],
+    "stats": {
+     "files": 2,
+     "source_lines": 380,
+     "test_cases": 17
+    },
+    "summary": "Build I fixes the root cause in node.routes(). It adds a per-endpoint stub flag set in setEndpoint, groups endpoints by (pattern, stub), and drops stub groups only when they have no subroutes. A user handler registered on a Route/Mount pattern is now reported as a leaf. go test, go vet and gofmt are all clean. Throwaway probes confirmed every collision variant tried is reported exactly once. Walk output for a broad router without collisions is identical to the baseline, and routing is unchanged. The remaining gaps are small. A user handler on the mount's wildcard pattern still leaves shadowed subrouter routes in the Walk output; the baseline does the same, and the new test now locks it in. The ordering code is a little clunky, and the tests are much longer than the fix needs. A maintainer would likely merge it after trimming the tests."
+   }
+  ],
+  "judge": {
+   "ranking": [
+    {
+     "letter": "F",
+     "score": 8.5,
+     "confirmed_defects": [
+      "One subtest locks in Walk reporting GET /foo/bar/{id} even though a later Get(\"/bar/*\") shadows it. The baseline reports it too, so this is not a regression.",
+      "The test calls RegisterMethod(\"BOO\"), which changes global method tables, and builds its expected set from reverseMethodMap, so the expectation depends on test order."
+     ],
+     "refuted_defects": [],
+     "rationale": "The root-cause fix is the same as the others: a per-endpoint stub flag. F also splits stub and user endpoints on nodes that have subroutes, so a user handler on the mount's wildcard pattern is now reported. My probe showed Route(\"/bar\") followed by Post(\"/bar/*\") reports POST /bar/*, which is routable and which the baseline and A-E, G and H all miss. Output for routers without a collision is identical to the baseline. The refactor into endpointRoutes is clean. Tests, vet and gofmt pass."
+    },
+    {
+     "letter": "I",
+     "score": 8,
+     "confirmed_defects": [
+      "Same as F: the test expects GET /bar/{id} to be reported even though Get(\"/bar/*\") shadows it.",
+      "The stub-first ordering uses two passes over the map, which is clunky, and the endpoint.stub comment is verbose.",
+      "About 340 lines of tests with many helper closures, which is heavy for the fix."
+     ],
+     "refuted_defects": [],
+     "rationale": "Grouping by (pattern, stub) gives the same coverage as F, including user handlers on the wildcard pattern (POST /bar/* and GET /bar/* are reported). Output for routers without a collision is unchanged and all checks pass. It ranks just below F because the code and the tests are clunkier."
+    },
+    {
+     "letter": "D",
+     "score": 7.5,
+     "confirmed_defects": [
+      "Pre-existing gap left in place: a method registered on the mount's own wildcard pattern (Route(\"/bar\") then Post(\"/bar/*\")) is routable but still not reported.",
+      "The test is large for the fix and one subtest name is awkward."
+     ],
+     "refuted_defects": [],
+     "rationale": "The fix is clean and correct for the stated collision on the Route or Mount pattern and its trailing-slash pattern. It drops the node-level guard in favour of a per-endpoint check, which is simplest. The tests are thorough and cover Routes(), order, Handle and plain Mount. It misses the wildcard-pattern variant that F and I handle."
+    },
+    {
+     "letter": "A",
+     "score": 7.5,
+     "confirmed_defects": [
+      "Same wildcard-pattern gap as D: POST /bar/* after Route(\"/bar\") is not reported."
+     ],
+     "refuted_defects": [],
+     "rationale": "Correct minimal fix with good table tests that cover Walk and Routes(). Behavior matches B, C, D, E, G and H in every probe."
+    },
+    {
+     "letter": "H",
+     "score": 7.5,
+     "confirmed_defects": [
+      "Same wildcard-pattern gap as D.",
+      "Redundant stub=true write on the mSTUB entry."
+     ],
+     "refuted_defects": [],
+     "rationale": "Correct minimal fix with decent tests that check Routes() keys. The test setup is a bit convoluted."
+    },
+    {
+     "letter": "E",
+     "score": 7.5,
+     "confirmed_defects": [
+      "Same wildcard-pattern gap as D.",
+      "The test calls RegisterMethod(\"CUSTOM\"), which changes global state."
+     ],
+     "refuted_defects": [],
+     "rationale": "Correct and clean per-endpoint check with good tests, including request serving. Minor test hygiene issue."
+    },
+    {
+     "letter": "G",
+     "score": 7,
+     "confirmed_defects": [
+      "Same wildcard-pattern gap as D.",
+      "A single regression test that checks Walk only."
+     ],
+     "refuted_defects": [],
+     "rationale": "Correct minimal fix, but the tests are thin: no Routes() check and no ordering or Handle cases."
+    },
+    {
+     "letter": "B",
+     "score": 7,
+     "confirmed_defects": [
+      "Same wildcard-pattern gap as D.",
+      "A single Walk-only regression test."
+     ],
+     "refuted_defects": [],
+     "rationale": "Identical in behavior to A and G. The test coverage is thin."
+    },
+    {
+     "letter": "C",
+     "score": 7,
+     "confirmed_defects": [
+      "Same wildcard-pattern gap; the inspector noted it.",
+      "A single Walk-only test.",
+      "Redundant mt == mSTUB check."
+     ],
+     "refuted_defects": [],
+     "rationale": "Correct minimal fix with the same behavior as A, B and G. Thin tests and a slightly redundant condition."
+    }
+   ],
+   "verdict": "All nine builds fix the same root cause: routes() skipped the whole Mount stub node. They do it the same way, with a per-endpoint stub flag, and each passes test, vet and gofmt with no change for routers that have no collision. Only F and I also report a user handler registered on the mount's own wildcard pattern (for example Post(\"/bar/*\") after Route(\"/bar\")). That endpoint is routable and the other seven still drop it, so F and I come out ahead, with F's code tidier. Among the other seven, the order follows test quality: D, A, H and E test Routes(), registration order and Handle cases, while B, C and G add a single Walk-only test."
+  },
+  "judges": [
+   {
+    "ranking": [
+     {
+      "letter": "F",
+      "score": 8.5,
+      "confirmed_defects": [
+       "One subtest locks in Walk reporting GET /foo/bar/{id} even though a later Get(\"/bar/*\") shadows it. The baseline reports it too, so this is not a regression.",
+       "The test calls RegisterMethod(\"BOO\"), which changes global method tables, and builds its expected set from reverseMethodMap, so the expectation depends on test order."
+      ],
+      "refuted_defects": [],
+      "rationale": "The root-cause fix is the same as the others: a per-endpoint stub flag. F also splits stub and user endpoints on nodes that have subroutes, so a user handler on the mount's wildcard pattern is now reported. My probe showed Route(\"/bar\") followed by Post(\"/bar/*\") reports POST /bar/*, which is routable and which the baseline and A-E, G and H all miss. Output for routers without a collision is identical to the baseline. The refactor into endpointRoutes is clean. Tests, vet and gofmt pass."
+     },
+     {
+      "letter": "I",
+      "score": 8,
+      "confirmed_defects": [
+       "Same as F: the test expects GET /bar/{id} to be reported even though Get(\"/bar/*\") shadows it.",
+       "The stub-first ordering uses two passes over the map, which is clunky, and the endpoint.stub comment is verbose.",
+       "About 340 lines of tests with many helper closures, which is heavy for the fix."
+      ],
+      "refuted_defects": [],
+      "rationale": "Grouping by (pattern, stub) gives the same coverage as F, including user handlers on the wildcard pattern (POST /bar/* and GET /bar/* are reported). Output for routers without a collision is unchanged and all checks pass. It ranks just below F because the code and the tests are clunkier."
+     },
+     {
+      "letter": "D",
+      "score": 7.5,
+      "confirmed_defects": [
+       "Pre-existing gap left in place: a method registered on the mount's own wildcard pattern (Route(\"/bar\") then Post(\"/bar/*\")) is routable but still not reported.",
+       "The test is large for the fix and one subtest name is awkward."
+      ],
+      "refuted_defects": [],
+      "rationale": "The fix is clean and correct for the stated collision on the Route or Mount pattern and its trailing-slash pattern. It drops the node-level guard in favour of a per-endpoint check, which is simplest. The tests are thorough and cover Routes(), order, Handle and plain Mount. It misses the wildcard-pattern variant that F and I handle."
+     },
+     {
+      "letter": "A",
+      "score": 7.5,
+      "confirmed_defects": [
+       "Same wildcard-pattern gap as D: POST /bar/* after Route(\"/bar\") is not reported."
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct minimal fix with good table tests that cover Walk and Routes(). Behavior matches B, C, D, E, G and H in every probe."
+     },
+     {
+      "letter": "H",
+      "score": 7.5,
+      "confirmed_defects": [
+       "Same wildcard-pattern gap as D.",
+       "Redundant stub=true write on the mSTUB entry."
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct minimal fix with decent tests that check Routes() keys. The test setup is a bit convoluted."
+     },
+     {
+      "letter": "E",
+      "score": 7.5,
+      "confirmed_defects": [
+       "Same wildcard-pattern gap as D.",
+       "The test calls RegisterMethod(\"CUSTOM\"), which changes global state."
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct and clean per-endpoint check with good tests, including request serving. Minor test hygiene issue."
+     },
+     {
+      "letter": "G",
+      "score": 7,
+      "confirmed_defects": [
+       "Same wildcard-pattern gap as D.",
+       "A single regression test that checks Walk only."
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct minimal fix, but the tests are thin: no Routes() check and no ordering or Handle cases."
+     },
+     {
+      "letter": "B",
+      "score": 7,
+      "confirmed_defects": [
+       "Same wildcard-pattern gap as D.",
+       "A single Walk-only regression test."
+      ],
+      "refuted_defects": [],
+      "rationale": "Identical in behavior to A and G. The test coverage is thin."
+     },
+     {
+      "letter": "C",
+      "score": 7,
+      "confirmed_defects": [
+       "Same wildcard-pattern gap; the inspector noted it.",
+       "A single Walk-only test.",
+       "Redundant mt == mSTUB check."
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct minimal fix with the same behavior as A, B and G. Thin tests and a slightly redundant condition."
+     }
+    ],
+    "verdict": "All nine builds fix the same root cause: routes() skipped the whole Mount stub node. They do it the same way, with a per-endpoint stub flag, and each passes test, vet and gofmt with no change for routers that have no collision. Only F and I also report a user handler registered on the mount's own wildcard pattern (for example Post(\"/bar/*\") after Route(\"/bar\")). That endpoint is routable and the other seven still drop it, so F and I come out ahead, with F's code tidier. Among the other seven, the order follows test quality: D, A, H and E test Routes(), registration order and Handle cases, while B, C and G add a single Walk-only test."
+   },
+   {
+    "ranking": [
+     {
+      "letter": "F",
+      "score": 8.5,
+      "confirmed_defects": [
+       "The 'method on the wildcard after Route' subtest requires Walk to report GET /foo/bar/{id}, which the user's GET /bar/* handler makes unreachable. My probe gave GET /bar/1 -> wild. Walk already reported this before the change.",
+       "The test calls RegisterMethod(\"BOO\"), which changes global method state."
+      ],
+      "refuted_defects": [],
+      "rationale": "F splits a node's endpoints into stub entries and user entries, so it fixes the issue case and also the wildcard collision. After Route(\"/bar\") plus Get(\"/bar/*\"), it reports the routable GET /bar/*, which A, B, C, D, E, G and H all miss. Walk output for a router with no collision is byte-identical to baseline. The new tests fail on the original code, and test, vet and gofmt are clean. The refactor into endpointRoutes is moderate in size and readable."
+     },
+     {
+      "letter": "I",
+      "score": 8.3,
+      "confirmed_defects": [
+       "A test case locks in that the unreachable GET /bar/{id} is reported next to GET /bar/*. The baseline also reports it.",
+       "The tests are heavy (about 340 lines, with many helpers), and the two-pass ordering loop is a little clunky."
+      ],
+      "refuted_defects": [],
+      "rationale": "I behaves the same as F on every probe, including the wildcard collision where it reports the routable GET /bar/*. Output for a router with no collision matches baseline, the tests fail on the original code, and everything is clean. The code and tests are heavier than F's for the same result."
+     },
+     {
+      "letter": "D",
+      "score": 8.2,
+      "confirmed_defects": [
+       "The tests are verbose for an 18-line fix.",
+       "On a node that has subroutes, a user Get on the mount wildcard (/bar/*) is still not reported. This is pre-existing."
+      ],
+      "refuted_defects": [],
+      "rationale": "D drops the node-level guard and filters out stub endpoints when the node has no subroutes. This is clean and minimal, and it behaves the same as A. The tests are broad, cover Routes(), and fail on the original code. It misses the wildcard-collision endpoint that F and I report."
+     },
+     {
+      "letter": "A",
+      "score": 8.2,
+      "confirmed_defects": [
+       "The node-level 'stubbed' guard is redundant with the per-endpoint flag.",
+       "The GET /bar/* wildcard collision is still not reported. This is pre-existing."
+      ],
+      "refuted_defects": [],
+      "rationale": "A is a minimal, correct fix for the issue case and for Handle/Mount on the mount pattern. Output with no collision matches baseline. The table-driven tests cover Walk and Routes() and fail on the original code."
+     },
+     {
+      "letter": "E",
+      "score": 8,
+      "confirmed_defects": [
+       "The test mutates the global methodMap via RegisterMethod(\"CUSTOM\").",
+       "The GET /bar/* wildcard collision is still not reported."
+      ],
+      "refuted_defects": [],
+      "rationale": "E has the same minimal logic as D, with good tests that fail on the original code. The global-state side effect in the test is a small drawback."
+     },
+     {
+      "letter": "H",
+      "score": 8,
+      "confirmed_defects": [
+       "Setting stub=true on the mSTUB entry is redundant.",
+       "The test structure is somewhat convoluted.",
+       "The GET /bar/* wildcard collision is still not reported."
+      ],
+      "refuted_defects": [],
+      "rationale": "H's fix is correct and equivalent to A's, and its tests cover Routes() keys and the case with no collision. Its test table is more complex than it needs to be."
+     },
+     {
+      "letter": "G",
+      "score": 7.7,
+      "confirmed_defects": [
+       "There is a single Walk-only regression test, with no Routes() assertion and no registration-order cases.",
+       "The GET /bar/* wildcard collision is still not reported."
+      ],
+      "refuted_defects": [],
+      "rationale": "G's fix is correct and minimal, and its one test also covers a trailing-slash pattern and an empty Mount. Test coverage is thin."
+     },
+     {
+      "letter": "B",
+      "score": 7.6,
+      "confirmed_defects": [
+       "There is a single Walk-only test that covers only the issue case.",
+       "The mSTUB check is computed twice in a redundant way.",
+       "The GET /bar/* wildcard collision is still not reported."
+      ],
+      "refuted_defects": [],
+      "rationale": "B's fix is correct and minimal, identical in behaviour to A and G. Its test is the thinnest."
+     },
+     {
+      "letter": "C",
+      "score": 7.5,
+      "confirmed_defects": [
+       "There is a single Walk-only test.",
+       "The mt == mSTUB clause is redundant.",
+       "The wildcard collision is misreported: GET /bar/* is missing. The probe confirmed this, and it is pre-existing."
+      ],
+      "refuted_defects": [],
+      "rationale": "C is correct for the issue case and equivalent to B in behaviour. Setting the flag differently on each branch is slightly less uniform, and the test coverage is minimal."
+     }
+    ],
+    "verdict": "All nine builds use the same correct root-cause fix: a per-endpoint stub flag, so routes() skips only entries that Mount/Route stubs wrote instead of dropping the whole node. All pass test, vet and gofmt, and they leave Walk output unchanged for routers without a collision. F and I go one step further. They also report a user handler registered on the mount's wildcard pattern (GET /bar/*); the other builds miss that routable endpoint, although F and I still report the shadowed subrouter route that it makes unreachable. Among the rest, the builds are ranked mainly on test quality. A, D, E and H assert Routes(), registration order and Handle/Mount variants, while B, C and G add only one Walk-only test."
+   }
+  ]
+ }
+]
