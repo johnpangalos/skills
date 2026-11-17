@@ -148,3 +148,58 @@ Mean judge score per task (both judges, all builds in the pool):
 - 2–5 builds per setup per task. Gaps of about 0.5 on one task are noise, and the 4 easy tasks have only 2 new builds per arm.
 - The stress tests were added after 0.2, criteria and 0.4's first 3 builds were graded. For those builds, the stress row comes from running the stress tests afterwards. reviewer-plus and tests-first come from their own grading (`newarms-5`, `newarms-6`). tests-first fails all 5 on risky-auth and 1 on risky-refunds. The outcome row leaves stress out so all arms are counted the same way.
 - 10 `lite-routed` builds on risky-auth and risky-refunds were made before routing was dropped. They're in D1 but weren't judged.
+
+# Round 3: candidate-0.5 against 0.2 (2026-11-17)
+
+`lite-candidate` (`harness/variants/candidate-0.5/`) is 0.2 with these changes:
+- tests-first;
+- the no-downgrade fix-loop rule from reviewer-plus-2;
+- a diff-triggered checklist (`references/checks.md`, 10 items, each with a trigger, a check and the miss it came from) that the orchestrator copies to the implementor and the reviewer;
+- `APPROVED DIFFERENCES` for wrappers.
+
+It ran 54 builds: 5 on each of the 6 hard tasks and 3 on each of the other 8, including 4 tasks the checklist wasn't drawn from (click-duration, click-param-spec, reset-token-expiry, risky-inventory). They were blind-judged in pools with the existing 0.2 builds, whose round-1 or round-2 inspector reports were carried over (`judge/prep_round3.sh`, `plan3.tsv`, `round3-h*.json`, `remap3-*.json`).
+
+Known bugs are now scored with deterministic answer-key probes (`probes/keys.json`, `probes/*/probe.sh`), which were validated against the round-2 judges (`probes/VALIDATION.md`). Every disagreement checked by hand went to the probe. The race stress tests aren't flaky: each of 46 builds × 10 runs was 0/10 or 10/10.
+
+| Task | 0.2 judge | candidate judge | 0.2 $ | candidate $ | Keyed bugs / hidden checks, 0.2 → candidate |
+|---|---|---|---|---|---|
+| chi-etag † | **8.20** | 7.20 | 1.16 | 1.88 | Flush bypass 5/5 → **0/5**; HEAD empty ETag 1/5 → 0/5 |
+| rac-shadow-hide | 5.55 | **7.30** | 1.22 | 1.76 | nested target 3/5 → **0/5**; stale yarn.lock 2/5 → 0/5 |
+| ui-lib | 6.70 | **8.25** | 1.39 | 1.70 | bugs per build 2.6 → **1.0** (only the display:none trap case is left) |
+| website-bookshop | 7.43 | **7.82** | 1.36 | 1.48 | – |
+| risky-auth | 6.77 | **7.98** | 0.53 | 0.78 | stress race 3/5 → **0/5** |
+| risky-refunds | 7.45 | 7.55 | 0.83 | 1.05 | stress race 1/5 → **0/5** |
+| discount-codes | 8.03 | **8.35** | 0.71 | 0.81 | 1 → 0 |
+| chi-mount-routes | 8.00 | **8.33** | 0.83 | 1.29 | 3 → 4 (mount wildcard everywhere) |
+| tailwind-anchor | 7.25 | **7.83** | 0.82 | 0.81 | 1 → 0 |
+| fd-count | **8.15** | 7.75 | 0.86 | 1.11 | hidden tests 3/3 → **1/3** (the usage error names flags the user didn't pass) |
+| click-duration ‡ | 7.67 | 7.75 | 1.20 | 1.48 | hidden tests 3/3 → 2/3 (missed changelog entry) |
+| click-param-spec ‡ | **8.17** | 7.58 | 1.27 | 1.54 | – |
+| reset-token-expiry ‡ | 7.08 | **7.83** | 0.54 | 0.86 | judges reproduced a race in 3/3 0.2 builds and 0/3 candidate builds |
+| risky-inventory ‡ | **8.17** | 7.83 | 0.66 | 0.91 | – |
+| **Mean over 14 tasks** | 7.47 | **7.81** | 0.96 | 1.25 | |
+
+† The judges rewarded compact builds and didn't probe Flush, which the request rules out. The hidden Flush test decides chi-etag: candidate 5/5, 0.2 0/5.
+‡ Held out: the checklist wasn't drawn from these tasks. Mean: 0.2 7.77, candidate 7.75.
+
+## What it shows
+
+- **The candidate beats 0.2 on 10 of 14 tasks**, by 0.34 on the mean, for about 30% more per build ($1.25 against $0.96; 0.4 was $1.94).
+- **On the bugs the checklist names, it matches or beats 0.4 at about half the cost.** The Flush bypass, the nested shadow-root target, ui-lib focus return and the races in risky-auth and risky-refunds each drop to zero. The implementor's own tests catch them first: every shared-state build added a concurrent test, and the approved difference for chi-etag spelled out that Flush must not send early.
+- **On the held-out tasks it's level** (7.75 against 7.77), with one real generalisation. On reset-token-expiry, which no hidden test checks for races, every candidate build locks and no 0.2 build does.
+- **What it costs:**
+  - About 30% more per build. Fix rounds went over the cap of two in several builds.
+  - Over-building where no check applies. The judges marked down heavy tests, frame-inspection heuristics and decimal-context machinery on click-param-spec, risky-inventory, risky-refunds and chi-etag.
+  - The fd-count usage-error regression.
+- **Review is still where bugs are lost.** On the earlier builds, 66 of 83 shipped keyed bugs were never flagged by a reviewer, the orchestrator dropped 12 found ones, and 5 fixes failed (`../RECALL.md`). Replayed on fixed diffs, the 0.2 reviewer found 10% of keyed bugs and the candidate reviewer 70% (`../REPLAY.md`). That 70% is in-sample, because the checklist names those bugs.
+
+## Next
+
+- **Keep:** tests-first, triggered checks and approved differences.
+- **Fix in the wording:**
+  - Copy the checks word for word, and pass them to fix rounds too.
+  - Hold the two-round cap.
+  - A test that can't fail is [blocking], not [minor].
+  - Add a proportion line for the implementor: "no machinery the criteria don't need", aimed at the over-building.
+- **Check the fd-count case** before shipping: is the "conflicting flags give an error" item pushing builds toward clap ArgGroups?
+- **Grow the checklist only from recurring misses**, and keep held-out tasks to catch overfitting.
