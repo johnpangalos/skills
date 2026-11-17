@@ -14,6 +14,7 @@ Then score with recall.py's sonnet matcher: recall, whether the matching finding
 and on clean diffs every [blocking] finding (verified by hand afterwards, see REPLAY.md).
 
     python3 replay.py select            # writes replay-set.json from recall.json + judges
+    python3 replay.py rekey --add chi-etag:lite-tests-first:3   # keys from probes/keys-round2.json
     python3 replay.py triggers          # the Opus pick per diff -> replay-triggers.json
     python3 replay.py run --jobs 3      # every (diff, reviewer, rep) -> replay-runs/
     python3 replay.py score             # replay.json + the tables for REPLAY.md
@@ -114,6 +115,35 @@ def cmd_select(args):
     json.dump(picked + clean, open(HERE / "replay-set.json", "w"), indent=1)
     for p in picked + clean:
         print(p["kind"], p["task"], p["arm"], p["rep"], p["keys"], p.get("judge_score", ""))
+
+
+def cmd_rekey(args):
+    """Re-derive each item's keys from the deterministic probes (probes/keys-round2.json), after they landed.
+
+    A "clean" pick with a probe-failing key becomes a bug item; --add task:arm:rep appends keyed-clean picks."""
+    items = json.load(open(HERE / "replay-set.json"))
+    failing = recall.probe_failing()
+    defects = recall.judge_defects()
+    ranks = recall.judge_rank()
+    for spec in filter(None, args.add.split(",")):
+        task, arm, rep = spec.split(":")
+        d = sorted(recall.DATA.glob(f"*/{task}/{arm}/rep-{rep}"))[0]
+        items.append({"kind": "clean", "task": task, "arm": arm, "rep": int(rep), "dir": str(d.relative_to(HERE)), "keys": [],
+                      "judge_score": ranks[(task, arm, int(rep))][0], "letter": ranks[(task, arm, int(rep))][1], "strict": False,
+                      "judge_confirmed_defects": defects.get((task, arm, int(rep)), []), "added_after_probes": True})
+    for i in items:
+        if i["task"] == "website-bookshop":
+            continue  # no keys for this task
+        keys = sorted(failing[(i["task"], i["arm"], i["rep"])])
+        if keys != i["keys"]:
+            print(f"{item_id(i)}: {i['kind']} {i['keys']} -> {'bug' if keys else 'clean'} {keys}")
+        i["judge_keys"] = i["keys"]
+        i["keys"] = keys
+        if keys and i["kind"] == "clean":
+            i["kind"], i["was_clean_by_judges"] = "bug", True
+        elif not keys and i["kind"] == "bug":
+            i["kind"] = "clean"
+    json.dump(items, open(HERE / "replay-set.json", "w"), indent=1)
 
 
 # --- workspace ----------------------------------------------------------------------------
@@ -339,6 +369,8 @@ def main():
     s.add_argument("--bugs", type=int, default=10)
     s.add_argument("--clean", type=int, default=6)
     s.add_argument("--per-task", type=int, default=3)
+    k = sub.add_parser("rekey")
+    k.add_argument("--add", default="")
     sub.add_parser("triggers")
     r = sub.add_parser("run")
     r.add_argument("--jobs", type=int, default=3)
@@ -346,7 +378,7 @@ def main():
     r.add_argument("--keep", action="store_true")
     sub.add_parser("score")
     args = ap.parse_args()
-    {"select": cmd_select, "triggers": cmd_triggers, "run": cmd_run, "score": cmd_score}[args.cmd](args)
+    {"select": cmd_select, "rekey": cmd_rekey, "triggers": cmd_triggers, "run": cmd_run, "score": cmd_score}[args.cmd](args)
 
 
 if __name__ == "__main__":

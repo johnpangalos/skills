@@ -1,0 +1,51 @@
+GOAL: Red-team the uncommitted diff in /tmp/claude-0/-home-user-skills/0fc1097f-4e24-5c23-8608-e10aa16a6c85/scratchpad/ff-replay/risky-auth--lite-shipped-0.2--rep-1/workspace (`git diff`): password-reset tokens in shop/auth.py now expire after 1800s and are single-use.
+FILES: shop/auth.py, tests/test_auth.py, README.md. Run probes with `python3 -c "from shop.auth import ...; ..."` from the repo root; write scratch scripts outside the repo. Full checks: `./check.sh`.
+CONSTRAINTS: Read-only on the repo; only reproduced failures are blocking.
+ACCEPTANCE CRITERIA:
+- `issue_reset_token(username, now=None)` and `redeem_reset_token(token, now=None)`; `now` is Unix seconds; `None` means `time.time()` (checked with `is None`, so `now=0` is a real timestamp).
+- The store records issue time per token; redeeming with `now - issued_at > 1800` raises `TokenExpired`. At exactly 1800 seconds the token is still valid. Lifetime is a module constant (e.g. `RESET_TOKEN_TTL = 1800  # seconds`).
+- Successful redemption returns the username and marks the token used; any later redemption raises `TokenUsed` (also if that later attempt is past expiry — used takes precedence, tested).
+- A redemption that fails with `TokenExpired` does not mark the token used (it keeps raising `TokenExpired`).
+- `TokenExpired` and `TokenUsed` subclass `InvalidToken`; unknown tokens (including "", None) still raise plain `InvalidToken`.
+- Check-and-mark-used is atomic under a `threading.Lock`, so two concurrent redemptions of one token yield exactly one success.
+- Issuing two tokens for the same user gives independent tokens (redeeming one doesn't affect the other).
+- README gains one line in the rules section: reset tokens are valid for 30 minutes and single-use.
+- Tests in tests/test_auth.py cover: default-now round trip, redeem at issue+1800 succeeds, issue+1801 raises TokenExpired, second redeem raises TokenUsed, used-then-expired raises TokenUsed, expired attempt doesn't consume, subclass relationships (assertRaises(InvalidToken) catches both), unknown token, now=0 issue honored (redeem at 1801 expires), two tokens same user independent.
+Hostile inputs: now=0 (must not fall back to time.time()); redeem at exactly 1800 vs 1801; redeem with now earlier than issue (accepted, no crash); float timestamps (1800.5 after issue expires); many threads redeeming one token at once (exactly one success); default now path with real time.
+CHECKS: `./check.sh`
+PROJECT CHECKLIST:
+- The change follows the patterns around it (naming, docstrings, README rules); anything the sibling named in FILES does that the new code should and doesn't is a finding.
+- `now=0` / falsy values are not treated as "use the default".
+
+TRIGGERED CHECKS:
+## Shared state
+
+- **Trigger:** the change reads and then writes state kept between calls: a module-level or
+  class-level dict, list, set or counter, a cache, a store, a balance, a token table, a file.
+- **Check:** run the operation from 8 or more threads at once, for many rounds, on the same
+  key, and check the invariant after each round (used once, never over the cap, one record per
+  key). If the race window is too narrow to hit, widen it in a scratch copy with a short sleep
+  between the check and the write, and say you did. A race the widened copy reproduces is
+  [blocking]. The fix is a lock (or equivalent) held across both the check and the write. The
+  diff needs a concurrent test of its own; if it has none, that is [blocking] too.
+- **From:** token redemption and partial refunds, where every hidden test and audit passed and
+  the race shipped.
+
+## Invariants, round trips and equivalence
+
+- **Trigger:** the criteria state something that must always hold (a balance never negative,
+  a total never over a cap), a round trip (parse then format, encode then decode), idempotency
+  (doing it twice equals doing it once), or that new code must match old code.
+- **Check:** a property test. Use the repo's property library if it has one (Hypothesis,
+  fast-check, proptest); otherwise a seeded random loop of at least 1000 generated inputs,
+  including the hostile ones, that asserts the property and prints the first failing input.
+- **From:** edge cases that the implementor's own tests missed because the tests shared the
+  code's assumptions.
+
+## Money and numbers
+
+- **Trigger:** the change parses, computes or shows amounts or other numbers users enter.
+- **Check:** sub-unit amounts, NaN and infinity, a number given as a string or float instead
+  of the expected type, negative and zero values, values past the type's range, equal amounts
+  spelled differently, and what's shown for a negative zero (`-$0.00`).
+- **From:** refunds, discount codes and receipts.
