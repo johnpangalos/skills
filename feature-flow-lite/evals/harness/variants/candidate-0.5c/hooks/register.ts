@@ -73,6 +73,8 @@ function headerBlock(prompt: string, header: string): string | undefined {
 
 const criteriaBlock = (prompt: string) => headerBlock(prompt, 'ACCEPTANCE CRITERIA')
 
+const squash = (text: string) => text.replace(/\s+/g, ' ').trim()
+
 // references/checks.md: each "## Title" section, in file order.
 type Check = { title: string; text: string }
 
@@ -132,14 +134,11 @@ function resultText(result: unknown): string {
 }
 
 // Paths the main conversation may write during a run: the project file, and
-// anything outside the repo (scratchpad, temp, home).
-function mainMayEdit(path: string): boolean {
-  return (
-    /(?:^|\/)FEATURE_FLOW\.md$/.test(path) ||
-    /\/scratchpad\//.test(path) ||
-    /^\/tmp\//.test(path) ||
-    /\/\.claude\//.test(path)
-  )
+// anything outside the repo. With the repo root known, "outside" is literal;
+// without it, the scratchpad and Claude's own folders are outside.
+function mainMayEdit(path: string, repoRoot: string | undefined): boolean {
+  if (/(?:^|\/)FEATURE_FLOW\.md$/.test(path) || /\/scratchpad\//.test(path) || /\/\.claude\//.test(path)) return true
+  return repoRoot !== undefined && !path.startsWith(`${repoRoot.replace(/\/$/, '')}/`)
 }
 
 // One porcelain line is "XY path", or "XY old -> new" for a rename.
@@ -211,18 +210,23 @@ export const register: Register = on => {
   let savedChecks: string | undefined
   let checks: Check[] | undefined
   let blocking: string[] = []
-  let implementorRuns = 0
+  let implementorSpawns = 0
+  let repoRoot: string | undefined
+  let pending: string[] = []
+  const reviewed = new Set<string>()
   const roleByAgent = new Map<string, Role>()
   const records: UsageRecord[] = []
 
-  on('skill.prompt', ($, e, next) => {
+  on('skill.prompt', async ($, e, next) => {
     // Each invocation is a new feature: forget the last one's criteria.
     if (isOurSkill(e.skill)) {
       gated = true
       savedCriteria = undefined
       savedChecks = undefined
       blocking = []
-      implementorRuns = 0
+      implementorSpawns = 0
+      pending = []
+      repoRoot = await repoTop($)
     }
     return next(e)
   }).catch(($, e, next) => next(e))
@@ -246,7 +250,7 @@ export const register: Register = on => {
       if (checkBlock !== undefined) {
         checks ??= await loadChecks($)
         const exact = checks.length > 0 ? canonicalChecks(checkBlock, checks) : undefined
-        if (exact !== undefined && exact !== checkBlock) {
+        if (exact !== undefined && squash(exact) !== squash(checkBlock)) {
           prompt = prompt.replace(checkBlock, exact)
           $.ui.log(`${$.plugin.name}: put the TRIGGERED CHECKS in the ${role} handoff back in the words of references/checks.md.`)
         }
@@ -265,82 +269,73 @@ export const register: Register = on => {
       blocking = []
     }
 
+    if (role === 'implementor') {
+      implementorSpawns += 1
+      if (implementorSpawns === 3) {
+        pending.push(
+          `${$.plugin.name}: this implementor call is the second fix round, the last one. After it, don't call the ` +
+            'implementor again: report what passed, what still fails and the open findings.',
+        )
+      } else if (implementorSpawns > 3) {
+        pending.push(
+          `${$.plugin.name}: this is implementor call ${implementorSpawns}, past the two-fix-round cap. ` +
+            'Stop after it and report what still fails.',
+        )
+      }
+    }
+
     const res = await next({ ...e, prompt })
     if (role && res.agentId) roleByAgent.set(res.agentId, role)
     return res
   }).catch(($, e, next) => next(e))
 
-  on('tool.call', { tool: 'Agent' }, async ($, e, next) => {
+  // Every tool result on the main loop: deliver queued notes, read a
+  // reviewer's result, check an implementor run for tests, and note edits the
+  // main conversation makes itself.
+  on('tool.call', async ($, e, next) => {
     const ran = await next(e)
-    if (!gated || ran.deny !== undefined || ran.isError === true) return ran
+    if (!gated || e.agentId !== undefined || ran.deny !== undefined || ran.isError === true) return ran
 
-    const result = ran.result
-    if (result?.status !== 'completed') return ran
-
-    const role = (result.agentId && roleByAgent.get(result.agentId)) || roleOf(e.subagent_type, e.prompt)
-    const notes: string[] = []
-
-    if (role === 'reviewer') {
-      const text = resultText(result)
-      const weak = taggedLines(text, 'minor').filter(line => /test/i.test(line) && WEAK_TEST.test(line))
-      blocking = [...taggedLines(text, 'blocking'), ...weak]
-      if (weak.length > 0) {
-        notes.push(
-          `${$.plugin.name}: the reviewer tagged ${weak.length} finding(s) [minor] that say a test can't fail. ` +
-            'The skill makes those [blocking]: send them to the implementor with the other blocking findings, ' +
-            'or report them as open if no fix round is left.\n' +
-            weak.map(line => `- ${line.replace(/^[-*]\s*/, '')}`).join('\n'),
-        )
+    if (e.tool === 'Agent') {
+      const result = ran.result as { status?: string; agentId?: string } | undefined
+      if (result?.status === 'completed') {
+        const role = (result.agentId && roleByAgent.get(result.agentId)) || roleOf(e.subagent_type, e.prompt)
+        if (role === 'reviewer' && result.agentId !== undefined && !reviewed.has(result.agentId)) {
+          reviewed.add(result.agentId)
+          pending.push(...readReview($.plugin.name, resultText(result), lines => (blocking = lines)))
+        }
+        if (role === 'implementor') {
+          const paths = await changedPaths($)
+          if (paths !== undefined && !paths.some(isTestFile)) {
+            pending.push(
+              `${$.plugin.name}: this implementor run changed no test files. The acceptance criteria require tests; ` +
+                'send it back unless the change genuinely needs none.',
+            )
+          }
+        }
       }
     }
 
-    if (role === 'implementor') {
-      implementorRuns += 1
-      if (implementorRuns === 3) {
-        notes.push(
-          `${$.plugin.name}: that was the second fix round, the last one. Don't call the implementor again: ` +
-            'report what passed, what still fails and the open findings.',
-        )
-      } else if (implementorRuns > 3) {
-        notes.push(
-          `${$.plugin.name}: that was implementor call ${implementorRuns}, past the two-fix-round cap. ` +
-            'Stop here and report what still fails.',
-        )
-      }
-      const paths = await changedPaths($)
-      if (paths !== undefined && !paths.some(isTestFile)) {
-        notes.push(
-          `${$.plugin.name}: this implementor run changed no test files. The acceptance criteria require tests; ` +
-            'send it back unless the change genuinely needs none.',
-        )
-      }
+    if (e.tool === 'Edit' || e.tool === 'Write' || e.tool === 'NotebookEdit') {
+      const args = e as { file_path?: unknown; notebook_path?: unknown }
+      const note = mainEditNote($.plugin.name, args.file_path ?? args.notebook_path, repoRoot)
+      if (note !== undefined) pending.push(note)
     }
 
-    return notes.length === 0 ? ran : { ...ran, context: [...(ran.context ?? []), ...notes] }
-  }).catch(($, e, next) => next(e))
-
-  // The main conversation's own edits during a run: code and tests are the
-  // implementor's. The project file and files outside the repo are fine.
-  on('tool.call', { tool: 'Edit' }, async ($, e, next) => {
-    const ran = await next(e)
-    if (!gated || e.agentId !== undefined || ran.deny !== undefined || ran.isError === true) return ran
-    const note = mainEditNote($.plugin.name, e.file_path)
-    return note === undefined ? ran : { ...ran, context: [...(ran.context ?? []), note] }
-  }).catch(($, e, next) => next(e))
-  on('tool.call', { tool: 'Write' }, async ($, e, next) => {
-    const ran = await next(e)
-    if (!gated || e.agentId !== undefined || ran.deny !== undefined || ran.isError === true) return ran
-    const note = mainEditNote($.plugin.name, e.file_path)
-    return note === undefined ? ran : { ...ran, context: [...(ran.context ?? []), note] }
-  }).catch(($, e, next) => next(e))
-  on('tool.call', { tool: 'NotebookEdit' }, async ($, e, next) => {
-    const ran = await next(e)
-    if (!gated || e.agentId !== undefined || ran.deny !== undefined || ran.isError === true) return ran
-    const note = mainEditNote($.plugin.name, e.notebook_path)
-    return note === undefined ? ran : { ...ran, context: [...(ran.context ?? []), note] }
+    if (pending.length === 0) return ran
+    const notes = pending
+    pending = []
+    return { ...ran, context: [...(ran.context ?? []), ...notes] }
   }).catch(($, e, next) => next(e))
 
   on('turn.complete', async ($, e, next) => {
+    if (gated && e.agentId !== undefined && roleByAgent.get(e.agentId) === 'reviewer' && !reviewed.has(e.agentId)) {
+      const answer = typeof e.answer === 'string' ? e.answer : ''
+      if (/^\s*STATUS:/m.test(answer)) {
+        reviewed.add(e.agentId)
+        pending.push(...readReview($.plugin.name, answer, lines => (blocking = lines)))
+      }
+    }
     if (gated) {
       try {
         const usage = e.usage
@@ -383,13 +378,39 @@ export const register: Register = on => {
 // The note for an edit the main conversation made itself during a run: code
 // and tests are the implementor's. None for the project file or files outside
 // the repo.
-function mainEditNote(plugin: string, path: unknown): string | undefined {
+function mainEditNote(plugin: string, path: unknown, repoRoot: string | undefined): string | undefined {
   const file = typeof path === 'string' ? path : ''
-  if (file === '' || mainMayEdit(file)) return undefined
+  if (file === '' || mainMayEdit(file, repoRoot)) return undefined
   return (
     `${plugin}: the main conversation edited ${file} itself. In a feature-flow-lite run, code and test ` +
     'edits go to the implementor, so the reviewer and the checks see who made each change.'
   )
+}
+
+// A reviewer's result: its [blocking] lines, plus any [minor] line that says a
+// test can't fail, become the findings carried to the next implementor; the
+// escalated ones also get a note.
+function readReview(plugin: string, text: string, keep: (lines: string[]) => void): string[] {
+  const weak = taggedLines(text, 'minor').filter(line => /test/i.test(line) && WEAK_TEST.test(line))
+  keep([...taggedLines(text, 'blocking'), ...weak])
+  if (weak.length === 0) return []
+  return [
+    `${plugin}: the reviewer tagged ${weak.length} finding(s) [minor] that say a test can't fail. ` +
+      'The skill makes those [blocking]: send them to the implementor with the other blocking findings, ' +
+      'or report them as open if no fix round is left.\n' +
+      weak.map(line => `- ${line.replace(/^[-*]\s*/, '')}`).join('\n'),
+  ]
+}
+
+// The repo's top folder, or undefined when git can't say.
+async function repoTop($: EngineInterface): Promise<string | undefined> {
+  try {
+    const { exitCode, stdout } = await $.process.run(['git', 'rev-parse', '--show-toplevel'])
+    const top = stdout.trim()
+    return exitCode === 0 && top !== '' ? top : undefined
+  } catch {
+    return undefined
+  }
 }
 
 // references/checks.md from the plugin's folder, or none when it can't be read.
