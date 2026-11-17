@@ -1,0 +1,3436 @@
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000..c2658d7
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1 @@
++node_modules/
+diff --git a/README.md b/README.md
+new file mode 100644
+index 0000000..6b1ec7d
+--- /dev/null
++++ b/README.md
+@@ -0,0 +1,59 @@
++# Marginalia Books
++
++A static website for Marginalia Books, a fictional independent bookshop on Lantern Row in
++the market town of Little Hadley. It has a home page, a browsable catalogue with genre
++filters, an events list, and a visit page with opening hours, directions and a contact form.
++
++The site is plain HTML, CSS and JavaScript. There is no build step, no framework and no
++runtime dependencies. It makes no requests outside its own origin: no CDNs, web fonts,
++analytics or remote images.
++
++## Running it locally
++
++Serve the repository root with any static server, then open the printed address:
++
++```sh
++python3 -m http.server 8080
++# then open http://localhost:8080/
++```
++
++`npx http-server -p 8080 -s .` works too. Pages use relative links, so the site also works
++when it is deployed under a sub-path.
++
++## File layout
++
++```
++index.html          Home: intro, featured books, next events, hours summary
++books.html          Catalogue with genre filters (state kept in ?genre=...)
++events.html         Upcoming and past events
++visit.html          Opening hours, address, access notes, contact form
++css/styles.css      The one shared stylesheet (colours are CSS custom properties)
++js/books-data.js    The book catalogue (single source of truth)
++js/events-data.js   The events list (single source of truth)
++js/events-logic.js  Local-date helpers: upcoming/past split and date formatting
++js/event-item.js    Builds one event list item
++js/book-card.js     Builds one book card and its SVG cover
++js/books.js         Books page: filtering, URL state and the live result count
++js/events.js        Events page
++js/home.js          Home page featured books and event teaser
++js/contact.js       Contact form validation and the demo confirmation
++js/nav.js           Shared menu toggle for narrow screens
++tests/              Headless-browser tests (node:test + Playwright)
++```
++
++To add a book or event, edit the data file. Every page that shows them renders from there.
++
++## Running the tests
++
++The tests start their own static server on an ephemeral port and drive headless Chromium
++through Playwright. They expect Playwright to be installed globally, for example at
++`/opt/node-tools/node_modules/playwright`. The helper falls back to `npm root -g` to find it.
++
++```sh
++node --test tests/*.test.mjs            # all tests
++node --test tests/books.test.mjs        # one file
++npx prettier --check "**/*.{html,css,js,mjs}"   # formatting
++```
++
++The event tests fix the clock to 17 November 2026 with Playwright's clock API, so their results
++do not depend on the real date.
+diff --git a/books.html b/books.html
+new file mode 100644
+index 0000000..61f9cd1
+--- /dev/null
++++ b/books.html
+@@ -0,0 +1,75 @@
++<!doctype html>
++<html lang="en">
++  <head>
++    <meta charset="utf-8" />
++    <meta name="viewport" content="width=device-width, initial-scale=1" />
++    <title>Browse books by genre, Marginalia Books</title>
++    <link rel="icon" href="data:," />
++    <link rel="stylesheet" href="css/styles.css" />
++    <script>
++      document.documentElement.classList.add("js");
++    </script>
++    <script type="module" src="js/nav.js"></script>
++    <script type="module" src="js/books.js"></script>
++  </head>
++  <body>
++    <a class="skip-link" href="#main">Skip to content</a>
++    <header class="site-header">
++      <div class="header-inner">
++        <a class="brand" href="index.html">Marginalia Books</a>
++        <button
++          type="button"
++          class="nav-toggle"
++          aria-expanded="false"
++          aria-controls="site-nav"
++        >
++          Menu
++        </button>
++        <nav id="site-nav" class="site-nav" aria-label="Main">
++          <ul>
++            <li><a href="index.html">Home</a></li>
++            <li><a href="books.html" aria-current="page">Books</a></li>
++            <li><a href="events.html">Events</a></li>
++            <li><a href="visit.html">Visit</a></li>
++          </ul>
++        </nav>
++      </div>
++    </header>
++
++    <main id="main">
++      <h1>Books</h1>
++      <p class="lede">
++        Every title on our shelves, from the poetry table by the door to the
++        history shelves under the window. Choose a genre to narrow the list.
++      </p>
++
++      <section aria-labelledby="catalogue-heading">
++        <h2 class="visually-hidden" id="catalogue-heading">Catalogue</h2>
++        <p class="filters-label" id="filter-label">Filter by genre</p>
++        <div
++          class="filters"
++          id="genre-filters"
++          role="group"
++          aria-labelledby="filter-label"
++        ></div>
++
++        <div class="status" id="status" aria-live="polite">
++          <p class="result-count" id="result-count">Loading the catalogue.</p>
++          <p class="filter-notice" id="filter-notice"></p>
++        </div>
++
++        <ul class="book-grid" id="book-list"></ul>
++      </section>
++    </main>
++
++    <footer class="site-footer">
++      <div>
++        <p>
++          Marginalia Books is a fictional independent bookshop. This is a demo
++          site.
++        </p>
++        <p><a href="visit.html">Opening hours and address</a></p>
++      </div>
++    </footer>
++  </body>
++</html>
+diff --git a/css/styles.css b/css/styles.css
+new file mode 100644
+index 0000000..6e86d02
+--- /dev/null
++++ b/css/styles.css
+@@ -0,0 +1,678 @@
++:root {
++  --paper: #fbf6ec;
++  --card: #fffdf8;
++  --ink: #2b2118;
++  --muted: #5e4d3e;
++  --rule: #d9c9ae;
++  --control-edge: #8a7258;
++  --accent: #8a3b12;
++  --accent-fill: #6d2d0c;
++  --on-accent: #fffdf8;
++  --focus: #1d4e89;
++  --error: #a4262c;
++  --serif:
++    Georgia, "Iowan Old Style", "Palatino Linotype", Palatino,
++    "Times New Roman", serif;
++  --sans:
++    system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial,
++    sans-serif;
++  color-scheme: light;
++}
++
++@media (prefers-color-scheme: dark) {
++  :root {
++    --paper: #1d1812;
++    --card: #2a2219;
++    --ink: #f3e9d8;
++    --muted: #c9b99f;
++    --rule: #4a3c2c;
++    --control-edge: #9c8a72;
++    --accent: #f0a46b;
++    --accent-fill: #f0a46b;
++    --on-accent: #1d1812;
++    --focus: #8ec5ff;
++    --error: #ff8a80;
++    color-scheme: dark;
++  }
++}
++
++*,
++*::before,
++*::after {
++  box-sizing: border-box;
++}
++
++body {
++  margin: 0;
++  background: var(--paper);
++  color: var(--ink);
++  font: 1.0625rem / 1.6 var(--sans);
++  overflow-wrap: break-word;
++}
++
++[hidden] {
++  display: none !important;
++}
++
++h1,
++h2,
++h3 {
++  font-family: var(--serif);
++  line-height: 1.2;
++  color: var(--ink);
++  overflow-wrap: break-word;
++}
++
++h1 {
++  font-size: clamp(2rem, 7vw, 3rem);
++  margin: 0.5rem 0 0.5rem;
++}
++
++h2 {
++  font-size: 1.6rem;
++  margin: 2.25rem 0 0.75rem;
++}
++
++h3 {
++  font-size: 1.2rem;
++  margin: 0 0 0.3rem;
++}
++
++p {
++  margin: 0 0 1rem;
++}
++
++a {
++  color: var(--accent);
++  text-underline-offset: 0.2em;
++  overflow-wrap: anywhere;
++}
++
++a:hover {
++  text-decoration-thickness: 2px;
++}
++
++:focus-visible {
++  outline: 3px solid var(--focus);
++  outline-offset: 2px;
++}
++
++.visually-hidden {
++  position: absolute;
++  width: 1px;
++  height: 1px;
++  overflow: hidden;
++  clip: rect(0 0 0 0);
++  white-space: nowrap;
++}
++
++.skip-link {
++  position: absolute;
++  left: 1rem;
++  top: -4rem;
++  z-index: 10;
++  padding: 0.75rem 1rem;
++  border-radius: 6px;
++  background: var(--accent-fill);
++  color: var(--on-accent);
++  font-weight: 700;
++  text-decoration: none;
++}
++
++.skip-link:focus {
++  top: 1rem;
++}
++
++/* Header and navigation */
++
++.site-header {
++  background: var(--card);
++  border-bottom: 1px solid var(--rule);
++}
++
++.header-inner {
++  max-width: 1100px;
++  margin: 0 auto;
++  padding: 0.5rem 1rem;
++  display: flex;
++  flex-wrap: wrap;
++  align-items: center;
++  justify-content: space-between;
++  gap: 0.5rem 1rem;
++}
++
++.brand {
++  display: inline-flex;
++  align-items: center;
++  min-height: 44px;
++  font-family: var(--serif);
++  font-size: 1.4rem;
++  font-weight: 700;
++  color: var(--ink);
++  text-decoration: none;
++}
++
++.nav-toggle {
++  display: none;
++  align-items: center;
++  min-height: 44px;
++  min-width: 44px;
++  padding: 0 1rem;
++  font: inherit;
++  font-weight: 700;
++  color: var(--ink);
++  background: transparent;
++  border: 2px solid var(--ink);
++  border-radius: 6px;
++  cursor: pointer;
++}
++
++.site-nav {
++  width: 100%;
++}
++
++.site-nav ul {
++  list-style: none;
++  margin: 0;
++  padding: 0.25rem 0 0.5rem;
++  display: flex;
++  flex-direction: column;
++}
++
++.site-nav a {
++  display: flex;
++  align-items: center;
++  min-height: 44px;
++  padding: 0 0.5rem;
++  color: var(--ink);
++  text-decoration: none;
++  border-bottom: 1px solid var(--rule);
++}
++
++.site-nav a:hover {
++  text-decoration: underline;
++}
++
++.site-nav a[aria-current="page"] {
++  color: var(--accent);
++  font-weight: 700;
++  box-shadow: inset 4px 0 0 var(--accent);
++}
++
++.js .nav-toggle {
++  display: inline-flex;
++}
++
++.js .site-nav {
++  display: none;
++}
++
++.js .site-nav.is-open {
++  display: block;
++}
++
++@media (min-width: 760px) {
++  .nav-toggle {
++    display: none !important;
++  }
++
++  .site-nav,
++  .js .site-nav {
++    display: block !important;
++    width: auto;
++  }
++
++  .site-nav ul {
++    flex-direction: row;
++    gap: 0.25rem;
++    padding: 0;
++  }
++
++  .site-nav a {
++    padding: 0 0.75rem;
++    border-bottom: 0;
++  }
++
++  .site-nav a[aria-current="page"] {
++    box-shadow: inset 0 -3px 0 var(--accent);
++  }
++}
++
++/* Layout */
++
++/* Grid and flex children may shrink below their longest word, so long tokens wrap. */
++.book-grid > *,
++.event-list > *,
++.split > * {
++  min-width: 0;
++}
++
++main {
++  max-width: 1100px;
++  margin: 0 auto;
++  padding: 0.5rem 1rem 3rem;
++}
++
++.lede {
++  max-width: 40rem;
++  font-size: 1.2rem;
++  color: var(--muted);
++}
++
++.button-link {
++  display: inline-flex;
++  align-items: center;
++  min-height: 44px;
++  padding: 0 1.25rem;
++  border-radius: 999px;
++  background: var(--accent-fill);
++  color: var(--on-accent);
++  font-weight: 700;
++  text-decoration: none;
++}
++
++.button-link:hover {
++  text-decoration: underline;
++}
++
++.hero {
++  padding: 1.5rem 0 1rem;
++  border-bottom: 1px solid var(--rule);
++}
++
++.hours-summary {
++  max-width: 40rem;
++}
++
++.site-footer {
++  background: var(--card);
++  border-top: 1px solid var(--rule);
++  color: var(--muted);
++}
++
++.site-footer div {
++  max-width: 1100px;
++  margin: 0 auto;
++  padding: 1.5rem 1rem;
++  text-align: center;
++}
++
++.site-footer p {
++  margin: 0 0 0.5rem;
++}
++
++/* Books */
++
++.filters-label {
++  margin: 1.25rem 0 0.25rem;
++  font-weight: 700;
++}
++
++.filters {
++  display: flex;
++  flex-wrap: wrap;
++  gap: 0.5rem;
++}
++
++.filter-button {
++  min-height: 44px;
++  padding: 0 1rem;
++  font: inherit;
++  color: var(--ink);
++  background: var(--card);
++  border: 2px solid var(--control-edge);
++  border-radius: 999px;
++  cursor: pointer;
++  transition:
++    background-color 0.2s,
++    border-color 0.2s;
++}
++
++.filter-button:hover {
++  border-color: var(--accent);
++}
++
++.filter-button[aria-pressed="true"] {
++  background: var(--accent-fill);
++  border-color: var(--accent-fill);
++  color: var(--on-accent);
++  font-weight: 700;
++}
++
++.filter-button[aria-pressed="true"]::before {
++  content: "\2713\00a0";
++}
++
++.status {
++  margin-top: 1rem;
++}
++
++.result-count {
++  margin: 0;
++  font-weight: 700;
++}
++
++.filter-notice {
++  margin: 0.25rem 0 0;
++  color: var(--muted);
++}
++
++.book-grid {
++  list-style: none;
++  margin: 1.5rem 0 0;
++  padding: 0;
++  display: grid;
++  grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr));
++  gap: 1.5rem;
++}
++
++.book {
++  display: flex;
++  flex-direction: column;
++  gap: 0.75rem;
++  height: 100%;
++  padding: 1rem;
++  background: var(--card);
++  border: 1px solid var(--rule);
++  border-radius: 10px;
++}
++
++.cover {
++  position: relative;
++  aspect-ratio: 3 / 4;
++  overflow: hidden;
++  border-radius: 4px 8px 8px 4px;
++  background: var(--cover-bg);
++  box-shadow:
++    inset 8px 0 0 rgba(0, 0, 0, 0.18),
++    0 6px 14px rgba(0, 0, 0, 0.18);
++}
++
++.cover svg {
++  position: absolute;
++  inset: 0;
++  width: 100%;
++  height: 100%;
++}
++
++.cover .art {
++  fill: var(--cover-accent);
++}
++
++.cover .art-soft {
++  fill: var(--cover-accent);
++  opacity: 0.35;
++}
++
++.book-info {
++  flex: 1;
++}
++
++.genre-tag {
++  display: inline-block;
++  margin: 0 0 0.4rem;
++  padding: 0 0.6rem;
++  font-size: 0.85rem;
++  font-weight: 600;
++  color: var(--muted);
++  border: 1px solid var(--rule);
++  border-radius: 999px;
++}
++
++.book-author {
++  margin: 0;
++  font-style: italic;
++  color: var(--muted);
++}
++
++.book-desc {
++  margin: 0.4rem 0 0;
++  font-size: 0.98rem;
++}
++
++.price {
++  margin: 0.5rem 0 0;
++  font-weight: 700;
++}
++
++.book-grid + p {
++  margin-top: 1.5rem;
++}
++
++/* Narrow screens: a small cover sits beside the text so several books fit on one screen.
++   The text is 11rem wide at least, so when enlarged text no longer fits it wraps under the cover. */
++@media (max-width: 559px) {
++  .book {
++    flex-direction: row;
++    flex-wrap: wrap;
++    align-items: flex-start;
++    gap: 0.5rem 1rem;
++  }
++
++  .book .cover {
++    flex: 0 0 96px;
++  }
++
++  .book .book-info {
++    flex: 1 1 11rem;
++    min-width: 0;
++  }
++
++  .book .price {
++    flex: 1 1 100%;
++    margin: 0;
++  }
++}
++
++/* Events */
++
++.event-list {
++  list-style: none;
++  margin: 0;
++  padding: 0;
++  display: grid;
++  gap: 1rem;
++}
++
++.event {
++  padding: 1rem 1.2rem;
++  background: var(--card);
++  border: 1px solid var(--rule);
++  border-left: 6px solid var(--accent);
++  border-radius: 8px;
++}
++
++.event p {
++  margin: 0;
++}
++
++.event-list + p,
++.empty-state + p {
++  margin-top: 1.5rem;
++}
++
++.event-meta {
++  margin: 0.25rem 0 0.5rem !important;
++  font-weight: 600;
++  color: var(--muted);
++}
++
++.past-events .event {
++  border-left-style: dashed;
++}
++
++.empty-state {
++  padding: 1rem 1.2rem;
++  background: var(--card);
++  border: 1px dashed var(--rule);
++  border-radius: 8px;
++}
++
++/* Visit */
++
++.split {
++  display: grid;
++  gap: 2rem;
++}
++
++@media (min-width: 760px) {
++  .split {
++    grid-template-columns: 1fr 1fr;
++    align-items: start;
++  }
++}
++
++address {
++  font-style: normal;
++  font-size: 1.1rem;
++  overflow-wrap: anywhere;
++}
++
++.hours-table {
++  width: 100%;
++  max-width: 30rem;
++  border-collapse: collapse;
++}
++
++.hours-table caption {
++  text-align: left;
++  font-weight: 700;
++  padding-bottom: 0.5rem;
++}
++
++.hours-table th,
++.hours-table td {
++  padding: 0.6rem 0.5rem;
++  overflow-wrap: anywhere;
++  text-align: left;
++  vertical-align: top;
++  border-bottom: 1px solid var(--rule);
++}
++
++.map {
++  display: block;
++  width: 100%;
++  max-width: 480px;
++  height: auto;
++  background: var(--card);
++  border: 1px solid var(--rule);
++  border-radius: 8px;
++}
++
++.map text {
++  fill: var(--muted);
++  font-family: var(--sans);
++  font-size: 13px;
++}
++
++.map .road {
++  stroke: var(--rule);
++  stroke-width: 14;
++  fill: none;
++}
++
++.map .shop {
++  fill: var(--accent);
++}
++
++.map .park {
++  fill: var(--rule);
++  opacity: 0.6;
++}
++
++/* Contact form */
++
++.form {
++  display: grid;
++  gap: 1rem;
++  max-width: 36rem;
++}
++
++.field {
++  display: grid;
++  gap: 0.35rem;
++}
++
++.field label {
++  font-weight: 700;
++}
++
++.field input,
++.field select,
++.field textarea {
++  width: 100%;
++  min-height: 44px;
++  padding: 0.6rem 0.75rem;
++  font: inherit;
++  color: var(--ink);
++  background: var(--card);
++  border: 2px solid var(--muted);
++  border-radius: 6px;
++}
++
++.field textarea {
++  min-height: 10rem;
++  resize: vertical;
++}
++
++.field [aria-invalid="true"] {
++  border-color: var(--error);
++}
++
++.field-error {
++  margin: 0;
++  font-weight: 700;
++  color: var(--error);
++}
++
++.field-error::before {
++  content: "Error: ";
++}
++
++.error-summary {
++  max-width: 36rem;
++  padding: 1rem 1.2rem;
++  background: var(--card);
++  border: 2px solid var(--error);
++  border-radius: 8px;
++}
++
++.error-summary ul {
++  margin: 0.5rem 0 0;
++  padding-left: 1.25rem;
++}
++
++.primary-button {
++  justify-self: start;
++  min-height: 44px;
++  padding: 0 1.25rem;
++  font: inherit;
++  font-weight: 700;
++  color: var(--on-accent);
++  background: var(--accent-fill);
++  border: 0;
++  border-radius: 999px;
++  cursor: pointer;
++}
++
++.confirmation {
++  max-width: 36rem;
++  padding: 1.25rem;
++  background: var(--card);
++  border-left: 6px solid var(--accent);
++  border-radius: 8px;
++}
++
++.confirmation h3 {
++  font-size: 1.4rem;
++}
++
++@media (prefers-reduced-motion: reduce) {
++  *,
++  *::before,
++  *::after {
++    transition-duration: 0.01ms !important;
++    animation-duration: 0.01ms !important;
++    scroll-behavior: auto !important;
++  }
++}
+diff --git a/events.html b/events.html
+new file mode 100644
+index 0000000..7b8077d
+--- /dev/null
++++ b/events.html
+@@ -0,0 +1,80 @@
++<!doctype html>
++<html lang="en">
++  <head>
++    <meta charset="utf-8" />
++    <meta name="viewport" content="width=device-width, initial-scale=1" />
++    <title>Readings, book club and story time, Marginalia Books events</title>
++    <link rel="icon" href="data:," />
++    <link rel="stylesheet" href="css/styles.css" />
++    <script>
++      document.documentElement.classList.add("js");
++    </script>
++    <script type="module" src="js/nav.js"></script>
++    <script type="module" src="js/events.js"></script>
++  </head>
++  <body>
++    <a class="skip-link" href="#main">Skip to content</a>
++    <header class="site-header">
++      <div class="header-inner">
++        <a class="brand" href="index.html">Marginalia Books</a>
++        <button
++          type="button"
++          class="nav-toggle"
++          aria-expanded="false"
++          aria-controls="site-nav"
++        >
++          Menu
++        </button>
++        <nav id="site-nav" class="site-nav" aria-label="Main">
++          <ul>
++            <li><a href="index.html">Home</a></li>
++            <li><a href="books.html">Books</a></li>
++            <li><a href="events.html" aria-current="page">Events</a></li>
++            <li><a href="visit.html">Visit</a></li>
++          </ul>
++        </nav>
++      </div>
++    </header>
++
++    <main id="main">
++      <h1>Events</h1>
++      <p class="lede">
++        Readings, a monthly book club and story time for children. Most events
++        are free; ticketed events are marked with their price.
++      </p>
++
++      <section aria-labelledby="upcoming-heading">
++        <h2 id="upcoming-heading">Upcoming events</h2>
++        <ol class="event-list" id="upcoming-list" hidden></ol>
++        <p class="empty-state" id="no-upcoming" hidden>
++          No events are scheduled just now. Check back soon, or email
++          <a href="mailto:hello@marginalia.example">hello@marginalia.example</a>
++          to ask about readings.
++        </p>
++      </section>
++
++      <section
++        class="past-events"
++        id="past-events"
++        aria-labelledby="past-heading"
++        hidden
++      >
++        <h2 id="past-heading">Past events</h2>
++        <p>
++          These events have already happened and are kept here for reference.
++        </p>
++        <ol class="event-list" id="past-list"></ol>
++      </section>
++    </main>
++
++    <footer class="site-footer">
++      <div>
++        <p>
++          Marginalia Books is a fictional independent bookshop. This is a demo
++          site.
++        </p>
++        <p><a href="visit.html">Opening hours and address</a></p>
++      </div>
++    </footer>
++  </body>
++</html>
+diff --git a/index.html b/index.html
+new file mode 100644
+index 0000000..56edc23
+--- /dev/null
++++ b/index.html
+@@ -0,0 +1,96 @@
++<!doctype html>
++<html lang="en">
++  <head>
++    <meta charset="utf-8" />
++    <meta name="viewport" content="width=device-width, initial-scale=1" />
++    <title>Marginalia Books, an independent bookshop</title>
++    <link rel="icon" href="data:," />
++    <link rel="stylesheet" href="css/styles.css" />
++    <script>
++      document.documentElement.classList.add("js");
++    </script>
++    <script type="module" src="js/nav.js"></script>
++    <script type="module" src="js/home.js"></script>
++  </head>
++  <body>
++    <a class="skip-link" href="#main">Skip to content</a>
++    <header class="site-header">
++      <div class="header-inner">
++        <a class="brand" href="index.html">Marginalia Books</a>
++        <button
++          type="button"
++          class="nav-toggle"
++          aria-expanded="false"
++          aria-controls="site-nav"
++        >
++          Menu
++        </button>
++        <nav id="site-nav" class="site-nav" aria-label="Main">
++          <ul>
++            <li><a href="index.html" aria-current="page">Home</a></li>
++            <li><a href="books.html">Books</a></li>
++            <li><a href="events.html">Events</a></li>
++            <li><a href="visit.html">Visit</a></li>
++          </ul>
++        </nav>
++      </div>
++    </header>
++
++    <main id="main">
++      <section class="hero" aria-labelledby="intro-heading">
++        <h1 id="intro-heading">Marginalia Books</h1>
++        <p class="lede">
++          An independent bookshop on Lantern Row, in the market town of Little
++          Hadley.
++        </p>
++        <p>
++          We stock a deliberately short list of new and secondhand books: poetry
++          from small presses, sharp new fiction, a shelf of science fiction for
++          people who read the footnotes, and the design and natural history
++          titles that never seem to stay on the shelf for long.
++        </p>
++        <p>
++          Four booksellers run the shop, and all of us read most of what we
++          sell. Ask what we loved last month and you will probably get a longer
++          answer than you wanted. We host readings, a monthly book club and a
++          Saturday story time for children.
++        </p>
++      </section>
++
++      <section aria-labelledby="featured-heading">
++        <h2 id="featured-heading">Featured books</h2>
++        <p>A few titles the team keeps recommending this season.</p>
++        <ul class="book-grid" id="featured-books"></ul>
++        <p><a class="button-link" href="books.html">Browse all books</a></p>
++      </section>
++
++      <section aria-labelledby="coming-up-heading">
++        <h2 id="coming-up-heading">Coming up</h2>
++        <ul class="event-list" id="event-teaser" hidden></ul>
++        <p class="empty-state" id="teaser-empty" hidden>
++          No events are scheduled just now. Check back soon.
++        </p>
++        <p><a href="events.html">See all events</a></p>
++      </section>
++
++      <section aria-labelledby="hours-heading">
++        <h2 id="hours-heading">Hours and location</h2>
++        <p class="hours-summary">
++          We are open Tuesday to Sunday and closed on Mondays. Thursdays stay
++          open until 8 pm. We are at 14 Lantern Row, Little Hadley, NB4 2QT.
++        </p>
++        <p><a class="button-link" href="visit.html">Plan your visit</a></p>
++      </section>
++    </main>
++
++    <footer class="site-footer">
++      <div>
++        <p>
++          Marginalia Books is a fictional independent bookshop. This is a demo
++          site.
++        </p>
++        <p><a href="visit.html">Opening hours and address</a></p>
++      </div>
++    </footer>
++  </body>
++</html>
+diff --git a/js/book-card.js b/js/book-card.js
+new file mode 100644
+index 0000000..3dc8735
+--- /dev/null
++++ b/js/book-card.js
+@@ -0,0 +1,84 @@
++// Builds one book card with the DOM API only (no innerHTML), so catalogue text is never parsed as markup.
++
++const SVG_NS = "http://www.w3.org/2000/svg";
++
++// Each motif is a list of [tag, attributes] pairs drawn inside a 120 x 160 cover.
++const MOTIFS = {
++  sun: [
++    ["circle", { cx: 60, cy: 74, r: 30, class: "art" }],
++    ["rect", { x: 0, y: 118, width: 120, height: 42, class: "art-soft" }],
++  ],
++  wave: [
++    ["path", { d: "M0 96 Q30 74 60 96 T120 96 V160 H0 Z", class: "art" }],
++    [
++      "path",
++      { d: "M0 120 Q30 102 60 120 T120 120 V160 H0 Z", class: "art-soft" },
++    ],
++  ],
++  bars: [
++    ["rect", { x: 18, y: 36, width: 14, height: 96, class: "art" }],
++    ["rect", { x: 46, y: 56, width: 14, height: 76, class: "art-soft" }],
++    ["rect", { x: 74, y: 24, width: 14, height: 108, class: "art" }],
++    ["rect", { x: 98, y: 70, width: 8, height: 62, class: "art-soft" }],
++  ],
++  arch: [
++    ["path", { d: "M30 140 V80 A30 30 0 0 1 90 80 V140 Z", class: "art" }],
++    ["path", { d: "M46 140 V84 A14 14 0 0 1 74 84 V140 Z", class: "art-soft" }],
++  ],
++};
++
++function el(tag, text, className) {
++  const node = document.createElement(tag);
++  node.textContent = text;
++  if (className) {
++    node.className = className;
++  }
++  return node;
++}
++
++function createCover(book) {
++  const cover = document.createElement("div");
++  cover.className = "cover";
++  cover.setAttribute("aria-hidden", "true");
++  cover.style.setProperty("--cover-bg", book.cover[0]);
++  cover.style.setProperty("--cover-accent", book.cover[1]);
++
++  const svg = document.createElementNS(SVG_NS, "svg");
++  svg.setAttribute("viewBox", "0 0 120 160");
++  svg.setAttribute("focusable", "false");
++  svg.setAttribute("aria-hidden", "true");
++  for (const [tag, attributes] of MOTIFS[book.motif]) {
++    const shape = document.createElementNS(SVG_NS, tag);
++    for (const [name, value] of Object.entries(attributes)) {
++      shape.setAttribute(name, String(value));
++    }
++    svg.append(shape);
++  }
++  cover.append(svg);
++  return cover;
++}
++
++function formatPrice(pounds) {
++  return `£${pounds.toFixed(2)}`;
++}
++
++export function createBookCard(book) {
++  const card = document.createElement("article");
++  card.className = "book";
++
++  const info = document.createElement("div");
++  info.className = "book-info";
++  info.append(
++    el("p", book.genre, "genre-tag"),
++    el("h3", book.title),
++    el("p", `by ${book.author}`, "book-author"),
++    el("p", book.description, "book-desc"),
++  );
++
++  card.append(
++    createCover(book),
++    info,
++    el("p", formatPrice(book.price), "price"),
++  );
++  return card;
++}
+diff --git a/js/books-data.js b/js/books-data.js
+new file mode 100644
+index 0000000..55c6379
+--- /dev/null
++++ b/js/books-data.js
+@@ -0,0 +1,162 @@
++// The single catalogue. Every page that shows books renders from this file.
++// Prices are in pounds sterling. `cover` is [background, accent] and `motif`
++// picks one of the shapes drawn in js/book-card.js.
++
++export const BOOKS = [
++  {
++    id: "low-tide-sonnets",
++    title: "Low Tide Sonnets",
++    author: "Hannah Vell",
++    genre: "Poetry",
++    description:
++      "Fourteen-line poems written on the mudflats of the Essex coast, where the sea leaves more than it takes.",
++    price: 11.5,
++    cover: ["#2f5d62", "#e9c46a"],
++    motif: "wave",
++  },
++  {
++    id: "orchard-hours",
++    title: "The Orchard Keeps Its Own Hours",
++    author: "Tomas Reyes-Lind",
++    genre: "Poetry",
++    description:
++      "A sequence of poems about a family orchard, grafting, and the slow arithmetic of a harvest year.",
++    price: 12.99,
++    cover: ["#6b3d2e", "#f2d7a0"],
++    motif: "sun",
++  },
++  {
++    id: "wet-spring-notes",
++    title: "Field Notes for a Wet Spring",
++    author: "Priya Anand",
++    genre: "Poetry",
++    description:
++      "Short poems written in a notebook during a damp April, full of birds, bus timetables and small hopes.",
++    price: 10.0,
++    cover: ["#3e4c36", "#d8e3a5"],
++    motif: "bars",
++  },
++  {
++    id: "glass-orchard",
++    title: "The Glass Orchard",
++    author: "Eleanor Marsh",
++    genre: "Fiction",
++    description:
++      "Three sisters inherit a greenhouse full of impossible pears and must decide what to do before the frost.",
++    price: 9.99,
++    cover: ["#4a2c5e", "#f4b6a6"],
++    motif: "arch",
++  },
++  {
++    id: "ferry-across-dark",
++    title: "A Ferry Across the Dark",
++    author: "Daniel Osei",
++    genre: "Fiction",
++    description:
++      "The last ferryman on a northern lake keeps a ledger of every crossing, and one passenger refuses to be counted.",
++    price: 14.0,
++    cover: ["#1e3a5f", "#f7d08a"],
++    motif: "wave",
++  },
++  {
++    id: "letters-to-nobody",
++    title: "Letters to Nobody in Particular",
++    author: "Jo Lindqvist",
++    genre: "Fiction",
++    description:
++      "A widowed postmistress begins writing to the addresses she is meant to deliver, and the replies start arriving.",
++    price: 8.5,
++    cover: ["#7a4b1e", "#ffe6b3"],
++    motif: "sun",
++  },
++  {
++    id: "long-quiet-signal",
++    title: "The Long Quiet Signal",
++    author: "Amara Quist",
++    genre: "Science Fiction",
++    description:
++      "A radio technician on a deep-space relay hears a pattern that has been repeating for three hundred years.",
++    price: 13.0,
++    cover: ["#14213d", "#8ecae6"],
++    motif: "bars",
++  },
++  {
++    id: "orbit-under-glass",
++    title: "Orbit Under Glass",
++    author: "Kenji Mori",
++    genre: "Science Fiction",
++    description:
++      "On a city-sized station that rotates once a decade, a gardener discovers the hydroponics have been lying to everyone.",
++    price: 12.0,
++    cover: ["#2b2d42", "#ef8354"],
++    motif: "arch",
++  },
++  {
++    id: "ink-paper-patience",
++    title: "Ink, Paper, Patience",
++    author: "Liesel Brandt",
++    genre: "Art & Design",
++    description:
++      "A printmaker walks through four decades of letterpress work, with reproductions of every plate and the failures between them.",
++    price: 24.0,
++    cover: ["#8c2f39", "#f6e7cb"],
++    motif: "sun",
++  },
++  {
++    id: "shapes-everyday-things",
++    title: "The Shapes of Everyday Things",
++    author: "Oliver Hart",
++    genre: "Art & Design",
++    description:
++      "Why a teacup, a road sign and a bus ticket look the way they do, told through photographs and sketches.",
++    price: 19.5,
++    cover: ["#274c77", "#f2c14e"],
++    motif: "bars",
++  },
++  {
++    id: "year-of-hedgerows",
++    title: "A Year of Hedgerows",
++    author: "Wen Li",
++    genre: "Nature",
++    description:
++      "One lane, twelve months, and every plant, bird and insect that lives between the field gate and the church.",
++    price: 16.0,
++    cover: ["#386641", "#f2e8cf"],
++    motif: "wave",
++  },
++  {
++    id: "tidepool-field-guide",
++    title: "Tidepool Field Guide",
++    author: "Gwen Patel",
++    genre: "Nature",
++    description:
++      "A pocket guide to the creatures of the rocky shore, with keys that work even in a wind and a wet pair of gloves.",
++    price: 18.0,
++    cover: ["#0b525b", "#ffd6a5"],
++    motif: "arch",
++  },
++  {
++    id: "canal-men",
++    title: "The Canal Men",
++    author: "Robert Ashby",
++    genre: "History",
++    description:
++      "The bargemen, lock keepers and navvies who built and worked the inland waterways of the Midlands, in their own words.",
++    price: 17.5,
++    cover: ["#5c4033", "#c9ada7"],
++    motif: "sun",
++  },
++  {
++    id: "ledgers-market-town",
++    title: "Ledgers of a Market Town",
++    author: "Sofia Ricci",
++    genre: "History",
++    description:
++      "Four centuries of shop accounts from one high street, read closely to show what ordinary households bought and owed.",
++    price: 15.0,
++    cover: ["#3d405b", "#e07a5f"],
++    motif: "bars",
++  },
++];
++
++export const GENRES = [...new Set(BOOKS.map((book) => book.genre))].sort();
+diff --git a/js/books.js b/js/books.js
+new file mode 100644
+index 0000000..26f40b3
+--- /dev/null
++++ b/js/books.js
+@@ -0,0 +1,75 @@
++// Books page: genre filter buttons, with the active genre kept in the URL query string.
++import { BOOKS, GENRES } from "./books-data.js";
++import { createBookCard } from "./book-card.js";
++
++const ALL = "All";
++const UNKNOWN_NOTICE = "We do not stock that genre, so every book is shown.";
++const filterGroup = document.getElementById("genre-filters");
++const bookList = document.getElementById("book-list");
++const resultCount = document.getElementById("result-count");
++const filterNotice = document.getElementById("filter-notice");
++
++// Maps a raw query value to a known genre name, ALL for an empty value or "all",
++// or null when the value matches no genre. Matching ignores case and surrounding spaces.
++function resolveGenre(raw) {
++  const wanted = (raw ?? "").trim().toLowerCase();
++  if (wanted === "" || wanted === ALL.toLowerCase()) {
++    return ALL;
++  }
++  return GENRES.find((genre) => genre.toLowerCase() === wanted) ?? null;
++}
++
++function writeGenreToUrl(genre) {
++  const url = new URL(location.href);
++  if (genre === ALL) {
++    url.searchParams.delete("genre");
++  } else {
++    url.searchParams.set("genre", genre);
++  }
++  history.pushState(null, "", url);
++}
++
++// Shows the given genre (ALL or a genre name) and clears any notice.
++function render(genre) {
++  for (const button of filterGroup.querySelectorAll("button")) {
++    button.setAttribute("aria-pressed", String(button.dataset.genre === genre));
++  }
++
++  const shown = BOOKS.filter((book) => genre === ALL || book.genre === genre);
++  bookList.replaceChildren(
++    ...shown.map((book) => {
++      const item = document.createElement("li");
++      item.append(createBookCard(book));
++      return item;
++    }),
++  );
++
++  resultCount.textContent = `Showing ${shown.length} of ${BOOKS.length} books`;
++  filterNotice.textContent = "";
++}
++
++// Shows the genre named in the URL. An unknown value falls back to ALL with a notice.
++function renderFromLocation() {
++  const genre = resolveGenre(new URLSearchParams(location.search).get("genre"));
++  render(genre ?? ALL);
++  if (genre === null) {
++    filterNotice.textContent = UNKNOWN_NOTICE;
++  }
++}
++
++for (const name of [ALL, ...GENRES]) {
++  const button = document.createElement("button");
++  button.type = "button";
++  button.className = "filter-button";
++  button.dataset.genre = name;
++  button.textContent = name;
++  button.addEventListener("click", () => {
++    writeGenreToUrl(name);
++    render(name);
++  });
++  filterGroup.append(button);
++}
++
++window.addEventListener("popstate", renderFromLocation);
++
++renderFromLocation();
+diff --git a/js/contact.js b/js/contact.js
+new file mode 100644
+index 0000000..9ea6b1f
+--- /dev/null
++++ b/js/contact.js
+@@ -0,0 +1,104 @@
++// Contact form on the visit page. Validation runs in JavaScript (the form uses novalidate),
++// and a valid submit never sends anything: it shows a demo confirmation instead.
++
++const form = document.getElementById("contact-form");
++const summary = document.getElementById("error-summary");
++const summaryList = document.getElementById("error-list");
++const confirmation = document.getElementById("form-confirmation");
++
++// Local part: dot-separated runs with no leading, trailing or doubled dots.
++// Domain: two or more labels of letters, digits and inner hyphens, so no label starts or ends with a hyphen.
++const EMAIL_PATTERN =
++  /^[^\s@.]+(?:\.[^\s@.]+)*@[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/i;
++
++const FIELDS = [
++  {
++    id: "name",
++    check: (value) => (value.trim() === "" ? "Please enter your name." : ""),
++  },
++  {
++    id: "email",
++    check: (value) => {
++      const text = value.trim();
++      if (text === "") {
++        return "Please enter your email address.";
++      }
++      return EMAIL_PATTERN.test(text)
++        ? ""
++        : "Please enter a valid email address, such as name@example.com.";
++    },
++  },
++  {
++    id: "message",
++    check: (value) => {
++      const text = value.trim();
++      if (text === "") {
++        return "Please write a message.";
++      }
++      return text.length < 10
++        ? "Your message needs at least 10 characters."
++        : "";
++    },
++  },
++];
++
++function showError(field, message) {
++  const input = document.getElementById(field.id);
++  const errorText = document.getElementById(`${field.id}-error`);
++  errorText.textContent = message;
++  errorText.hidden = message === "";
++  if (message === "") {
++    input.removeAttribute("aria-invalid");
++    input.removeAttribute("aria-describedby");
++  } else {
++    input.setAttribute("aria-invalid", "true");
++    input.setAttribute("aria-describedby", errorText.id);
++  }
++}
++
++// Rebuilds the summary from the fields currently marked invalid and returns how many there are.
++function refreshSummary() {
++  const invalid = FIELDS.filter(
++    (field) =>
++      document.getElementById(field.id).getAttribute("aria-invalid") === "true",
++  );
++  const items = invalid.map((field) => {
++    const item = document.createElement("li");
++    const link = document.createElement("a");
++    link.href = `#${field.id}`;
++    link.textContent = document.getElementById(`${field.id}-error`).textContent;
++    item.append(link);
++    return item;
++  });
++  summaryList.replaceChildren(...items);
++  summary.hidden = items.length === 0;
++  return items.length;
++}
++
++form.addEventListener("submit", (event) => {
++  event.preventDefault();
++  if (!confirmation.hidden) {
++    return;
++  }
++
++  for (const field of FIELDS) {
++    showError(field, field.check(document.getElementById(field.id).value));
++  }
++  if (refreshSummary() > 0) {
++    summary.focus();
++    return;
++  }
++
++  // Inert stops further clicks or keys reaching the form, so a double click cannot submit twice.
++  form.inert = true;
++  confirmation.hidden = false;
++  confirmation.focus();
++});
++
++form.addEventListener("input", (event) => {
++  const field = FIELDS.find((candidate) => candidate.id === event.target.id);
++  if (field && event.target.getAttribute("aria-invalid") === "true") {
++    showError(field, field.check(event.target.value));
++    refreshSummary();
++  }
++});
+diff --git a/js/event-item.js b/js/event-item.js
+new file mode 100644
+index 0000000..e09b14f
+--- /dev/null
++++ b/js/event-item.js
+@@ -0,0 +1,27 @@
++// Builds one event list item with the DOM API only.
++import { formatEventDate } from "./events-logic.js";
++
++export function createEventItem(event) {
++  const item = document.createElement("li");
++  item.className = "event";
++
++  const title = document.createElement("h3");
++  title.textContent = event.title;
++
++  const meta = document.createElement("p");
++  meta.className = "event-meta";
++  const time = document.createElement("time");
++  time.dateTime = `${event.date}T${event.time}`;
++  time.textContent = formatEventDate(event.date, event.time);
++  const admission = document.createElement("span");
++  admission.textContent = event.ticketed
++    ? `Ticketed, ${event.price}`
++    : "Free entry";
++  meta.append(time, " · ", admission);
++
++  const description = document.createElement("p");
++  description.textContent = event.description;
++
++  item.append(title, meta, description);
++  return item;
++}
+diff --git a/js/events-data.js b/js/events-data.js
+new file mode 100644
+index 0000000..c79398f
+--- /dev/null
++++ b/js/events-data.js
+@@ -0,0 +1,118 @@
++// The single events list, used by the events page and the home page teaser.
++// `date` is a local calendar day (YYYY-MM-DD) and `time` is 24-hour local time (HH:MM).
++
++export const EVENTS = [
++  {
++    id: "autumn-poetry-launch",
++    title: "Autumn Poetry Launch",
++    date: "2026-11-10",
++    time: "19:00",
++    description:
++      "Hannah Vell reads from Low Tide Sonnets, followed by questions and a glass of cider.",
++    ticketed: false,
++  },
++  {
++    id: "owls-story-time-november",
++    title: "Kids' Story Time: Owls and Lanterns",
++    date: "2026-11-14",
++    time: "10:30",
++    description:
++      "Picture books, a lantern craft and a short walk to see the church owls. Ages 3 to 7.",
++    ticketed: false,
++  },
++  {
++    id: "open-mic-poets",
++    title: "Open Mic for Local Poets",
++    date: "2026-11-17",
++    time: "18:30",
++    description:
++      "Five minutes each on the shop floor. Sign up at the till when you arrive.",
++    ticketed: false,
++  },
++  {
++    id: "book-club-glass-orchard",
++    title: "Book Club: The Glass Orchard",
++    date: "2026-11-26",
++    time: "19:00",
++    description:
++      "Our monthly book club discusses Eleanor Marsh’s novel. Copies are on the front table.",
++    ticketed: true,
++    price: "£6",
++  },
++  {
++    id: "reading-hannah-vell",
++    title: "Reading: An Evening of Coastal Sonnets",
++    date: "2026-12-03",
++    time: "19:00",
++    description:
++      "Hannah Vell returns with new poems written over the winter tide tables.",
++    ticketed: false,
++  },
++  {
++    id: "wrapping-workshop",
++    title: "Winter Gift Wrapping Workshop",
++    date: "2026-12-05",
++    time: "10:00",
++    description:
++      "Learn three folds for wrapping books, with paper and ribbon provided. Seats are limited.",
++    ticketed: true,
++    price: "£12",
++  },
++  {
++    id: "story-time-december",
++    title: "Kids' Story Time: Snow Gardens",
++    date: "2026-12-12",
++    time: "10:30",
++    description:
++      "Stories about winter gardens, then paper snowflakes at the reading table. Ages 3 to 7.",
++    ticketed: false,
++  },
++  {
++    id: "ferry-book-club",
++    title: "Winter Book Club: A Ferry Across the Dark",
++    date: "2026-12-17",
++    time: "19:00",
++    description:
++      "A discussion of Daniel Osei’s lake novel, with mulled apple juice for everyone.",
++    ticketed: true,
++    price: "£6",
++  },
++  {
++    id: "print-demonstration",
++    title: "Letterpress Print Demonstration",
++    date: "2026-12-19",
++    time: "14:00",
++    description:
++      "Liesel Brandt prints a card for each guest on the shop’s Albion press.",
++    ticketed: true,
++    price: "£10",
++  },
++  {
++    id: "canal-men-founders-night",
++    title: "Founders’ Night: The Canal Men",
++    date: "2027-01-14",
++    time: "18:00",
++    description:
++      "Robert Ashby talks about the lock keepers and bargemen behind his new history.",
++    ticketed: false,
++  },
++  {
++    id: "spring-story-time",
++    title: "Kids' Story Time: Spring Is Coming",
++    date: "2027-02-06",
++    time: "10:30",
++    description:
++      "Seed packets, rhyming stories and a short song about the first daffodils. Ages 3 to 7.",
++    ticketed: false,
++  },
++  {
++    id: "science-fiction-salon",
++    title: "Science Fiction Salon: Orbit Under Glass",
++    date: "2027-02-19",
++    time: "19:00",
++    description:
++      "Kenji Mori joins us to talk about station gardens, slow time and the ethics of hydroponics.",
++    ticketed: true,
++    price: "£7",
++  },
++];
+diff --git a/js/events-logic.js b/js/events-logic.js
+new file mode 100644
+index 0000000..b36e954
+--- /dev/null
++++ b/js/events-logic.js
+@@ -0,0 +1,55 @@
++// Pure date helpers for events. Everything works on local calendar days, so a
++// "YYYY-MM-DD" string is never parsed as UTC and an event today is still upcoming.
++
++const WEEKDAYS = [
++  "Sunday",
++  "Monday",
++  "Tuesday",
++  "Wednesday",
++  "Thursday",
++  "Friday",
++  "Saturday",
++];
++const MONTHS = [
++  "January",
++  "February",
++  "March",
++  "April",
++  "May",
++  "June",
++  "July",
++  "August",
++  "September",
++  "October",
++  "November",
++  "December",
++];
++
++// Returns the user's local calendar day for a Date as YYYY-MM-DD.
++function localDayKey(now) {
++  const month = String(now.getMonth() + 1).padStart(2, "0");
++  const day = String(now.getDate()).padStart(2, "0");
++  return `${now.getFullYear()}-${month}-${day}`;
++}
++
++// Splits events into upcoming (today or later) and past, each sorted by date and time.
++export function splitEvents(events, now) {
++  const today = localDayKey(now);
++  const sorted = [...events].sort((a, b) =>
++    `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`),
++  );
++  return {
++    upcoming: sorted.filter((event) => event.date >= today),
++    past: sorted.filter((event) => event.date < today),
++  };
++}
++
++// Formats for people, e.g. "Thursday, 3 December 2026, 7:00 pm".
++export function formatEventDate(date, time) {
++  const [year, month, day] = date.split("-").map(Number);
++  const [hour, minute] = time.split(":").map(Number);
++  const weekday = WEEKDAYS[new Date(year, month - 1, day).getDay()];
++  const hour12 = hour % 12 || 12;
++  const period = hour < 12 ? "am" : "pm";
++  return `${weekday}, ${day} ${MONTHS[month - 1]} ${year}, ${hour12}:${String(minute).padStart(2, "0")} ${period}`;
++}
+diff --git a/js/events.js b/js/events.js
+new file mode 100644
+index 0000000..ed9cae7
+--- /dev/null
++++ b/js/events.js
+@@ -0,0 +1,18 @@
++// Events page: upcoming events first, past events in their own labelled section.
++import { EVENTS } from "./events-data.js";
++import { splitEvents } from "./events-logic.js";
++import { createEventItem } from "./event-item.js";
++
++const { upcoming, past } = splitEvents(EVENTS, new Date());
++
++const upcomingList = document.getElementById("upcoming-list");
++const noUpcoming = document.getElementById("no-upcoming");
++upcomingList.replaceChildren(...upcoming.map(createEventItem));
++upcomingList.hidden = upcoming.length === 0;
++noUpcoming.hidden = upcoming.length > 0;
++
++const pastSection = document.getElementById("past-events");
++document
++  .getElementById("past-list")
++  .replaceChildren(...past.map(createEventItem));
++pastSection.hidden = past.length === 0;
+diff --git a/js/home.js b/js/home.js
+new file mode 100644
+index 0000000..3ac8f10
+--- /dev/null
++++ b/js/home.js
+@@ -0,0 +1,31 @@
++// Home page: featured books and the next few events, from the same data as the other pages.
++import { BOOKS } from "./books-data.js";
++import { createBookCard } from "./book-card.js";
++import { EVENTS } from "./events-data.js";
++import { splitEvents } from "./events-logic.js";
++import { createEventItem } from "./event-item.js";
++
++const FEATURED_IDS = [
++  "low-tide-sonnets",
++  "glass-orchard",
++  "tidepool-field-guide",
++  "canal-men",
++];
++const TEASER_LENGTH = 3;
++
++const featuredList = document.getElementById("featured-books");
++featuredList.replaceChildren(
++  ...BOOKS.filter((book) => FEATURED_IDS.includes(book.id)).map((book) => {
++    const item = document.createElement("li");
++    item.append(createBookCard(book));
++    return item;
++  }),
++);
++
++const { upcoming } = splitEvents(EVENTS, new Date());
++const teaserList = document.getElementById("event-teaser");
++teaserList.replaceChildren(
++  ...upcoming.slice(0, TEASER_LENGTH).map(createEventItem),
++);
++teaserList.hidden = upcoming.length === 0;
++document.getElementById("teaser-empty").hidden = upcoming.length > 0;
+diff --git a/js/nav.js b/js/nav.js
+new file mode 100644
+index 0000000..4ba5355
+--- /dev/null
++++ b/js/nav.js
+@@ -0,0 +1,33 @@
++// Shared navigation: the menu toggle opens and closes the nav on narrow screens.
++// The breakpoint matches the min-width query in styles.css where the nav becomes inline.
++const toggle = document.querySelector(".nav-toggle");
++const nav = document.getElementById("site-nav");
++const desktop = window.matchMedia("(min-width: 760px)");
++
++function setOpen(open) {
++  toggle.setAttribute("aria-expanded", String(open));
++  nav.classList.toggle("is-open", open);
++}
++
++toggle.addEventListener("click", () => {
++  setOpen(toggle.getAttribute("aria-expanded") !== "true");
++});
++
++// Moving to the inline layout closes the menu, so a hidden toggle never stays expanded.
++desktop.addEventListener("change", (event) => {
++  if (event.matches) {
++    setOpen(false);
++  }
++});
++
++// Escape only acts while the toggle is visible.
++document.addEventListener("keydown", (event) => {
++  if (
++    event.key === "Escape" &&
++    !desktop.matches &&
++    toggle.getAttribute("aria-expanded") === "true"
++  ) {
++    setOpen(false);
++    toggle.focus();
++  }
++});
+diff --git a/package.json b/package.json
+new file mode 100644
+index 0000000..4641366
+--- /dev/null
++++ b/package.json
+@@ -0,0 +1,11 @@
++{
++  "name": "marginalia-books",
++  "version": "1.0.0",
++  "private": true,
++  "description": "Static website for Marginalia Books, a fictional independent bookshop",
++  "scripts": {
++    "test": "node --test tests/*.test.mjs",
++    "format:check": "prettier --check \"**/*.{html,css,js,mjs}\""
++  },
++  "license": "UNLICENSED"
++}
+diff --git a/tests/books.test.mjs b/tests/books.test.mjs
+new file mode 100644
+index 0000000..c8735fb
+--- /dev/null
++++ b/tests/books.test.mjs
+@@ -0,0 +1,404 @@
++// Books page: genre filter by click and by URL, hostile query values, URL state and live count.
++import { test, before, after } from "node:test";
++import assert from "node:assert/strict";
++import { startServer, launchBrowser, openTracked } from "./helpers.mjs";
++
++let server;
++let browser;
++
++before(async () => {
++  server = await startServer();
++  browser = await launchBrowser();
++});
++
++after(async () => {
++  await browser?.close();
++  await server?.close();
++});
++
++const countText = (page) => page.locator("#result-count").textContent();
++
++async function pressedGenres(page) {
++  return page.$$eval('#genre-filters button[aria-pressed="true"]', (buttons) =>
++    buttons.map((button) => button.textContent.replace("✓", "").trim()),
++  );
++}
++
++async function shownTitles(page) {
++  return page.$$eval("#book-list h3", (headings) =>
++    headings.map((h) => h.textContent),
++  );
++}
++
++test("the catalogue has at least 12 books across at least 5 genres, with hidden covers", async () => {
++  const { context, page, problems } = await openTracked(
++    browser,
++    server.origin,
++    "books.html",
++  );
++  const facts = await page.evaluate(() => {
++    const cards = [...document.querySelectorAll("#book-list article")];
++    const genres = new Map();
++    for (const card of cards) {
++      const genre = card.querySelector(".genre-tag").textContent;
++      genres.set(genre, (genres.get(genre) ?? 0) + 1);
++    }
++    return {
++      books: cards.length,
++      genreCounts: Object.fromEntries(genres),
++      coversHidden: cards.every(
++        (card) =>
++          card.querySelector(".cover").getAttribute("aria-hidden") === "true" &&
++          card.querySelector(".cover svg").getAttribute("aria-hidden") ===
++            "true",
++      ),
++      allHaveFields: cards.every((card) =>
++        ["h3", ".book-author", ".book-desc", ".price"].every((sel) =>
++          card.querySelector(sel),
++        ),
++      ),
++    };
++  });
++  assert.ok(facts.books >= 12, `books: ${facts.books}`);
++  assert.ok(
++    Object.keys(facts.genreCounts).length >= 5,
++    JSON.stringify(facts.genreCounts),
++  );
++  assert.ok(Object.values(facts.genreCounts).every((count) => count >= 2));
++  assert.equal(facts.coversHidden, true);
++  assert.equal(facts.allHaveFields, true);
++  assert.deepEqual(problems, []);
++  await context.close();
++});
++
++test("clicking a genre filters the list, updates the count, aria-pressed and the URL", async () => {
++  const { context, page, problems } = await openTracked(
++    browser,
++    server.origin,
++    "books.html",
++  );
++  assert.equal(await countText(page), "Showing 14 of 14 books");
++  await page.getByRole("button", { name: "Poetry", exact: true }).click();
++  assert.equal(await countText(page), "Showing 3 of 14 books");
++  assert.deepEqual(await pressedGenres(page), ["Poetry"]);
++  assert.deepEqual(await shownTitles(page), [
++    "Low Tide Sonnets",
++    "The Orchard Keeps Its Own Hours",
++    "Field Notes for a Wet Spring",
++  ]);
++  assert.equal(new URL(page.url()).searchParams.get("genre"), "Poetry");
++
++  await page.getByRole("button", { name: "All", exact: true }).click();
++  assert.equal(await countText(page), "Showing 14 of 14 books");
++  assert.equal(new URL(page.url()).searchParams.has("genre"), false);
++  assert.deepEqual(problems, []);
++  await context.close();
++});
++
++test("the active filter is announced through a polite live region", async () => {
++  const { context, page } = await openTracked(
++    browser,
++    server.origin,
++    "books.html",
++  );
++  assert.equal(
++    await page.locator("#status").getAttribute("aria-live"),
++    "polite",
++  );
++  await page.getByRole("button", { name: "History", exact: true }).click();
++  assert.equal(
++    await page.locator("#status #result-count").textContent(),
++    "Showing 2 of 14 books",
++  );
++  await context.close();
++});
++
++test("filter buttons are keyboard operable", async () => {
++  const { context, page } = await openTracked(
++    browser,
++    server.origin,
++    "books.html",
++  );
++  await page.getByRole("button", { name: "Nature", exact: true }).focus();
++  await page.keyboard.press("Enter");
++  assert.equal(await countText(page), "Showing 2 of 14 books");
++  assert.deepEqual(await pressedGenres(page), ["Nature"]);
++  await context.close();
++});
++
++test("a genre in the URL shows the filtered list with its control pressed", async () => {
++  const { context, page, problems } = await openTracked(
++    browser,
++    server.origin,
++    "books.html?genre=Poetry",
++  );
++  assert.equal(await countText(page), "Showing 3 of 14 books");
++  assert.deepEqual(await pressedGenres(page), ["Poetry"]);
++  assert.deepEqual(problems, []);
++  await context.close();
++});
++
++test("genre names with spaces and ampersands round-trip through the URL", async () => {
++  const { context, page, problems } = await openTracked(
++    browser,
++    server.origin,
++    "books.html?genre=Art%20%26%20Design",
++  );
++  assert.equal(await countText(page), "Showing 2 of 14 books");
++  assert.deepEqual(await pressedGenres(page), ["Art & Design"]);
++
++  await page
++    .getByRole("button", { name: "Science Fiction", exact: true })
++    .click();
++  assert.equal(
++    new URL(page.url()).searchParams.get("genre"),
++    "Science Fiction",
++  );
++  await page.goto(page.url());
++  assert.equal(await countText(page), "Showing 2 of 14 books");
++  assert.deepEqual(await pressedGenres(page), ["Science Fiction"]);
++  assert.deepEqual(problems, []);
++  await context.close();
++});
++
++test("genre matching ignores case", async () => {
++  const { context, page } = await openTracked(
++    browser,
++    server.origin,
++    "books.html?genre=poetry",
++  );
++  assert.equal(await countText(page), "Showing 3 of 14 books");
++  assert.deepEqual(await pressedGenres(page), ["Poetry"]);
++  await context.close();
++});
++
++const HOSTILE = [
++  ["unknown genre", "books.html?genre=Unknown"],
++  ["empty genre", "books.html?genre="],
++  ["blank genre", "books.html?genre=%20%20"],
++  ["script tag", "books.html?genre=%3Cscript%3Ealert(1)%3C%2Fscript%3E"],
++  [
++    "markup in genre",
++    "books.html?genre=%3Cimg%20src%3Dx%20onerror%3Dalert(1)%3E",
++  ],
++];
++
++for (const [label, path] of HOSTILE) {
++  test(`hostile genre value (${label}) shows every book without errors or injected markup`, async () => {
++    const { context, page, problems } = await openTracked(
++      browser,
++      server.origin,
++      path,
++    );
++    assert.equal(await countText(page), "Showing 14 of 14 books");
++    assert.deepEqual(await pressedGenres(page), ["All"]);
++    assert.equal(
++      await page.locator("#book-list script, #book-list img").count(),
++      0,
++    );
++    assert.deepEqual(problems, []);
++    await context.close();
++  });
++}
++
++test("an unknown genre shows a clear notice that does not echo the input", async () => {
++  const { context, page } = await openTracked(
++    browser,
++    server.origin,
++    "books.html?genre=%3Cb%3EUnknown%3C%2Fb%3E",
++  );
++  assert.equal(
++    await page.locator("#filter-notice").textContent(),
++    "We do not stock that genre, so every book is shown.",
++  );
++  assert.equal(await page.locator("#status b").count(), 0);
++  await context.close();
++});
++
++test("back and forward restore the filter from the history", async () => {
++  const { context, page } = await openTracked(
++    browser,
++    server.origin,
++    "books.html",
++  );
++  await page.getByRole("button", { name: "Fiction", exact: true }).click();
++  await page.getByRole("button", { name: "Art & Design", exact: true }).click();
++  assert.equal(await countText(page), "Showing 2 of 14 books");
++
++  await page.goBack();
++  assert.equal(await countText(page), "Showing 3 of 14 books");
++  assert.deepEqual(await pressedGenres(page), ["Fiction"]);
++
++  await page.goBack();
++  assert.equal(await countText(page), "Showing 14 of 14 books");
++  await page.goForward();
++  assert.deepEqual(await pressedGenres(page), ["Fiction"]);
++  await context.close();
++});
++
++for (const path of [
++  "books.html?genre=All",
++  "books.html?genre=all",
++  "books.html?genre=%20ALL%20",
++]) {
++  test(`${path} means All, with every book and no notice`, async () => {
++    const { context, page, problems } = await openTracked(
++      browser,
++      server.origin,
++      path,
++    );
++    assert.equal(await countText(page), "Showing 14 of 14 books");
++    assert.deepEqual(await pressedGenres(page), ["All"]);
++    assert.equal(await page.locator("#filter-notice").textContent(), "");
++    assert.deepEqual(problems, []);
++    await context.close();
++  });
++}
++
++// Relative luminance and WCAG contrast ratio for the rgb(r, g, b) strings from getComputedStyle.
++function contrast(first, second) {
++  const luminance = (rgb) => {
++    const [r, g, b] = rgb
++      .match(/\d+/g)
++      .slice(0, 3)
++      .map((value) => {
++        const channel = Number(value) / 255;
++        return channel <= 0.03928
++          ? channel / 12.92
++          : ((channel + 0.055) / 1.055) ** 2.4;
++      });
++    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
++  };
++  const [lighter, darker] = [luminance(first), luminance(second)].sort(
++    (a, b) => b - a,
++  );
++  return (lighter + 0.05) / (darker + 0.05);
++}
++
++for (const scheme of ["light", "dark"]) {
++  test(`unpressed filter buttons have a 3:1 border contrast in ${scheme} mode`, async () => {
++    const { context, page } = await openTracked(
++      browser,
++      server.origin,
++      "books.html",
++    );
++    // Reduced motion stops the colour transition, so the computed colours are final.
++    await page.emulateMedia({ colorScheme: scheme, reducedMotion: "reduce" });
++    const colours = await page.$eval(
++      '#genre-filters button[aria-pressed="false"]',
++      (button) => {
++        const style = getComputedStyle(button);
++        return {
++          border: style.borderTopColor,
++          background: style.backgroundColor,
++        };
++      },
++    );
++    assert.ok(
++      contrast(colours.border, colours.background) >= 3,
++      `${scheme}: ${JSON.stringify(colours)}`,
++    );
++    await context.close();
++  });
++}
++
++test("on a 360px screen a book card is a short horizontal row with a small cover", async () => {
++  const { context, page, problems } = await openTracked(
++    browser,
++    server.origin,
++    "books.html",
++    { width: 360, height: 740 },
++  );
++  const cover = await page.locator("#book-list .cover").first().boundingBox();
++  assert.ok(cover.width <= 100, `cover is ${cover.width}px wide`);
++  assert.ok(cover.height <= 140, `cover is ${cover.height}px tall`);
++  assert.deepEqual(problems, []);
++  await context.close();
++});
++
++test("at 1280px book covers keep their full-size portrait layout", async () => {
++  const { context, page } = await openTracked(
++    browser,
++    server.origin,
++    "books.html",
++    { width: 1280 },
++  );
++  const cover = await page.locator("#book-list .cover").first().boundingBox();
++  assert.ok(cover.width >= 200, `cover is ${cover.width}px wide`);
++  assert.ok(cover.height > cover.width, "cover is portrait");
++  await context.close();
++});
++
++// A word counts as split when its rendered text spans more than one line box (more than one client rect).
++for (const [width, textPercent] of [
++  [320, 200],
++  [320, 100],
++  [360, 200],
++  [360, 100],
++]) {
++  test(`at ${width}px with ${textPercent}% text no book title or genre tag splits a word`, async () => {
++    const { context, page, problems } = await openTracked(
++      browser,
++      server.origin,
++      "books.html",
++      { width, height: 740 },
++    );
++    if (textPercent !== 100) {
++      await page.addStyleTag({
++        content: `html { font-size: ${textPercent}%; }`,
++      });
++    }
++    const split = await page.$$eval(
++      ".book h3, .book .genre-tag",
++      (elements) => {
++        const broken = [];
++        for (const element of elements) {
++          const walker = document.createTreeWalker(
++            element,
++            NodeFilter.SHOW_TEXT,
++          );
++          for (let node = walker.nextNode(); node; node = walker.nextNode()) {
++            for (const match of node.textContent.matchAll(/\S+/g)) {
++              const range = document.createRange();
++              range.setStart(node, match.index);
++              range.setEnd(node, match.index + match[0].length);
++              if (range.getClientRects().length !== 1) {
++                broken.push(match[0]);
++              }
++            }
++          }
++        }
++        return broken;
++      },
++    );
++    const overflow = await page.evaluate(() => ({
++      scrollWidth: document.documentElement.scrollWidth,
++      innerWidth: window.innerWidth,
++    }));
++    assert.deepEqual(split, []);
++    assert.ok(
++      overflow.scrollWidth <= overflow.innerWidth,
++      JSON.stringify(overflow),
++    );
++    assert.deepEqual(problems, []);
++    await context.close();
++  });
++}
++
++test("at 360px with 100% text the cover still sits beside the book text", async () => {
++  const { context, page } = await openTracked(
++    browser,
++    server.origin,
++    "books.html",
++    { width: 360, height: 740 },
++  );
++  const boxes = await page.evaluate(() => {
++    const card = document.querySelector("#book-list .book");
++    const rect = (selector) =>
++      card.querySelector(selector).getBoundingClientRect();
++    return { cover: rect(".cover"), info: rect(".book-info") };
++  });
++  assert.ok(boxes.info.left >= boxes.cover.right, JSON.stringify(boxes));
++  assert.ok(boxes.info.top < boxes.cover.bottom, JSON.stringify(boxes));
++  await context.close();
++});
+diff --git a/tests/contact.test.mjs b/tests/contact.test.mjs
+new file mode 100644
+index 0000000..f5f8d89
+--- /dev/null
++++ b/tests/contact.test.mjs
+@@ -0,0 +1,292 @@
++// Visit page contact form: validation errors, error wiring, demo confirmation, and hostile input.
++import { test, before, after } from "node:test";
++import assert from "node:assert/strict";
++import { startServer, launchBrowser, openTracked } from "./helpers.mjs";
++
++let server;
++let browser;
++
++before(async () => {
++  server = await startServer();
++  browser = await launchBrowser();
++});
++
++after(async () => {
++  await browser?.close();
++  await server?.close();
++});
++
++const FIELD_ERRORS = {
++  name: "Please enter your name.",
++  email: "Please enter your email address.",
++  message: "Please write a message.",
++};
++
++async function fieldState(page, id) {
++  return page.evaluate((fieldId) => {
++    const input = document.getElementById(fieldId);
++    const error = document.getElementById(`${fieldId}-error`);
++    return {
++      invalid: input.getAttribute("aria-invalid"),
++      describedBy: input.getAttribute("aria-describedby"),
++      errorText: error.hidden ? "" : error.textContent,
++    };
++  }, id);
++}
++
++async function fill(page, values) {
++  for (const [id, value] of Object.entries(values)) {
++    await page.locator(`#${id}`).fill(value);
++  }
++}
++
++test("submitting an empty form marks every required field and focuses the error summary", async () => {
++  const { context, page, problems } = await openTracked(
++    browser,
++    server.origin,
++    "visit.html",
++  );
++  const start = page.url();
++  await page.getByRole("button", { name: "Send message" }).click();
++
++  for (const [id, text] of Object.entries(FIELD_ERRORS)) {
++    const state = await fieldState(page, id);
++    assert.equal(state.invalid, "true", id);
++    assert.equal(state.describedBy, `${id}-error`, id);
++    assert.equal(state.errorText, text, id);
++  }
++  assert.equal(
++    await page.evaluate(() => document.activeElement.id),
++    "error-summary",
++  );
++  assert.equal(await page.locator("#error-summary a").count(), 3);
++  assert.equal(page.url(), start);
++  assert.deepEqual(problems, []);
++  await context.close();
++});
++
++test("whitespace-only name and message count as empty", async () => {
++  const { context, page } = await openTracked(
++    browser,
++    server.origin,
++    "visit.html",
++  );
++  await fill(page, {
++    name: "   ",
++    email: "reader@example.com",
++    message: "          ",
++  });
++  await page.getByRole("button", { name: "Send message" }).click();
++  assert.equal((await fieldState(page, "name")).errorText, FIELD_ERRORS.name);
++  assert.equal(
++    (await fieldState(page, "message")).errorText,
++    FIELD_ERRORS.message,
++  );
++  assert.equal((await fieldState(page, "email")).invalid, null);
++  await context.close();
++});
++
++test("addresses with dots, hyphens, quotes, plus signs and punycode domains are accepted", async () => {
++  const addresses = [
++    "a.b-c@sub.example.co.uk",
++    "o'neil@example.ie",
++    "user@xn--bcher-kva.example",
++    "jo+x@ex.co",
++    "jo.smith+books@mail.example.co.uk",
++  ];
++  for (const email of addresses) {
++    const { context, page } = await openTracked(
++      browser,
++      server.origin,
++      "visit.html",
++    );
++    await fill(page, {
++      name: "Ada",
++      email,
++      message: "Do you stock poetry chapbooks?",
++    });
++    await page.getByRole("button", { name: "Send message" }).click();
++    assert.equal((await fieldState(page, "email")).invalid, null, email);
++    await context.close();
++  }
++});
++
++for (const [label, email] of [
++  ["no dot in the domain", "a@b"],
++  ["no domain", "foo@"],
++  ["no local part", "@b.com"],
++  ["no @ sign", "foo.example.com"],
++  ["a space inside", "a b@example.com"],
++  ["consecutive dots in the domain", "a@b..com"],
++  ["a leading dot in the domain", "a@.b.com"],
++  ["a trailing dot in the domain", "a@b.com."],
++  ["a leading dot in the local part", ".a@b.com"],
++  ["consecutive dots in the local part", "a..b@c.com"],
++  ["a trailing dot in the local part", "a.@b.com"],
++  ["a leading hyphen in the domain", "a@-b.com"],
++  ["a trailing hyphen in the domain", "a@b-.com"],
++  ["an underscore in the domain", "a@b_c.com"],
++]) {
++  test(`an invalid email (${label}) is rejected with a specific message`, async () => {
++    const { context, page } = await openTracked(
++      browser,
++      server.origin,
++      "visit.html",
++    );
++    await fill(page, {
++      name: "Ada",
++      email,
++      message: "Do you stock poetry chapbooks?",
++    });
++    await page.getByRole("button", { name: "Send message" }).click();
++    const state = await fieldState(page, "email");
++    assert.equal(state.invalid, "true");
++    assert.equal(
++      state.errorText,
++      "Please enter a valid email address, such as name@example.com.",
++    );
++    assert.equal(await page.locator("#form-confirmation").isVisible(), false);
++    await context.close();
++  });
++}
++
++test("a message under 10 characters is rejected", async () => {
++  const { context, page } = await openTracked(
++    browser,
++    server.origin,
++    "visit.html",
++  );
++  await fill(page, {
++    name: "Ada",
++    email: "ada@example.com",
++    message: "Hi there",
++  });
++  await page.getByRole("button", { name: "Send message" }).click();
++  assert.equal(
++    (await fieldState(page, "message")).errorText,
++    "Your message needs at least 10 characters.",
++  );
++  await context.close();
++});
++
++test("fixing a field clears its error, aria-invalid and aria-describedby", async () => {
++  const { context, page } = await openTracked(
++    browser,
++    server.origin,
++    "visit.html",
++  );
++  await page.getByRole("button", { name: "Send message" }).click();
++  await page.locator("#name").fill("Ada Lovelace");
++  const name = await fieldState(page, "name");
++  assert.equal(name.invalid, null);
++  assert.equal(name.describedBy, null);
++  assert.equal(name.errorText, "");
++  assert.equal(await page.locator("#error-summary a").count(), 2);
++  await context.close();
++});
++
++test("a normal address with plus, dots and a multi-part domain is accepted", async () => {
++  const { context, page } = await openTracked(
++    browser,
++    server.origin,
++    "visit.html",
++  );
++  await fill(page, {
++    name: "Jo Smith",
++    email: "jo.smith+books@mail.example.co.uk",
++    message: "Do you stock poetry chapbooks?",
++  });
++  await page.getByRole("button", { name: "Send message" }).click();
++  const state = await fieldState(page, "email");
++  assert.equal(state.invalid, null);
++  assert.equal(await page.locator("#form-confirmation").isVisible(), true);
++  await context.close();
++});
++
++test("a valid submit shows the demo confirmation, does not navigate or send anything", async () => {
++  const { context, page, problems } = await openTracked(
++    browser,
++    server.origin,
++    "visit.html",
++  );
++  const requests = [];
++  page.on("request", (request) => {
++    if (request.method() !== "GET") {
++      requests.push(request.url());
++    }
++  });
++  const start = page.url();
++  await fill(page, {
++    name: "Ada Lovelace",
++    email: "ada@example.com",
++    message: "Do you have any Poetry chapbooks in stock this month?",
++  });
++  await page.locator("#topic").selectOption("events");
++  await page.getByRole("button", { name: "Send message" }).click();
++
++  const confirmation = page.locator("#form-confirmation");
++  assert.equal(await confirmation.isVisible(), true);
++  assert.match(
++    await confirmation.textContent(),
++    /This is a demo site, so nothing was sent/,
++  );
++  assert.match(await confirmation.textContent(), /hello@marginalia\.example/);
++  assert.equal(
++    await page.evaluate(() => document.activeElement.id),
++    "form-confirmation",
++  );
++  assert.equal(
++    await page.locator("#contact-form").evaluate((form) => form.inert),
++    true,
++  );
++  assert.equal(page.url(), start);
++  assert.deepEqual(requests, []);
++  assert.deepEqual(problems, []);
++  await context.close();
++});
++
++test("a double click on submit produces a single confirmation", async () => {
++  const { context, page } = await openTracked(
++    browser,
++    server.origin,
++    "visit.html",
++  );
++  await fill(page, {
++    name: "Ada",
++    email: "ada@example.com",
++    message: "A question about events",
++  });
++  await page.getByRole("button", { name: "Send message" }).dblclick();
++  assert.equal(await page.locator("#form-confirmation").count(), 1);
++  assert.equal(await page.locator("#form-confirmation").isVisible(), true);
++  await context.close();
++});
++
++test("a very long message (5000+ characters) is accepted and does not break the layout", async () => {
++  const { context, page, problems } = await openTracked(
++    browser,
++    server.origin,
++    "visit.html",
++    {
++      width: 360,
++      height: 740,
++    },
++  );
++  const long = "unbreakablewordrunningonforeverwithoutanyspacesatall".repeat(
++    100,
++  );
++  assert.ok(long.length >= 5000);
++  await fill(page, { name: "Ada", email: "ada@example.com", message: long });
++  await page.getByRole("button", { name: "Send message" }).click();
++  assert.equal(await page.locator("#form-confirmation").isVisible(), true);
++  const overflow = await page.evaluate(() => ({
++    scrollWidth: document.documentElement.scrollWidth,
++    innerWidth: window.innerWidth,
++  }));
++  assert.ok(
++    overflow.scrollWidth <= overflow.innerWidth,
++    JSON.stringify(overflow),
++  );
++  assert.deepEqual(problems, []);
++  await context.close();
++});
+diff --git a/tests/events.test.mjs b/tests/events.test.mjs
+new file mode 100644
+index 0000000..2be2456
+--- /dev/null
++++ b/tests/events.test.mjs
+@@ -0,0 +1,171 @@
++// Events: the upcoming/past split uses the local day, dates are human-readable, and the home teaser agrees.
++import { test, before, after } from "node:test";
++import assert from "node:assert/strict";
++import { startServer, launchBrowser, openTracked } from "./helpers.mjs";
++
++let server;
++let browser;
++
++before(async () => {
++  server = await startServer();
++  browser = await launchBrowser();
++});
++
++after(async () => {
++  await browser?.close();
++  await server?.close();
++});
++
++const titlesIn = (page, selector) =>
++  page.$$eval(`${selector} .event h3`, (headings) =>
++    headings.map((h) => h.textContent),
++  );
++
++test("on 17 November 2026 an event today is upcoming and earlier events are in the past section", async () => {
++  const { context, page, problems } = await openTracked(
++    browser,
++    server.origin,
++    "events.html",
++    {
++      now: new Date(2026, 10, 17, 10, 0),
++    },
++  );
++  const upcoming = await titlesIn(page, "#upcoming-list");
++  assert.equal(upcoming[0], "Open Mic for Local Poets");
++  assert.equal(upcoming.length, 10);
++  assert.equal(await page.locator("#past-events").isVisible(), true);
++  assert.equal(
++    await page.locator("#past-events h2").textContent(),
++    "Past events",
++  );
++  assert.deepEqual(await titlesIn(page, "#past-list"), [
++    "Autumn Poetry Launch",
++    "Kids' Story Time: Owls and Lanterns",
++  ]);
++  assert.deepEqual(problems, []);
++  await context.close();
++});
++
++test("an event is upcoming on its own day at 00:00 local time", async () => {
++  const { context, page } = await openTracked(
++    browser,
++    server.origin,
++    "events.html",
++    {
++      now: new Date(2026, 10, 17, 0, 0),
++    },
++  );
++  assert.equal(
++    (await titlesIn(page, "#upcoming-list"))[0],
++    "Open Mic for Local Poets",
++  );
++  await context.close();
++});
++
++test("the same event moves to the past the day after", async () => {
++  const { context, page } = await openTracked(
++    browser,
++    server.origin,
++    "events.html",
++    {
++      now: new Date(2026, 10, 18, 9, 0),
++    },
++  );
++  assert.equal(
++    (await titlesIn(page, "#upcoming-list"))[0],
++    "Book Club: The Glass Orchard",
++  );
++  assert.ok(
++    (await titlesIn(page, "#past-list")).includes("Open Mic for Local Poets"),
++  );
++  await context.close();
++});
++
++test("upcoming events are sorted by date with machine-readable time elements", async () => {
++  const { context, page } = await openTracked(
++    browser,
++    server.origin,
++    "events.html",
++  );
++  const times = await page.$$eval("#upcoming-list time", (elements) =>
++    elements.map((time) => time.getAttribute("datetime")),
++  );
++  assert.equal(times.length, 10);
++  assert.deepEqual([...times].sort(), times);
++  assert.equal(times[0], "2026-11-17T18:30");
++  await context.close();
++});
++
++test("dates are formatted for people, and each event says whether it is free or ticketed", async () => {
++  const { context, page } = await openTracked(
++    browser,
++    server.origin,
++    "events.html",
++  );
++  const bookClub = page.locator(".event", {
++    hasText: "Book Club: The Glass Orchard",
++  });
++  assert.equal(
++    await bookClub.locator("time").textContent(),
++    "Thursday, 26 November 2026, 7:00 pm",
++  );
++  assert.match(await bookClub.textContent(), /Ticketed, £6/);
++  const openMic = page.locator(".event", {
++    hasText: "Open Mic for Local Poets",
++  });
++  assert.match(await openMic.textContent(), /Free entry/);
++  assert.equal(
++    await openMic.locator("time").textContent(),
++    "Tuesday, 17 November 2026, 6:30 pm",
++  );
++  await context.close();
++});
++
++test("with no upcoming events a friendly empty state replaces the list", async () => {
++  const { context, page, problems } = await openTracked(
++    browser,
++    server.origin,
++    "events.html",
++    {
++      now: new Date(2027, 5, 1, 9, 0),
++    },
++  );
++  assert.equal(await page.locator("#upcoming-list").isVisible(), false);
++  assert.match(
++    await page.locator("#no-upcoming").textContent(),
++    /No events are scheduled just now/,
++  );
++  assert.equal(await page.locator("#past-events").isVisible(), true);
++  assert.deepEqual(problems, []);
++  await context.close();
++});
++
++test("the home page teaser shows the next three upcoming events from the same data", async () => {
++  const { context, page, problems } = await openTracked(
++    browser,
++    server.origin,
++    "index.html",
++  );
++  assert.deepEqual(await titlesIn(page, "#event-teaser"), [
++    "Open Mic for Local Poets",
++    "Book Club: The Glass Orchard",
++    "Reading: An Evening of Coastal Sonnets",
++  ]);
++  assert.equal(await page.locator("#teaser-empty").isVisible(), false);
++  assert.deepEqual(problems, []);
++  await context.close();
++});
++
++test("the home page teaser shows the friendly empty state when nothing is upcoming", async () => {
++  const { context, page } = await openTracked(
++    browser,
++    server.origin,
++    "index.html",
++    {
++      now: new Date(2027, 5, 1, 9, 0),
++    },
++  );
++  assert.equal(await page.locator("#event-teaser").isVisible(), false);
++  assert.equal(await page.locator("#teaser-empty").isVisible(), true);
++  await context.close();
++});
+diff --git a/tests/helpers.mjs b/tests/helpers.mjs
+new file mode 100644
+index 0000000..65d7a3c
+--- /dev/null
++++ b/tests/helpers.mjs
+@@ -0,0 +1,100 @@
++// Shared test helpers: an in-process static server for the repo root and a Playwright launcher.
++import { createServer } from "node:http";
++import { readFile } from "node:fs/promises";
++import { execSync } from "node:child_process";
++import { join, extname, resolve, sep } from "node:path";
++import { fileURLToPath, pathToFileURL } from "node:url";
++
++export const ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
++
++// Fixed "now" for every test: 17 November 2026, 10:00 local time (a Tuesday).
++export const NOW = new Date(2026, 10, 17, 10, 0);
++
++const TYPES = {
++  ".html": "text/html; charset=utf-8",
++  ".css": "text/css; charset=utf-8",
++  ".js": "text/javascript; charset=utf-8",
++  ".mjs": "text/javascript; charset=utf-8",
++  ".svg": "image/svg+xml",
++};
++
++export async function startServer() {
++  const server = createServer(async (req, res) => {
++    const url = new URL(req.url, "http://localhost");
++    let path = decodeURIComponent(url.pathname);
++    if (path.endsWith("/")) {
++      path += "index.html";
++    }
++    const file = resolve(ROOT, `.${path}`);
++    if (!file.startsWith(ROOT + sep)) {
++      res.writeHead(403).end();
++      return;
++    }
++    try {
++      const body = await readFile(file);
++      res.writeHead(200, {
++        "Content-Type": TYPES[extname(file)] ?? "application/octet-stream",
++      });
++      res.end(body);
++    } catch {
++      res.writeHead(404).end("Not found");
++    }
++  });
++  await new Promise((done) => server.listen(0, "127.0.0.1", done));
++  const { port } = server.address();
++  return {
++    origin: `http://127.0.0.1:${port}`,
++    close: () => new Promise((done) => server.close(done)),
++  };
++}
++
++async function loadPlaywright() {
++  try {
++    return await import("playwright");
++  } catch {
++    // ESM ignores NODE_PATH, so fall back to the globally installed copy.
++    const globalRoot = execSync("npm root -g").toString().trim();
++    return import(
++      pathToFileURL(join(globalRoot, "playwright", "index.mjs")).href
++    );
++  }
++}
++
++export async function launchBrowser() {
++  const { chromium } = await loadPlaywright();
++  return chromium.launch();
++}
++
++// Opens a page with a fixed clock and records console errors, uncaught exceptions,
++// dialogs and any request that leaves the local origin.
++export async function openTracked(
++  browser,
++  origin,
++  path,
++  { now = NOW, width = 1280, height = 900 } = {},
++) {
++  const context = await browser.newContext({ viewport: { width, height } });
++  const page = await context.newPage();
++  await page.clock.setFixedTime(now);
++  const problems = [];
++  page.on("console", (message) => {
++    if (message.type() === "error") {
++      problems.push(`console error: ${message.text()}`);
++    }
++  });
++  page.on("pageerror", (error) =>
++    problems.push(`uncaught exception: ${error.message}`),
++  );
++  page.on("dialog", (dialog) => {
++    problems.push(`dialog: ${dialog.message()}`);
++    dialog.dismiss();
++  });
++  page.on("request", (request) => {
++    const url = request.url();
++    if (!url.startsWith(`${origin}/`) && !url.startsWith("data:")) {
++      problems.push(`external request: ${url}`);
++    }
++  });
++  await page.goto(`${origin}/${path}`);
++  return { context, page, problems };
++}
+diff --git a/tests/pages.test.mjs b/tests/pages.test.mjs
+new file mode 100644
+index 0000000..3f83834
+--- /dev/null
++++ b/tests/pages.test.mjs
+@@ -0,0 +1,363 @@
++// Site-wide checks: structure, shared navigation, responsive layout, menu toggle, and network/console hygiene.
++import { test, before, after } from "node:test";
++import assert from "node:assert/strict";
++import { startServer, launchBrowser, openTracked } from "./helpers.mjs";
++
++const PAGES = [
++  {
++    path: "index.html",
++    current: "Home",
++    title: /Marginalia Books, an independent bookshop/,
++  },
++  { path: "books.html", current: "Books", title: /Browse books by genre/ },
++  { path: "events.html", current: "Events", title: /Readings, book club/ },
++  {
++    path: "visit.html",
++    current: "Visit",
++    title: /Visit, contact and opening hours/,
++  },
++];
++
++let server;
++let browser;
++
++before(async () => {
++  server = await startServer();
++  browser = await launchBrowser();
++});
++
++after(async () => {
++  await browser?.close();
++  await server?.close();
++});
++
++test("every page has the shared nav with aria-current on its own link only", async () => {
++  for (const { path, current } of PAGES) {
++    const { context, page, problems } = await openTracked(
++      browser,
++      server.origin,
++      path,
++    );
++    const links = await page.$$eval("#site-nav a", (anchors) =>
++      anchors.map((a) => ({
++        text: a.textContent,
++        current: a.getAttribute("aria-current"),
++      })),
++    );
++    assert.deepEqual(
++      links.map((link) => link.text),
++      ["Home", "Books", "Events", "Visit"],
++      path,
++    );
++    const marked = links
++      .filter((link) => link.current === "page")
++      .map((link) => link.text);
++    assert.deepEqual(marked, [current], `${path} aria-current`);
++    assert.deepEqual(problems, [], path);
++    await context.close();
++  }
++});
++
++test("every page has lang, a unique descriptive title, viewport, one h1 and named landmarks", async () => {
++  const titles = new Set();
++  for (const { path, title } of PAGES) {
++    const { context, page } = await openTracked(browser, server.origin, path);
++    const facts = await page.evaluate(() => ({
++      lang: document.documentElement.lang,
++      title: document.title,
++      viewport: document.querySelector('meta[name="viewport"]')?.content ?? "",
++      h1Count: document.querySelectorAll("h1").length,
++      headers: document.querySelectorAll("body > header").length,
++      mains: document.querySelectorAll("main").length,
++      footers: document.querySelectorAll("body > footer").length,
++      navLabel: document.querySelector("nav")?.getAttribute("aria-label"),
++      skipFirst: document
++        .querySelector("a, button, input, select, textarea")
++        ?.textContent.trim(),
++    }));
++    assert.equal(facts.lang, "en", path);
++    assert.match(facts.title, title, path);
++    assert.ok(!titles.has(facts.title), `duplicate title on ${path}`);
++    titles.add(facts.title);
++    assert.match(facts.viewport, /width=device-width/, path);
++    assert.equal(facts.h1Count, 1, path);
++    assert.equal(facts.headers, 1, path);
++    assert.equal(facts.mains, 1, path);
++    assert.equal(facts.footers, 1, path);
++    assert.equal(facts.navLabel, "Main", path);
++    assert.equal(facts.skipFirst, "Skip to content", path);
++    await context.close();
++  }
++});
++
++test("skip link is the first focusable element and moves focus past the header", async () => {
++  const { context, page } = await openTracked(
++    browser,
++    server.origin,
++    "books.html",
++  );
++  await page.keyboard.press("Tab");
++  const first = await page.evaluate(() =>
++    document.activeElement.textContent.trim(),
++  );
++  assert.equal(first, "Skip to content");
++  await page.keyboard.press("Enter");
++  assert.equal(await page.evaluate(() => location.hash), "#main");
++  await context.close();
++});
++
++test("focus is visibly styled on keyboard focus", async () => {
++  const { context, page } = await openTracked(
++    browser,
++    server.origin,
++    "index.html",
++    { width: 1280 },
++  );
++  await page.keyboard.press("Tab");
++  await page.keyboard.press("Tab");
++  const outline = await page.evaluate(() => {
++    const style = getComputedStyle(document.activeElement);
++    return { style: style.outlineStyle, width: style.outlineWidth };
++  });
++  assert.equal(outline.style, "solid");
++  assert.notEqual(outline.width, "0px");
++  await context.close();
++});
++
++for (const width of [360, 320]) {
++  test(`no page scrolls sideways at ${width}px`, async () => {
++    for (const { path } of PAGES) {
++      const { context, page, problems } = await openTracked(
++        browser,
++        server.origin,
++        path,
++        {
++          width,
++          height: 740,
++        },
++      );
++      const overflow = await page.evaluate(() => ({
++        scrollWidth: document.documentElement.scrollWidth,
++        innerWidth: window.innerWidth,
++      }));
++      assert.ok(
++        overflow.scrollWidth <= overflow.innerWidth,
++        `${path}: ${JSON.stringify(overflow)}`,
++      );
++      assert.deepEqual(problems, [], path);
++      await context.close();
++    }
++  });
++}
++
++test("at 360px the menu toggle opens and closes the nav, and Escape returns focus to it", async () => {
++  const { context, page } = await openTracked(
++    browser,
++    server.origin,
++    "events.html",
++    {
++      width: 360,
++      height: 740,
++    },
++  );
++  const toggle = page.locator(".nav-toggle");
++  const nav = page.locator("#site-nav");
++  assert.equal(await nav.isVisible(), false);
++  assert.equal(await toggle.getAttribute("aria-controls"), "site-nav");
++  assert.equal(await toggle.getAttribute("aria-expanded"), "false");
++
++  await toggle.focus();
++  await page.keyboard.press("Enter");
++  assert.equal(await toggle.getAttribute("aria-expanded"), "true");
++  assert.equal(await nav.isVisible(), true);
++  await page.getByRole("link", { name: "Visit" }).focus();
++  assert.equal(
++    await page.evaluate(() => document.activeElement.textContent),
++    "Visit",
++  );
++
++  await page.keyboard.press("Escape");
++  assert.equal(await toggle.getAttribute("aria-expanded"), "false");
++  assert.equal(await nav.isVisible(), false);
++  assert.equal(
++    await page.evaluate(() =>
++      document.activeElement.classList.contains("nav-toggle"),
++    ),
++    true,
++  );
++
++  await toggle.click();
++  assert.equal(await toggle.getAttribute("aria-expanded"), "true");
++  await toggle.click();
++  assert.equal(await toggle.getAttribute("aria-expanded"), "false");
++  await context.close();
++});
++
++test("at desktop width the nav is inline and the menu toggle is hidden", async () => {
++  const { context, page, problems } = await openTracked(
++    browser,
++    server.origin,
++    "visit.html",
++    {
++      width: 1280,
++    },
++  );
++  assert.equal(await page.locator("#site-nav").isVisible(), true);
++  assert.equal(await page.locator(".nav-toggle").isVisible(), false);
++  assert.deepEqual(problems, []);
++  await context.close();
++});
++
++test("touch targets for nav links are at least 44px tall at 360px", async () => {
++  const { context, page } = await openTracked(
++    browser,
++    server.origin,
++    "index.html",
++    {
++      width: 360,
++      height: 740,
++    },
++  );
++  await page.locator(".nav-toggle").click();
++  const heights = await page.$$eval("#site-nav a", (anchors) =>
++    anchors.map((a) => a.getBoundingClientRect().height),
++  );
++  for (const height of heights) {
++    assert.ok(height >= 44, `nav link is ${height}px tall`);
++  }
++  await context.close();
++});
++
++test("pages make no external requests and log no console errors while in use", async () => {
++  for (const { path } of PAGES) {
++    const { context, page, problems } = await openTracked(
++      browser,
++      server.origin,
++      path,
++      {
++        width: 360,
++        height: 740,
++      },
++    );
++    await page.waitForLoadState("networkidle");
++    await page.locator(".nav-toggle").click();
++    await page.keyboard.press("Escape");
++    assert.deepEqual(problems, [], path);
++    await context.close();
++  }
++});
++
++async function assertNoSideScroll(page, label) {
++  const overflow = await page.evaluate(() => ({
++    scrollWidth: document.documentElement.scrollWidth,
++    innerWidth: window.innerWidth,
++  }));
++  assert.ok(
++    overflow.scrollWidth <= overflow.innerWidth,
++    `${label}: ${JSON.stringify(overflow)}`,
++  );
++}
++
++test("an 80-character URL in an event description wraps at 320px", async () => {
++  const { context, page, problems } = await openTracked(
++    browser,
++    server.origin,
++    "events.html",
++    { width: 320, height: 740 },
++  );
++  const longUrl = `https://marginalia.example/${"reading-list-".repeat(6)}`;
++  assert.ok(longUrl.length >= 80);
++  await page.evaluate((url) => {
++    document.querySelector(".event > p:last-child").textContent = url;
++  }, longUrl);
++  await assertNoSideScroll(page, "events.html with long URL");
++  assert.deepEqual(problems, []);
++  await context.close();
++});
++
++test("a long email in an hours cell wraps at 320px", async () => {
++  const { context, page, problems } = await openTracked(
++    browser,
++    server.origin,
++    "visit.html",
++    { width: 320, height: 740 },
++  );
++  await page.evaluate(() => {
++    document.querySelector(".hours-table td").textContent =
++      "bookings.weekend.reservations@marginalia-books.example.co.uk";
++  });
++  await assertNoSideScroll(page, "visit.html with long email");
++  assert.deepEqual(problems, []);
++  await context.close();
++});
++
++test("at 200% text size no page scrolls sideways at 360px or 320px", async () => {
++  for (const width of [360, 320]) {
++    for (const { path } of PAGES) {
++      const { context, page, problems } = await openTracked(
++        browser,
++        server.origin,
++        path,
++        { width, height: 740 },
++      );
++      await page.addStyleTag({ content: "html { font-size: 200%; }" });
++      await assertNoSideScroll(page, `${path} at 200% and ${width}px`);
++      assert.deepEqual(problems, [], path);
++      await context.close();
++    }
++  }
++});
++
++test("closing the menu when the window grows to desktop width keeps Escape from touching the hidden toggle", async () => {
++  const { context, page } = await openTracked(
++    browser,
++    server.origin,
++    "visit.html",
++    { width: 360, height: 740 },
++  );
++  const toggle = page.locator(".nav-toggle");
++  await toggle.click();
++  assert.equal(await toggle.getAttribute("aria-expanded"), "true");
++  await page.getByRole("link", { name: "Visit" }).focus();
++
++  await page.setViewportSize({ width: 1280, height: 900 });
++  await page.waitForFunction(
++    () =>
++      document.querySelector(".nav-toggle").getAttribute("aria-expanded") ===
++      "false",
++  );
++  assert.equal(await page.locator("#site-nav").isVisible(), true);
++
++  await page.keyboard.press("Escape");
++  assert.equal(await toggle.getAttribute("aria-expanded"), "false");
++  assert.equal(
++    await page.evaluate(() => document.activeElement.textContent),
++    "Visit",
++  );
++  await context.close();
++});
++
++test("the home page leaves space above the browse and see-all links", async () => {
++  const { context, page, problems } = await openTracked(
++    browser,
++    server.origin,
++    "index.html",
++  );
++  const gap = (above, below) =>
++    page.evaluate(
++      ([upper, lower]) =>
++        document.querySelector(lower).getBoundingClientRect().top -
++        document.querySelector(upper).getBoundingClientRect().bottom,
++      [above, below],
++    );
++  assert.ok(
++    (await gap("#featured-books", "a[href='books.html'].button-link")) >= 16,
++    "browse all books",
++  );
++  assert.ok(
++    (await gap("#event-teaser", "#coming-up-heading ~ p a")) >= 16,
++    "see all events",
++  );
++  assert.deepEqual(problems, []);
++  await context.close();
++});
+diff --git a/visit.html b/visit.html
+new file mode 100644
+index 0000000..9f3845b
+--- /dev/null
++++ b/visit.html
+@@ -0,0 +1,261 @@
++<!doctype html>
++<html lang="en">
++  <head>
++    <meta charset="utf-8" />
++    <meta name="viewport" content="width=device-width, initial-scale=1" />
++    <title>Visit, contact and opening hours, Marginalia Books</title>
++    <link rel="icon" href="data:," />
++    <link rel="stylesheet" href="css/styles.css" />
++    <script>
++      document.documentElement.classList.add("js");
++    </script>
++    <script type="module" src="js/nav.js"></script>
++    <script type="module" src="js/contact.js"></script>
++  </head>
++  <body>
++    <a class="skip-link" href="#main">Skip to content</a>
++    <header class="site-header">
++      <div class="header-inner">
++        <a class="brand" href="index.html">Marginalia Books</a>
++        <button
++          type="button"
++          class="nav-toggle"
++          aria-expanded="false"
++          aria-controls="site-nav"
++        >
++          Menu
++        </button>
++        <nav id="site-nav" class="site-nav" aria-label="Main">
++          <ul>
++            <li><a href="index.html">Home</a></li>
++            <li><a href="books.html">Books</a></li>
++            <li><a href="events.html">Events</a></li>
++            <li><a href="visit.html" aria-current="page">Visit</a></li>
++          </ul>
++        </nav>
++      </div>
++    </header>
++
++    <main id="main">
++      <h1>Visit us</h1>
++
++      <div class="split">
++        <section aria-labelledby="find-heading">
++          <h2 id="find-heading">Find us</h2>
++          <address>
++            Marginalia Books<br />
++            14 Lantern Row<br />
++            Little Hadley<br />
++            NB4 2QT
++          </address>
++          <p>
++            Phone <a href="tel:+441632960123">01632 960123</a><br />
++            Email
++            <a href="mailto:hello@marginalia.example"
++              >hello@marginalia.example</a
++            >
++          </p>
++          <p>
++            Lantern Row runs off the south side of the market square, opposite
++            the clock tower. The shop is the green-fronted building between the
++            bakery and the stationer. The nearest bus stop is Market Square, a
++            two-minute walk away, and there is a pay-and-display car park on
++            Mill Lane.
++          </p>
++          <svg
++            class="map"
++            viewBox="0 0 480 300"
++            role="img"
++            aria-labelledby="map-title"
++          >
++            <title id="map-title">
++              Sketch map: Lantern Row runs off the market square, with the shop
++              on the corner by the bakery.
++            </title>
++            <rect x="0" y="0" width="480" height="300" fill="none"></rect>
++            <rect
++              class="park"
++              x="330"
++              y="200"
++              width="120"
++              height="80"
++              rx="6"
++            ></rect>
++            <path class="road" d="M20 90 H460"></path>
++            <path class="road" d="M240 20 V280"></path>
++            <path class="road" d="M120 190 H300 Q340 190 340 230"></path>
++            <rect
++              class="shop"
++              x="200"
++              y="110"
++              width="30"
++              height="22"
++              rx="3"
++            ></rect>
++            <text x="236" y="62">Market square</text>
++            <text x="262" y="150">Lantern Row</text>
++            <text x="352" y="250">Mill Lane car park</text>
++            <text x="60" y="78">Bus stop</text>
++          </svg>
++        </section>
++
++        <section aria-labelledby="hours-heading">
++          <h2 id="hours-heading">Opening hours</h2>
++          <table class="hours-table">
++            <caption>
++              Our regular weekly hours
++            </caption>
++            <thead>
++              <tr>
++                <th scope="col">Day</th>
++                <th scope="col">Hours</th>
++              </tr>
++            </thead>
++            <tbody>
++              <tr>
++                <th scope="row">Monday</th>
++                <td>Closed</td>
++              </tr>
++              <tr>
++                <th scope="row">Tuesday</th>
++                <td>10:00 am to 6:00 pm</td>
++              </tr>
++              <tr>
++                <th scope="row">Wednesday</th>
++                <td>10:00 am to 6:00 pm</td>
++              </tr>
++              <tr>
++                <th scope="row">Thursday</th>
++                <td>10:00 am to 8:00 pm (late opening)</td>
++              </tr>
++              <tr>
++                <th scope="row">Friday</th>
++                <td>10:00 am to 6:00 pm</td>
++              </tr>
++              <tr>
++                <th scope="row">Saturday</th>
++                <td>10:00 am to 5:00 pm</td>
++              </tr>
++              <tr>
++                <th scope="row">Sunday</th>
++                <td>11:00 am to 4:00 pm</td>
++              </tr>
++            </tbody>
++          </table>
++          <p>
++            Bank holidays and event evenings can change these times. Check the
++            events page first.
++          </p>
++        </section>
++      </div>
++
++      <section aria-labelledby="access-heading">
++        <h2 id="access-heading">Getting in and around</h2>
++        <ul>
++          <li>
++            The entrance is step-free from the pavement, and the door is wide
++            enough for wheelchairs and pushchairs.
++          </li>
++          <li>
++            There is an accessible toilet at the back of the shop, reached
++            through the children's corner.
++          </li>
++          <li>
++            Aisles are 1.2 metres wide. Large-print catalogues and a reading
++            stool are available at the till.
++          </li>
++          <li>
++            Guide dogs are welcome. Assistance dogs are welcome throughout the
++            shop.
++          </li>
++        </ul>
++      </section>
++
++      <section aria-labelledby="contact-heading">
++        <h2 id="contact-heading">Write to us</h2>
++        <p>
++          Ask about an order, an event or a visit. Fields marked required must
++          be filled in.
++        </p>
++
++        <div class="error-summary" id="error-summary" tabindex="-1" hidden>
++          <h3>Please fix the following</h3>
++          <ul id="error-list"></ul>
++        </div>
++
++        <form class="form" id="contact-form" novalidate>
++          <div class="field">
++            <label for="name">Your name (required)</label>
++            <input
++              id="name"
++              name="name"
++              type="text"
++              autocomplete="name"
++              required
++            />
++            <p class="field-error" id="name-error" hidden></p>
++          </div>
++
++          <div class="field">
++            <label for="email">Email address (required)</label>
++            <input
++              id="email"
++              name="email"
++              type="email"
++              autocomplete="email"
++              required
++            />
++            <p class="field-error" id="email-error" hidden></p>
++          </div>
++
++          <div class="field">
++            <label for="topic">Topic (optional)</label>
++            <select id="topic" name="topic">
++              <option value="">Choose a topic</option>
++              <option value="order">Book order</option>
++              <option value="events">Events and readings</option>
++              <option value="visit">Visiting the shop</option>
++              <option value="other">Something else</option>
++            </select>
++          </div>
++
++          <div class="field">
++            <label for="message"
++              >Message (required, at least 10 characters)</label
++            >
++            <textarea id="message" name="message" rows="6" required></textarea>
++            <p class="field-error" id="message-error" hidden></p>
++          </div>
++
++          <button type="submit" class="primary-button">Send message</button>
++        </form>
++
++        <section
++          class="confirmation"
++          id="form-confirmation"
++          tabindex="-1"
++          aria-labelledby="confirmation-heading"
++          hidden
++        >
++          <h3 id="confirmation-heading">Demo only: nothing was sent</h3>
++          <p>
++            This is a demo site, so nothing was sent. To reach us, email
++            <a href="mailto:hello@marginalia.example"
++              >hello@marginalia.example</a
++            >.
++          </p>
++        </section>
++      </section>
++    </main>
++
++    <footer class="site-footer">
++      <div>
++        <p>
++          Marginalia Books is a fictional independent bookshop. This is a demo
++          site.
++        </p>
++        <p><a href="visit.html">Opening hours and address</a></p>
++      </div>
++    </footer>
++  </body>
++</html>

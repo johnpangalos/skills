@@ -1,0 +1,196 @@
+diff --git a/README.md b/README.md
+index 620cc9b..d835fcb 100644
+--- a/README.md
++++ b/README.md
+@@ -8,3 +8,4 @@ and password-reset tokens. Standard library only.
+ Money is `Decimal` dollars, rounded to cents half-up (`shop/money.py`).
+ Shipping is a flat $7.95, free once the merchandise subtotal reaches $75.
+ Sales tax is 8.25% of merchandise only; shipping is not taxed.
++Password-reset tokens are single-use and expire 30 minutes after issue.
+diff --git a/shop/auth.py b/shop/auth.py
+index d159a6c..29686f2 100644
+--- a/shop/auth.py
++++ b/shop/auth.py
+@@ -1,24 +1,47 @@
+ """Password-reset tokens (in-memory store)."""
+ 
+ import secrets
++import threading
++import time
+ 
+-_TOKENS = {}  # token -> username
++RESET_TOKEN_TTL = 1800  # seconds
++
++_TOKENS = {}  # token -> {"username", "issued_at", "used"}
++_LOCK = threading.Lock()
+ 
+ 
+ class InvalidToken(Exception):
+     pass
+ 
+ 
+-def issue_reset_token(username):
+-    """Create a reset token for username."""
++class TokenExpired(InvalidToken):
++    pass
++
++
++class TokenUsed(InvalidToken):
++    pass
++
++
++def issue_reset_token(username, now=None):
++    """Create a reset token for username, issued at now (Unix seconds)."""
++    if now is None:
++        now = time.time()
+     token = secrets.token_urlsafe(16)
+-    _TOKENS[token] = username
++    _TOKENS[token] = {"username": username, "issued_at": now, "used": False}
+     return token
+ 
+ 
+-def redeem_reset_token(token):
+-    """Return the username a token was issued for."""
+-    username = _TOKENS.get(token)
+-    if username is None:
+-        raise InvalidToken("unknown token")
+-    return username
++def redeem_reset_token(token, now=None):
++    """Return the username a token was issued for, and mark the token used."""
++    if now is None:
++        now = time.time()
++    with _LOCK:
++        record = _TOKENS.get(token)
++        if record is None:
++            raise InvalidToken("unknown token")
++        if record["used"]:
++            raise TokenUsed("token already used")
++        if now - record["issued_at"] > RESET_TOKEN_TTL:
++            raise TokenExpired("token expired")
++        record["used"] = True
++        return record["username"]
+diff --git a/tests/test_auth.py b/tests/test_auth.py
+index 7e9882c..1434df1 100644
+--- a/tests/test_auth.py
++++ b/tests/test_auth.py
+@@ -1,6 +1,8 @@
++import threading
++import time
+ import unittest
+ 
+-from shop.auth import InvalidToken, issue_reset_token, redeem_reset_token
++from shop.auth import InvalidToken, TokenExpired, TokenUsed, issue_reset_token, redeem_reset_token
+ 
+ 
+ class ResetTokenTest(unittest.TestCase):
+@@ -11,3 +13,110 @@ class ResetTokenTest(unittest.TestCase):
+     def test_unknown_token(self):
+         with self.assertRaises(InvalidToken):
+             redeem_reset_token("not-a-token")
++
++    def test_default_now(self):
++        token = issue_reset_token("ada")
++        self.assertEqual(redeem_reset_token(token), "ada")
++        token = issue_reset_token("ada")
++        with self.assertRaises(TokenExpired):
++            redeem_reset_token(token, now=time.time() + 1801)
++
++    def test_exactly_ttl_is_valid(self):
++        token = issue_reset_token("ada", now=1000)
++        self.assertEqual(redeem_reset_token(token, now=2800), "ada")
++
++    def test_past_ttl_is_expired(self):
++        for offset in (1800.001, 1800.5, 1801):
++            with self.subTest(offset=offset):
++                token = issue_reset_token("ada", now=1000)
++                with self.assertRaises(TokenExpired) as cm:
++                    redeem_reset_token(token, now=1000 + offset)
++                self.assertEqual(str(cm.exception), "token expired")
++
++    def test_redeem_before_issue_is_valid(self):
++        token = issue_reset_token("ada", now=1000)
++        self.assertEqual(redeem_reset_token(token, now=500), "ada")
++
++    def test_reuse_is_token_used(self):
++        token = issue_reset_token("ada", now=1000)
++        self.assertEqual(redeem_reset_token(token, now=1000), "ada")
++        with self.assertRaises(TokenUsed) as cm:
++            redeem_reset_token(token, now=1000)
++        self.assertEqual(str(cm.exception), "token already used")
++
++    def test_reuse_after_expiry_window_is_token_used(self):
++        token = issue_reset_token("ada", now=1000)
++        self.assertEqual(redeem_reset_token(token, now=1000), "ada")
++        with self.assertRaises(TokenUsed):
++            redeem_reset_token(token, now=3000)
++
++    def test_expired_twice_is_expired_both_times(self):
++        token = issue_reset_token("ada", now=1000)
++        for _ in range(2):
++            with self.assertRaises(TokenExpired) as cm:
++                redeem_reset_token(token, now=3000)
++            self.assertEqual(str(cm.exception), "token expired")
++
++    def test_now_zero_issue_and_redeem(self):
++        token = issue_reset_token("ada", now=0)
++        self.assertEqual(redeem_reset_token(token, now=0), "ada")
++
++    def test_now_zero_boundary(self):
++        token = issue_reset_token("ada", now=0)
++        self.assertEqual(redeem_reset_token(token, now=1800), "ada")
++        token = issue_reset_token("ada", now=0)
++        with self.assertRaises(TokenExpired):
++            redeem_reset_token(token, now=1801)
++
++    def test_expired_and_used_are_invalid_tokens(self):
++        self.assertTrue(issubclass(TokenExpired, InvalidToken))
++        self.assertTrue(issubclass(TokenUsed, InvalidToken))
++        self.assertFalse(issubclass(TokenExpired, TokenUsed))
++        self.assertFalse(issubclass(TokenUsed, TokenExpired))
++
++        used = issue_reset_token("ada", now=1000)
++        redeem_reset_token(used, now=1000)
++        with self.assertRaises(InvalidToken) as cm:
++            redeem_reset_token(used, now=1000)
++        self.assertIs(type(cm.exception), TokenUsed)
++
++        expired = issue_reset_token("ada", now=1000)
++        with self.assertRaises(InvalidToken) as cm:
++            redeem_reset_token(expired, now=3000)
++        self.assertIs(type(cm.exception), TokenExpired)
++
++    def test_unknown_token_is_plain_invalid_token(self):
++        for bad in ("not-a-token", "", None):
++            with self.subTest(token=bad):
++                with self.assertRaises(InvalidToken) as cm:
++                    redeem_reset_token(bad, now=1000)
++                self.assertIs(type(cm.exception), InvalidToken)
++                self.assertEqual(str(cm.exception), "unknown token")
++
++    def test_same_user_tokens_are_independent(self):
++        first = issue_reset_token("ada", now=1000)
++        second = issue_reset_token("ada", now=1000)
++        self.assertNotEqual(first, second)
++        self.assertEqual(redeem_reset_token(first, now=1000), "ada")
++        self.assertEqual(redeem_reset_token(second, now=1000), "ada")
++        with self.assertRaises(TokenUsed):
++            redeem_reset_token(first, now=1000)
++
++    def test_concurrent_redeem_succeeds_once(self):
++        token = issue_reset_token("ada", now=1000)
++        barrier = threading.Barrier(8)
++        outcomes = []
++
++        def attempt():
++            barrier.wait()
++            try:
++                outcomes.append(redeem_reset_token(token, now=1000))
++            except TokenUsed:
++                outcomes.append("used")
++
++        threads = [threading.Thread(target=attempt) for _ in range(8)]
++        for thread in threads:
++            thread.start()
++        for thread in threads:
++            thread.join()
++        self.assertEqual(sorted(outcomes), ["ada"] + ["used"] * 7)

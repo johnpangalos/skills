@@ -1,0 +1,222 @@
+diff --git a/tree.go b/tree.go
+index 74ff43d..1a0460d 100644
+--- a/tree.go
++++ b/tree.go
+@@ -133,6 +133,9 @@ type endpoint struct {
+ 
+ 	// parameter keys recorded on handler nodes
+ 	paramKeys []string
++
++	// stub marks a handler installed by Mount() rather than by a method or Handle() call
++	stub bool
+ }
+ 
+ func (s endpoints) Value(method methodTyp) *endpoint {
+@@ -356,26 +359,32 @@ func (n *node) setEndpoint(method methodTyp, handler http.Handler, pattern strin
+ 	}
+ 
+ 	paramKeys := patParamKeys(pattern)
++	stub := method&mSTUB == mSTUB
+ 
+-	if method&mSTUB == mSTUB {
+-		n.endpoints.Value(mSTUB).handler = handler
++	if stub {
++		h := n.endpoints.Value(mSTUB)
++		h.handler = handler
++		h.stub = true
+ 	}
+ 	if method&mALL == mALL {
+ 		h := n.endpoints.Value(mALL)
+ 		h.handler = handler
+ 		h.pattern = pattern
+ 		h.paramKeys = paramKeys
++		h.stub = stub
+ 		for _, m := range methodMap {
+ 			h := n.endpoints.Value(m)
+ 			h.handler = handler
+ 			h.pattern = pattern
+ 			h.paramKeys = paramKeys
++			h.stub = stub
+ 		}
+ 	} else {
+ 		h := n.endpoints.Value(method)
+ 		h.handler = handler
+ 		h.pattern = pattern
+ 		h.paramKeys = paramKeys
++		h.stub = stub
+ 	}
+ }
+ 
+@@ -629,15 +638,12 @@ func (n *node) routes() []Route {
+ 	rts := []Route{}
+ 
+ 	n.walk(func(eps endpoints, subroutes Routes) bool {
+-		if eps[mSTUB] != nil && eps[mSTUB].handler != nil && subroutes == nil {
+-			return false
+-		}
+-
+ 		// Group methodHandlers by unique patterns
+ 		pats := make(map[string]endpoints)
+ 
+ 		for mt, h := range eps {
+-			if h.pattern == "" {
++			// Mount() stubs are not routes, unless a method or Handle() later overwrote them
++			if h.pattern == "" || (subroutes == nil && h.stub) {
+ 				continue
+ 			}
+ 			p, ok := pats[h.pattern]
+diff --git a/tree_test.go b/tree_test.go
+index c07e830..b9d7c1b 100644
+--- a/tree_test.go
++++ b/tree_test.go
+@@ -4,6 +4,7 @@ import (
+ 	"fmt"
+ 	"log"
+ 	"net/http"
++	"slices"
+ 	"testing"
+ )
+ 
+@@ -522,6 +523,142 @@ func TestWalker(t *testing.T) {
+ 	}
+ }
+ 
++func TestWalkRouteCollidingWithMountPattern(t *testing.T) {
++	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
++	allMethods := func(route string) []string {
++		var out []string
++		for m := range methodMap {
++			out = append(out, m+" "+route)
++		}
++		return out
++	}
++
++	tests := []struct {
++		name     string
++		setup    func() Router
++		expected []string
++	}{
++		{
++			name: "Get on the pattern of a Route",
++			setup: func() Router {
++				r := NewRouter()
++				r.Route("/foo", func(r Router) {
++					r.Route("/bar", func(r Router) { r.Get("/{id}", handler) })
++					r.Get("/bar", handler)
++				})
++				return r
++			},
++			expected: []string{"GET /foo/bar", "GET /foo/bar/{id}"},
++		},
++		{
++			name: "Get before a Route on the same pattern is overwritten by the mount",
++			setup: func() Router {
++				r := NewRouter()
++				r.Route("/foo", func(r Router) {
++					r.Get("/bar", handler)
++					r.Route("/bar", func(r Router) { r.Get("/{id}", handler) })
++				})
++				return r
++			},
++			expected: []string{"GET /foo/bar/{id}"},
++		},
++		{
++			name: "Get on the trailing slash of a Route",
++			setup: func() Router {
++				r := NewRouter()
++				r.Route("/foo", func(r Router) {
++					r.Route("/bar", func(r Router) { r.Get("/{id}", handler) })
++					r.Get("/bar/", handler)
++				})
++				return r
++			},
++			expected: []string{"GET /foo/bar/", "GET /foo/bar/{id}"},
++		},
++		{
++			name: "Handle after a Route reports the handler for every method",
++			setup: func() Router {
++				r := NewRouter()
++				r.Route("/foo", func(r Router) {
++					r.Route("/bar", func(r Router) { r.Get("/{id}", handler) })
++					r.Handle("/bar", handler)
++				})
++				return r
++			},
++			expected: append(allMethods("/foo/bar"), "GET /foo/bar/{id}"),
++		},
++		{
++			name: "Get after a Mount of a plain http.Handler",
++			setup: func() Router {
++				r := NewRouter()
++				r.Route("/foo", func(r Router) {
++					r.Mount("/bar", handler)
++					r.Get("/bar", handler)
++				})
++				return r
++			},
++			expected: append(allMethods("/foo/bar/*"), "GET /foo/bar"),
++		},
++		{
++			name: "Get colliding with a Route at the root",
++			setup: func() Router {
++				r := NewRouter()
++				r.Route("/x", func(r Router) { r.Get("/y", handler) })
++				r.Get("/x", handler)
++				return r
++			},
++			expected: []string{"GET /x", "GET /x/y"},
++		},
++	}
++
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			r := tt.setup()
++			var got []string
++			err := Walk(r, func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
++				got = append(got, method+" "+route)
++				return nil
++			})
++			if err != nil {
++				t.Fatal(err)
++			}
++			want := slices.Clone(tt.expected)
++			slices.Sort(got)
++			slices.Sort(want)
++			if !slices.Equal(got, want) {
++				t.Fatalf("expected %v, got %v", want, got)
++			}
++		})
++	}
++}
++
++func TestRoutesSkipsMountStubOnCollision(t *testing.T) {
++	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
++	r := NewRouter()
++	r.Route("/foo", func(r Router) {
++		r.Route("/bar", func(r Router) { r.Get("/{id}", handler) })
++		r.Get("/bar", handler)
++	})
++
++	subRoutes := r.Routes()[0].SubRoutes.Routes()
++	if len(subRoutes) != 2 {
++		t.Fatalf("expected 2 routes on /foo, got %d", len(subRoutes))
++	}
++	for _, rt := range subRoutes {
++		switch rt.Pattern {
++		case "/bar":
++			if rt.SubRoutes != nil || len(rt.Handlers) != 1 || rt.Handlers[http.MethodGet] == nil {
++				t.Fatalf("expected only GET handler on /bar, got %v", rt.Handlers)
++			}
++		case "/bar/*":
++			if rt.SubRoutes == nil {
++				t.Fatalf("expected subroutes on /bar/*")
++			}
++		default:
++			t.Fatalf("unexpected route pattern %q", rt.Pattern)
++		}
++	}
++}
++
+ func TestWalkInlineMiddlewaresAcrossSubrouter(t *testing.T) {
+ 	mw := func(next http.Handler) http.Handler { return next }
+ 	handler := func(w http.ResponseWriter, r *http.Request) {}

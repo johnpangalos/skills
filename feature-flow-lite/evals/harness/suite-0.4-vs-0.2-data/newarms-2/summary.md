@@ -1,0 +1,49 @@
+| scenario | arm | runs | process | outcome | cost $ | opus share | main tool calls | spawns (role:model/effort) |
+|---|---|---|---|---|---|---|---|---|
+| rac-shadow-hide | lite-reviewer-plus | 5 | 0.74 | 0.9 | 1.26 | 0.91 | 21.2 | investigator:haiku/fm, implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm, implementor:haiku/fm; investigator:haiku/fm, implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm, implementor:haiku/fm; investigator:haiku/fm, implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm, implementor:haiku/fm, reviewer:haiku/fm; investigator:haiku/fm, implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm, implementor:haiku/fm, reviewer:haiku/fm; investigator:haiku/fm, implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm, implementor:haiku/fm |
+| rac-shadow-hide | lite-tests-first | 5 | 0.73 | 0.93 | 1.35 | 0.86 | 21.4 | investigator:haiku/fm, implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm, implementor:haiku/fm, reviewer:haiku/fm; investigator:haiku/fm, implementor:haiku/fm, implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm, implementor:haiku/fm; investigator:haiku/fm, implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm; investigator:haiku/fm, implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm; investigator:haiku/fm, implementor:haiku/fm, implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm |
+
+## Failed checks
+
+- rac-shadow-hide / lite-reviewer-plus rep: [process] handoff prompts use the template — investigator missing GOAL; simplifier missing GOAL; reviewer missing GOAL
+- rac-shadow-hide / lite-reviewer-plus rep: [process] stages announced before the first spawn — stage words before first spawn: ['inves']
+- rac-shadow-hide / lite-reviewer-plus rep: [process] checks pass before any review — 1 review(s) started with no check run after the last edit
+- rac-shadow-hide / lite-reviewer-plus rep: [outcome] yarn.lock matches the package manifests — 5913a5914 | >     "@react-stately/flags": "npm:^3.1.2"
+- rac-shadow-hide / lite-reviewer-plus rep: [process] handoff prompts use the template — investigator missing GOAL; simplifier missing GOAL; reviewer missing GOAL; implementor missing GOAL
+- rac-shadow-hide / lite-reviewer-plus rep: [process] subagents return the result template — investigator returned 52 lines
+- rac-shadow-hide / lite-reviewer-plus rep: [process] stages announced before the first spawn — stage words before first spawn: ['inves']
+- rac-shadow-hide / lite-reviewer-plus rep: [process] checks pass before any review — 1 review(s) started with no check run after the last edit
+- rac-shadow-hide / lite-reviewer-plus rep: [outcome] yarn.lock matches the package manifests — 5913a5914 | >     "@react-stately/flags": "npm:^3.1.2"
+- rac-shadow-hide / lite-reviewer-plus rep: [process] handoff prompts use the template — investigator missing GOAL; simplifier missing GOAL; reviewer missing GOAL; reviewer missing GOAL
+- rac-shadow-hide / lite-reviewer-plus rep: [process] subagents return the result template — investigator returned 61 lines
+- rac-shadow-hide / lite-reviewer-plus rep: [process] checks pass before any review — 2 review(s) started with no check run after the last edit
+- rac-shadow-hide / lite-reviewer-plus rep: [process] main conversation leaves edits to subagents — main conversation edited ['/tmp/ff-eval-bj4jzpw2/workspace/packages/@react-aria/overlays/src/ariaHideOutside.ts', '/tmp/ff-eval-bj4jzpw2/workspace/packages/@react-aria/overlays/test/ariaHideOutside.test.js', '/tmp/ff-eval-bj4jzpw2/workspace/packages/@react-aria/overlays/test/ariaHideOutside.test.js']
+- rac-shadow-hide / lite-reviewer-plus rep: [process] handoff prompts use the template — investigator missing GOAL; reviewer missing GOAL; reviewer missing GOAL
+- rac-shadow-hide / lite-reviewer-plus rep: [process] stages announced before the first spawn — stage words before first spawn: ['inves']
+- rac-shadow-hide / lite-reviewer-plus rep: [process] checks pass before any review — 2 review(s) started with no check run after the last edit
+- rac-shadow-hide / lite-reviewer-plus rep: [process] main conversation leaves edits to subagents — main conversation edited ['/tmp/ff-eval-7pbiza3x/workspace/yarn.lock']
+- rac-shadow-hide / lite-reviewer-plus rep: [process] handoff prompts use the template — investigator missing GOAL; simplifier missing GOAL
+- rac-shadow-hide / lite-reviewer-plus rep: [process] stages announced before the first spawn — stage words before first spawn: none
+- rac-shadow-hide / lite-reviewer-plus rep: [process] checks pass before any review — 1 review(s) started with no check run after the last edit
+- rac-shadow-hide / lite-reviewer-plus rep: [outcome] yarn.lock matches the package manifests — 5913a5914 | >     "@react-stately/flags": "npm:^3.1.2"
+- rac-shadow-hide / lite-tests-first rep: [process] handoff prompts use the template — investigator missing GOAL; simplifier missing GOAL; reviewer missing GOAL; reviewer missing GOAL
+- rac-shadow-hide / lite-tests-first rep: [process] stages announced before the first spawn — stage words before first spawn: none
+- rac-shadow-hide / lite-tests-first rep: [process] checks pass before any review — 2 review(s) started with no check run after the last edit
+- rac-shadow-hide / lite-tests-first rep: [process] main conversation leaves edits to subagents — main conversation edited ['/tmp/ff-eval-8srvvqip/workspace/yarn.lock']
+- rac-shadow-hide / lite-tests-first rep: [process] handoff prompts use the template — investigator missing GOAL; simplifier missing GOAL
+- rac-shadow-hide / lite-tests-first rep: [process] stages announced before the first spawn — stage words before first spawn: ['inves']
+- rac-shadow-hide / lite-tests-first rep: [process] checks pass before any review — 1 review(s) started with no check run after the last edit
+- rac-shadow-hide / lite-tests-first rep: [process] handoff prompts use the template — investigator missing GOAL; simplifier missing GOAL
+- rac-shadow-hide / lite-tests-first rep: [process] subagents return the result template — investigator returned 45 lines
+- rac-shadow-hide / lite-tests-first rep: [process] stages announced before the first spawn — stage words before first spawn: none
+- rac-shadow-hide / lite-tests-first rep: [process] checks pass before any review — 1 review(s) started with no check run after the last edit
+- rac-shadow-hide / lite-tests-first rep: [outcome] type check is clean — node_modules/@mdx-js/react/lib/index.d.ts(1,9): error TS2300: Duplicate identifier 'JSX'. | node_modules/@mdx-js/react/lib/index.d.ts(2,9): error TS2300: Duplicate identifier 'JSX'.
+- rac-shadow-hide / lite-tests-first rep: [process] handoff prompts use the template — investigator missing GOAL; simplifier missing GOAL; reviewer missing GOAL
+- rac-shadow-hide / lite-tests-first rep: [process] subagents return the result template — investigator returned 42 lines
+- rac-shadow-hide / lite-tests-first rep: [process] stages announced before the first spawn — stage words before first spawn: ['inves']
+- rac-shadow-hide / lite-tests-first rep: [process] checks pass before any review — 1 review(s) started with no check run after the last edit
+- rac-shadow-hide / lite-tests-first rep: [outcome] yarn.lock matches the package manifests — 5913a5914 | >     "@react-stately/flags": "npm:^3.1.2"
+- rac-shadow-hide / lite-tests-first rep: [process] handoff prompts use the template — investigator missing GOAL; simplifier missing GOAL
+- rac-shadow-hide / lite-tests-first rep: [process] stages announced before the first spawn — stage words before first spawn: ['inves']
+- rac-shadow-hide / lite-tests-first rep: [process] checks pass before any review — 1 review(s) started with no check run after the last edit
+- rac-shadow-hide / lite-tests-first rep: [process] main conversation leaves edits to subagents — main conversation edited ['/tmp/ff-eval-3b25ybse/workspace/packages/@react-aria/overlays/src/ariaHideOutside.ts', '/tmp/ff-eval-3b25ybse/workspace/packages/@react-aria/overlays/test/ariaHideOutside.test.js']

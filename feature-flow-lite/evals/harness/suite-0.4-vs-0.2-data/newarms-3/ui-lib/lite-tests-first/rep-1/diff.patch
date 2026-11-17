@@ -1,0 +1,2071 @@
+diff --git a/README.md b/README.md
+index 2ad34da..f361e91 100644
+--- a/README.md
++++ b/README.md
+@@ -1,3 +1,103 @@
+ # @acme/ui
+ 
+-Accessible React components.
++Accessible React components: `Tabs`, `Dialog` and `Combobox`. No CSS is shipped; every component forwards extra HTML props (`className`, `id`, `data-*`) to its root element so you can style it yourself.
++
++Run the checks with `pnpm test` and `pnpm typecheck`.
++
++## Tabs
++
++```tsx
++import { Tabs, TabList, Tab, TabPanel } from "@acme/ui";
++
++<Tabs defaultValue="one">
++  <TabList aria-label="Sections">
++    <Tab value="one">One</Tab>
++    <Tab value="two">Two</Tab>
++  </TabList>
++  <TabPanel value="one">Panel one</TabPanel>
++  <TabPanel value="two">Panel two</TabPanel>
++</Tabs>;
++```
++
++`Tabs` renders a wrapper `div`, `TabList` a `div role="tablist"`, `Tab` a `button role="tab"` and `TabPanel` a `div role="tabpanel"`. Tab and panel ids are generated from `useId`, so `id` is not forwarded on `Tab` and `TabPanel`: the ARIA wiring depends on those ids.
++
++| Prop | Type | Required / default | Description |
++| --- | --- | --- | --- |
++| `Tabs.value` | `string` | optional; controlled when set | Selected tab value. |
++| `Tabs.defaultValue` | `string` | optional; first enabled tab | Initial selection when uncontrolled. |
++| `Tabs.onValueChange` | `(value: string) => void` | optional | Called when the user selects a different tab. |
++| `TabList["aria-label"]` | `string` | required | Accessible name of the tablist. |
++| `Tab.value` | `string` | required | Value this tab selects. |
++| `Tab.disabled` | `boolean` | optional; `false` | Sets `aria-disabled="true"`; clicks and arrow keys skip it. |
++| `TabPanel.value` | `string` | required | Value of the tab that controls this panel; hidden unless selected. |
++
++| Key | Action |
++| --- | --- |
++| `ArrowRight` / `ArrowLeft` | Move focus to the next / previous enabled tab, wrapping, and select it. |
++| `Home` / `End` | Move focus to the first / last enabled tab and select it. |
++| `Tab` | Enters or leaves the tablist. Only the selected tab (or the first enabled tab if none matches) is in the tab order. Focusing a tab does not select it, so tabbing in never calls `onValueChange`. |
++
++## Dialog
++
++```tsx
++import { useState } from "react";
++import { Dialog } from "@acme/ui";
++
++const [open, setOpen] = useState(false);
++
++<Dialog open={open} onOpenChange={setOpen} title="Delete file" description="This cannot be undone.">
++  <button type="button" onClick={() => setOpen(false)}>Cancel</button>
++</Dialog>;
++```
++
++`Dialog` renders nothing when `open` is false. When open it portals a backdrop into `document.body` containing the `role="dialog"` element, which receives the extra props. Focus moves to the first enabled focusable element (or the dialog itself), is trapped inside while open, and returns to the previously focused element on close. A mousedown on the backdrop keeps focus where it was, so focus cannot leave the dialog that way. Nested dialogs are independent: a key is handled by the innermost dialog that contains its target, or by the topmost open dialog when focus is outside every dialog (for example after the focused element was removed).
++
++| Prop | Type | Required / default | Description |
++| --- | --- | --- | --- |
++| `open` | `boolean` | required | Whether the dialog is shown. Fully controlled. |
++| `onOpenChange` | `(open: boolean) => void` | required | Called with `false` on Escape or a click on the backdrop. Clicks that start inside the dialog do not count. |
++| `title` | `ReactNode` | required | Rendered in an `h2`; labels the dialog. |
++| `description` | `ReactNode` | optional | Rendered in a `p`; describes the dialog. Omitted when not given. |
++
++| Key | Action |
++| --- | --- |
++| `Escape` | Calls `onOpenChange(false)` unless the event's default was already prevented (for example by an open Combobox). |
++| `Tab` / `Shift+Tab` | Moves through focusable elements inside the dialog and wraps at the edges. Focus stays on the dialog when nothing inside is focusable. |
++
++## Combobox
++
++```tsx
++import { useState } from "react";
++import { Combobox } from "@acme/ui";
++
++const [fruit, setFruit] = useState<string | null>(null);
++
++<Combobox
++  label="Fruit"
++  placeholder="Type to search"
++  options={[
++    { value: "apple", label: "Apple" },
++    { value: "cherry", label: "Cherry", disabled: true },
++  ]}
++  value={fruit}
++  onChange={setFruit}
++/>;
++```
++
++`Combobox` renders a `label`, an `input role="combobox"` (which receives the extra props) and a `ul role="listbox"` that is always in the DOM and `hidden` while closed. Typing filters options by case-insensitive substring. Clearing the text calls `onChange(null)`. When the list closes without a selection the text returns to the label of `value`.
++
++| Prop | Type | Required / default | Description |
++| --- | --- | --- | --- |
++| `label` | `string` | required | Text of the `label` for the input. |
++| `options` | `ComboboxOption[]` | required | `{ value: string; label: string; disabled?: boolean }` entries. |
++| `value` | `string \| null` | required | Selected option value; the input shows its label. Controlled. |
++| `onChange` | `(value: string \| null) => void` | required | Called on selection (Enter or click) and when the text is cleared (`null`). |
++| `placeholder` | `string` | optional | Passed to the input. |
++
++| Key | Action |
++| --- | --- |
++| `ArrowDown` / `ArrowUp` | Opens the list if closed (activating the first / last enabled option), otherwise moves the active option to the next / previous enabled option, wrapping. Exposed through `aria-activedescendant`. |
++| `Enter` | With an active option: selects it, closes the list. Otherwise does nothing and is not prevented, so a surrounding form can submit. |
++| `Escape` | While open: closes the list without selecting, restores the label, and stops propagation. While closed: does nothing. |
++| `Tab` / blur | Closes the list without selecting and restores the label. Tab's default is not prevented. |
++| Typing | Opens the list and filters options; the active option is cleared until an arrow key is pressed. |
+diff --git a/src/Combobox.tsx b/src/Combobox.tsx
+new file mode 100644
+index 0000000..3702db9
+--- /dev/null
++++ b/src/Combobox.tsx
+@@ -0,0 +1,145 @@
++import {
++  useId,
++  useState,
++  type ChangeEvent,
++  type ComponentPropsWithoutRef,
++  type FocusEvent,
++  type KeyboardEvent,
++} from "react";
++
++export type ComboboxOption = { value: string; label: string; disabled?: boolean };
++
++export type ComboboxProps = Omit<ComponentPropsWithoutRef<"input">, "value" | "onChange" | "role"> & {
++  label: string;
++  options: ComboboxOption[];
++  value: string | null;
++  onChange: (value: string | null) => void;
++};
++
++// Indexes into `options` of the entries whose label contains the query (case-insensitive substring).
++function visibleIndexes(options: ComboboxOption[], query: string): number[] {
++  const needle = query.toLowerCase();
++  return options.flatMap((option, index) => (option.label.toLowerCase().includes(needle) ? [index] : []));
++}
++
++// Returns the next enabled option index in the given direction, wrapping; null when none is enabled.
++function stepActive(
++  options: ComboboxOption[],
++  visible: number[],
++  active: number | null,
++  direction: 1 | -1,
++): number | null {
++  const enabled = visible.filter((index) => !options[index].disabled);
++  if (enabled.length === 0) return null;
++  const position = enabled.indexOf(active ?? -1);
++  if (position === -1) return direction === 1 ? enabled[0] : enabled[enabled.length - 1];
++  return enabled[(position + direction + enabled.length) % enabled.length];
++}
++
++export function Combobox({ label, options, value, onChange, id, onKeyDown, onBlur, ...rest }: ComboboxProps) {
++  const baseId = useId();
++  const inputId = id ?? `${baseId}-input`;
++  const labelId = `${baseId}-label`;
++  const listboxId = `${baseId}-listbox`;
++  const optionId = (index: number) => `${baseId}-option-${index}`;
++
++  // `typed` is null while the input shows the selected label. Invariant: when closed, `typed` is null
++  // and nothing is active.
++  const [typed, setTyped] = useState<string | null>(null);
++  const [open, setOpen] = useState(false);
++  const [activeIndex, setActiveIndex] = useState<number | null>(null);
++
++  const selectedLabel = options.find((option) => option.value === value)?.label ?? "";
++  const visible = visibleIndexes(options, typed ?? "");
++  // The stored index can go stale when options change; it only counts while visible and enabled.
++  const active =
++    activeIndex !== null && visible.includes(activeIndex) && !options[activeIndex].disabled ? activeIndex : null;
++
++  const close = () => {
++    setOpen(false);
++    setTyped(null);
++    setActiveIndex(null);
++  };
++
++  const handleChange = (event: ChangeEvent<HTMLInputElement>) => {
++    const text = event.target.value;
++    setTyped(text);
++    setOpen(true);
++    setActiveIndex(null);
++    if (text === "") onChange(null);
++  };
++
++  const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
++    onKeyDown?.(event);
++    switch (event.key) {
++      case "ArrowDown":
++      case "ArrowUp": {
++        event.preventDefault();
++        setOpen(true);
++        setActiveIndex(stepActive(options, visible, active, event.key === "ArrowDown" ? 1 : -1));
++        return;
++      }
++      case "Enter": {
++        if (!open || active === null) return;
++        event.preventDefault();
++        onChange(options[active].value);
++        close();
++        return;
++      }
++      case "Escape": {
++        if (!open) return;
++        event.preventDefault();
++        event.stopPropagation();
++        close();
++        return;
++      }
++    }
++  };
++
++  const handleBlur = (event: FocusEvent<HTMLInputElement>) => {
++    onBlur?.(event);
++    close();
++  };
++
++  return (
++    <>
++      <label id={labelId} htmlFor={inputId}>{label}</label>
++      <input
++        {...rest}
++        id={inputId}
++        role="combobox"
++        aria-autocomplete="list"
++        aria-expanded={open}
++        aria-controls={listboxId}
++        aria-activedescendant={active === null ? undefined : optionId(active)}
++        value={typed ?? selectedLabel}
++        onChange={handleChange}
++        onKeyDown={handleKeyDown}
++        onBlur={handleBlur}
++      />
++      <ul id={listboxId} role="listbox" aria-labelledby={labelId} hidden={!open}>
++        {visible.map((index) => {
++          const option = options[index];
++          return (
++            <li
++              key={index}
++              id={optionId(index)}
++              role="option"
++              aria-selected={option.value === value}
++              aria-disabled={option.disabled ?? false}
++              onMouseDown={(event) => event.preventDefault()}
++              onClick={() => {
++                if (option.disabled) return;
++                onChange(option.value);
++                close();
++              }}
++            >
++              {option.label}
++            </li>
++          );
++        })}
++      </ul>
++      {open && visible.length === 0 && <div role="status">No results</div>}
++    </>
++  );
++}
+diff --git a/src/Dialog.tsx b/src/Dialog.tsx
+new file mode 100644
+index 0000000..2113923
+--- /dev/null
++++ b/src/Dialog.tsx
+@@ -0,0 +1,172 @@
++import {
++  createContext,
++  useContext,
++  useEffect,
++  useId,
++  useRef,
++  useState,
++  type ComponentPropsWithoutRef,
++  type MouseEvent,
++  type ReactNode,
++  type RefObject,
++} from "react";
++import { createPortal } from "react-dom";
++
++export type DialogProps = Omit<ComponentPropsWithoutRef<"div">, "title"> & {
++  open: boolean;
++  onOpenChange: (open: boolean) => void;
++  title: ReactNode;
++  description?: ReactNode;
++};
++
++const FOCUSABLE = [
++  "button:not([disabled])",
++  "a[href]",
++  "input:not([disabled]):not([type='hidden'])",
++  "select:not([disabled])",
++  "textarea:not([disabled])",
++  "[tabindex]:not([tabindex='-1'])",
++  "[contenteditable]:not([contenteditable='false'])",
++].join(",");
++
++function getFocusable(container: HTMLElement): HTMLElement[] {
++  return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE));
++}
++
++type OpenDialog = { element: HTMLElement; parent: HTMLElement | null };
++
++// Open dialogs from bottom to top. The top one owns keys when focus is outside every dialog.
++const openDialogs: OpenDialog[] = [];
++
++// Lets a dialog rendered inside another one record its parent.
++const ParentDialogContext = createContext<RefObject<HTMLElement | null> | null>(null);
++
++function topDialog(): HTMLElement | undefined {
++  return openDialogs[openDialogs.length - 1]?.element;
++}
++
++// The innermost open dialog that contains the target, or the top dialog when the target is outside all of them.
++function ownerOf(target: EventTarget | null): HTMLElement | undefined {
++  const containing = openDialogs.find((entry) => entry.element.contains(target as Node | null));
++  return containing?.element ?? topDialog();
++}
++
++// Removes the dialog, and any dialog that has already left the document.
++function forgetDialog(dialog: HTMLElement) {
++  const remaining = openDialogs.filter((entry) => entry.element !== dialog && entry.element.isConnected);
++  openDialogs.splice(0, openDialogs.length, ...remaining);
++}
++
++// Returns focus to the opener when no dialog is left or it sits inside the top dialog; otherwise focuses the top dialog.
++function restoreFocus(previous: HTMLElement | null) {
++  const top = topDialog();
++  if (previous?.isConnected && (!top || top.contains(previous))) {
++    previous.focus();
++  } else if (top) {
++    (getFocusable(top)[0] ?? top).focus();
++  }
++}
++
++// Wraps Tab and Shift+Tab inside the dialog. Keys that do not cross the edges are left to the browser.
++function keepTabWithin(event: KeyboardEvent, dialog: HTMLElement) {
++  const focusable = getFocusable(dialog);
++  const first = focusable[0] ?? dialog;
++  const last = focusable[focusable.length - 1] ?? dialog;
++  const active = document.activeElement;
++  const outside = !dialog.contains(active);
++  if (event.shiftKey) {
++    if (outside || active === first || active === dialog) {
++      event.preventDefault();
++      last.focus();
++    }
++  } else if (outside || active === last || active === dialog) {
++    event.preventDefault();
++    first.focus();
++  }
++}
++
++export function Dialog({ open, ...props }: DialogProps) {
++  if (!open) return null;
++  return createPortal(<DialogSurface {...props} />, document.body);
++}
++
++// Mounted only while open, so its effects run once per opening and focus is restored on close.
++function DialogSurface({ onOpenChange, title, description, children, ...rest }: Omit<DialogProps, "open">) {
++  const titleId = useId();
++  const descriptionId = useId();
++  const dialogRef = useRef<HTMLDivElement>(null);
++  const parentRef = useContext(ParentDialogContext);
++  const pressStartedOnBackdrop = useRef(false);
++  // Read during the first render, before any child effect moves focus, so nested dialogs both record the real opener.
++  const [previous] = useState(() => document.activeElement as HTMLElement | null);
++  const onOpenChangeRef = useRef(onOpenChange);
++
++  useEffect(() => {
++    onOpenChangeRef.current = onOpenChange;
++  });
++
++  useEffect(() => {
++    const dialog = dialogRef.current;
++    if (!dialog) return;
++    const entry = { element: dialog, parent: parentRef?.current ?? null };
++    const active = document.activeElement;
++    const child = openDialogs.find((open) => open.element.contains(active));
++    if (child && child.parent === dialog) {
++      // A nested dialog mounted in this same commit already took focus, so this one goes beneath it.
++      openDialogs.splice(openDialogs.indexOf(child), 0, entry);
++    } else {
++      openDialogs.push(entry);
++      (getFocusable(dialog)[0] ?? dialog).focus();
++    }
++    return () => {
++      forgetDialog(dialog);
++      restoreFocus(previous);
++    };
++  }, []);
++
++  // A document listener, not React's onKeyDown: focus can be on <body> after the focused element unmounts.
++  useEffect(() => {
++    const dialog = dialogRef.current;
++    if (!dialog) return;
++    const handleDocumentKeyDown = (event: KeyboardEvent) => {
++      if (ownerOf(event.target) !== dialog) return;
++      if (event.key === "Escape") {
++        if (!event.defaultPrevented) onOpenChangeRef.current(false);
++      } else if (event.key === "Tab") {
++        keepTabWithin(event, dialog);
++      }
++    };
++    document.addEventListener("keydown", handleDocumentKeyDown);
++    return () => document.removeEventListener("keydown", handleDocumentKeyDown);
++  }, []);
++
++  // Keeping focus where it is stops a backdrop press from moving focus to <body>, where Tab would escape.
++  const handleBackdropMouseDown = (event: MouseEvent<HTMLDivElement>) => {
++    pressStartedOnBackdrop.current = event.target === event.currentTarget;
++    if (pressStartedOnBackdrop.current) event.preventDefault();
++  };
++
++  const handleBackdropClick = (event: MouseEvent<HTMLDivElement>) => {
++    if (pressStartedOnBackdrop.current && event.target === event.currentTarget) {
++      onOpenChange(false);
++    }
++  };
++
++  return (
++    <div onMouseDown={handleBackdropMouseDown} onClick={handleBackdropClick}>
++      <div
++        {...rest}
++        ref={dialogRef}
++        role="dialog"
++        aria-modal="true"
++        aria-labelledby={titleId}
++        aria-describedby={description != null ? descriptionId : undefined}
++        tabIndex={-1}
++      >
++        <h2 id={titleId}>{title}</h2>
++        {description != null && <p id={descriptionId}>{description}</p>}
++        <ParentDialogContext.Provider value={dialogRef}>{children}</ParentDialogContext.Provider>
++      </div>
++    </div>
++  );
++}
+diff --git a/src/Tabs.tsx b/src/Tabs.tsx
+new file mode 100644
+index 0000000..e1db8fd
+--- /dev/null
++++ b/src/Tabs.tsx
+@@ -0,0 +1,179 @@
++import {
++  createContext,
++  useCallback,
++  useContext,
++  useId,
++  useLayoutEffect,
++  useRef,
++  useState,
++  type ComponentPropsWithoutRef,
++  type KeyboardEvent,
++  type MouseEvent,
++} from "react";
++
++export type TabsProps = Omit<ComponentPropsWithoutRef<"div">, "defaultValue"> & {
++  value?: string;
++  defaultValue?: string;
++  onValueChange?: (value: string) => void;
++};
++
++export type TabListProps = Omit<ComponentPropsWithoutRef<"div">, "role"> & {
++  "aria-label": string;
++};
++
++export type TabProps = Omit<ComponentPropsWithoutRef<"button">, "type" | "role" | "value" | "disabled"> & {
++  value: string;
++  disabled?: boolean;
++};
++
++export type TabPanelProps = Omit<ComponentPropsWithoutRef<"div">, "role"> & {
++  value: string;
++};
++
++type TabEntry = { value: string; disabled: boolean; element: HTMLElement };
++
++type TabsContextValue = {
++  baseId: string;
++  selected: string | null;
++  tabStop: string | null;
++  select: (value: string) => void;
++  register: (entry: TabEntry) => void;
++  unregister: (element: HTMLElement) => void;
++};
++
++const TabsContext = createContext<TabsContextValue | null>(null);
++
++function useTabsContext(): TabsContextValue {
++  const context = useContext(TabsContext);
++  if (!context) {
++    throw new Error("Tab and TabPanel must be rendered inside <Tabs>");
++  }
++  return context;
++}
++
++const tabId = (baseId: string, value: string) => `${baseId}-tab-${encodeURIComponent(value)}`;
++const panelId = (baseId: string, value: string) => `${baseId}-panel-${encodeURIComponent(value)}`;
++
++function byDocumentOrder(a: TabEntry, b: TabEntry): number {
++  return a.element.compareDocumentPosition(b.element) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
++}
++
++export function Tabs({ value, defaultValue, onValueChange, ...rest }: TabsProps) {
++  const baseId = useId();
++  const [uncontrolled, setUncontrolled] = useState(defaultValue);
++  const [entries, setEntries] = useState<TabEntry[]>([]);
++
++  const ordered = [...entries].sort(byDocumentOrder);
++  const firstEnabled = ordered.find((entry) => !entry.disabled)?.value ?? null;
++  const selected = value ?? uncontrolled ?? firstEnabled;
++  const tabStop = ordered.some((entry) => entry.value === selected) ? selected : firstEnabled;
++
++  const select = (next: string) => {
++    if (next === selected) return;
++    if (value === undefined) setUncontrolled(next);
++    onValueChange?.(next);
++  };
++
++  const register = useCallback(
++    (entry: TabEntry) =>
++      setEntries((previous) => [...previous.filter((item) => item.element !== entry.element), entry]),
++    [],
++  );
++  const unregister = useCallback(
++    (element: HTMLElement) => setEntries((previous) => previous.filter((item) => item.element !== element)),
++    [],
++  );
++
++  return (
++    <TabsContext.Provider value={{ baseId, selected, tabStop, select, register, unregister }}>
++      <div {...rest} />
++    </TabsContext.Provider>
++  );
++}
++
++export function TabList(props: TabListProps) {
++  return <div {...props} role="tablist" />;
++}
++
++// Returns the tab that an arrow/Home/End key moves focus to, or undefined when the key does nothing.
++function nextTab(current: HTMLElement, key: string): HTMLElement | undefined {
++  const tablist = current.closest('[role="tablist"]');
++  if (!tablist) return undefined;
++  const tabs = Array.from(tablist.querySelectorAll<HTMLElement>('[role="tab"]')).filter(
++    (tab) => tab.getAttribute("aria-disabled") !== "true",
++  );
++  const index = tabs.indexOf(current);
++  if (index === -1) return undefined;
++  switch (key) {
++    case "ArrowRight":
++      return tabs[(index + 1) % tabs.length];
++    case "ArrowLeft":
++      return tabs[(index - 1 + tabs.length) % tabs.length];
++    case "Home":
++      return tabs[0];
++    case "End":
++      return tabs[tabs.length - 1];
++    default:
++      return undefined;
++  }
++}
++
++export function Tab({ value, disabled = false, onClick, onKeyDown, ...rest }: TabProps) {
++  const { baseId, selected, tabStop, select, register, unregister } = useTabsContext();
++  const ref = useRef<HTMLButtonElement>(null);
++
++  useLayoutEffect(() => {
++    const element = ref.current;
++    if (!element) return;
++    register({ value, disabled, element });
++    return () => unregister(element);
++  }, [value, disabled, register, unregister]);
++
++  const handleClick = (event: MouseEvent<HTMLButtonElement>) => {
++    onClick?.(event);
++    if (!disabled) select(value);
++  };
++
++  // Focus alone never selects, so tabbing into a tablist does not report a change. Arrow, Home and End
++  // keys select the tab they move to; the target's value is read from its data-value attribute.
++  const handleKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
++    onKeyDown?.(event);
++    if (event.defaultPrevented) return;
++    const target = nextTab(event.currentTarget, event.key);
++    if (!target) return;
++    event.preventDefault();
++    target.focus();
++    if (target.dataset.value !== undefined) select(target.dataset.value);
++  };
++
++  return (
++    <button
++      {...rest}
++      ref={ref}
++      type="button"
++      role="tab"
++      id={tabId(baseId, value)}
++      data-value={value}
++      aria-selected={value === selected}
++      aria-disabled={disabled}
++      aria-controls={panelId(baseId, value)}
++      tabIndex={value === tabStop ? 0 : -1}
++      onClick={handleClick}
++      onKeyDown={handleKeyDown}
++    />
++  );
++}
++
++export function TabPanel({ value, ...rest }: TabPanelProps) {
++  const { baseId, selected } = useTabsContext();
++  return (
++    <div
++      {...rest}
++      id={panelId(baseId, value)}
++      role="tabpanel"
++      aria-labelledby={tabId(baseId, value)}
++      tabIndex={0}
++      hidden={value !== selected}
++    />
++  );
++}
+diff --git a/src/index.ts b/src/index.ts
+index cb0ff5c..c712262 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -1 +1,6 @@
+-export {};
++export { Tabs, TabList, Tab, TabPanel } from "./Tabs";
++export type { TabsProps, TabListProps, TabProps, TabPanelProps } from "./Tabs";
++export { Dialog } from "./Dialog";
++export type { DialogProps } from "./Dialog";
++export { Combobox } from "./Combobox";
++export type { ComboboxProps, ComboboxOption } from "./Combobox";
+diff --git a/tests/Combobox.test.tsx b/tests/Combobox.test.tsx
+new file mode 100644
+index 0000000..d4f7f77
+--- /dev/null
++++ b/tests/Combobox.test.tsx
+@@ -0,0 +1,394 @@
++import { useState } from "react";
++import { describe, expect, it, vi } from "vitest";
++import { fireEvent, render, screen, within } from "@testing-library/react";
++import userEvent from "@testing-library/user-event";
++import { Combobox, type ComboboxOption } from "../src/Combobox";
++
++const fruits: ComboboxOption[] = [
++  { value: "apple", label: "Apple" },
++  { value: "banana", label: "Banana" },
++  { value: "cherry", label: "Cherry", disabled: true },
++  { value: "grape", label: "Grape" },
++];
++
++function Controlled({
++  onChange,
++  options = fruits,
++  initial = null,
++}: {
++  onChange?: (value: string | null) => void;
++  options?: ComboboxOption[];
++  initial?: string | null;
++}) {
++  const [value, setValue] = useState<string | null>(initial);
++  return (
++    <>
++      <Combobox
++        label="Fruit"
++        options={options}
++        value={value}
++        onChange={(next) => {
++          onChange?.(next);
++          setValue(next);
++        }}
++      />
++      <button type="button">After</button>
++    </>
++  );
++}
++
++const input = () => screen.getByRole("combobox", { name: "Fruit" });
++const optionId = (label: string) => screen.getByRole("option", { name: label }).id;
++const activeOption = () => input().getAttribute("aria-activedescendant");
++
++describe("Combobox", () => {
++  describe("structure (C1)", () => {
++    it("renders a label, a combobox input and a listbox of options", () => {
++      render(<Combobox label="Fruit" options={fruits} value="banana" onChange={() => {}} />);
++      const field = input();
++      expect(field.tagName).toBe("INPUT");
++      expect(field).toHaveAttribute("aria-autocomplete", "list");
++      expect(field).toHaveAttribute("aria-expanded", "false");
++      expect(screen.getByLabelText("Fruit", { selector: "input" })).toBe(field);
++      const listbox = document.getElementById(field.getAttribute("aria-controls") ?? "");
++      expect(listbox).toHaveAttribute("role", "listbox");
++      expect(document.getElementById(listbox?.getAttribute("aria-labelledby") ?? "")).toHaveTextContent("Fruit");
++      expect(listbox).toHaveAttribute("hidden");
++      expect(within(listbox as HTMLElement).getAllByRole("option", { hidden: true })).toHaveLength(4);
++    });
++
++    it("marks only the option matching value as selected and disabled options as aria-disabled", () => {
++      render(<Combobox label="Fruit" options={fruits} value="banana" onChange={() => {}} />);
++      expect(screen.getByRole("option", { name: "Banana", hidden: true })).toHaveAttribute("aria-selected", "true");
++      expect(screen.getByRole("option", { name: "Apple", hidden: true })).toHaveAttribute("aria-selected", "false");
++      expect(screen.getByRole("option", { name: "Cherry", hidden: true })).toHaveAttribute("aria-disabled", "true");
++    });
++
++    it("passes placeholder to the input", () => {
++      render(<Combobox label="Fruit" options={fruits} value={null} placeholder="Pick one" onChange={() => {}} />);
++      expect(input()).toHaveAttribute("placeholder", "Pick one");
++    });
++  });
++
++  describe("displayed value (C2)", () => {
++    it("shows the label of the option matching value", () => {
++      render(<Combobox label="Fruit" options={fruits} value="banana" onChange={() => {}} />);
++      expect(input()).toHaveValue("Banana");
++    });
++
++    it("shows an empty string when value is null or matches nothing", () => {
++      const { rerender } = render(<Combobox label="Fruit" options={fruits} value={null} onChange={() => {}} />);
++      expect(input()).toHaveValue("");
++      rerender(<Combobox label="Fruit" options={fruits} value="zzz" onChange={() => {}} />);
++      expect(input()).toHaveValue("");
++    });
++
++    it("updates when value changes from outside", () => {
++      const { rerender } = render(<Combobox label="Fruit" options={fruits} value="apple" onChange={() => {}} />);
++      rerender(<Combobox label="Fruit" options={fruits} value="grape" onChange={() => {}} />);
++      expect(input()).toHaveValue("Grape");
++    });
++  });
++
++  describe("filtering and opening (C3)", () => {
++    it("typing opens the listbox and shows case-insensitive substring matches", async () => {
++      const user = userEvent.setup();
++      render(<Controlled />);
++      await user.type(input(), "AN");
++      expect(input()).toHaveAttribute("aria-expanded", "true");
++      const listbox = screen.getByRole("listbox");
++      expect(within(listbox).getAllByRole("option").map((option) => option.textContent)).toEqual(["Banana"]);
++    });
++
++    it("ArrowDown without typing shows all options even when the selected label is shown", async () => {
++      const user = userEvent.setup();
++      render(<Controlled initial="banana" />);
++      await user.click(input());
++      await user.keyboard("{ArrowDown}");
++      expect(within(screen.getByRole("listbox")).getAllByRole("option")).toHaveLength(4);
++    });
++
++    it("treats regex characters in the typed text literally", async () => {
++      const user = userEvent.setup();
++      render(<Controlled />);
++      await user.type(input(), "(.");
++      expect(screen.queryAllByRole("option")).toHaveLength(0);
++      expect(screen.getByRole("status")).toHaveTextContent("No results");
++    });
++  });
++
++  describe("active option (C4)", () => {
++    const trio: ComboboxOption[] = [
++      { value: "apple", label: "Apple" },
++      { value: "banana", label: "Banana" },
++      { value: "grape", label: "Grape" },
++    ];
++
++    it("drops the active option when the options shrink, and Enter does not throw", async () => {
++      const user = userEvent.setup();
++      const onChange = vi.fn();
++      const { rerender } = render(<Combobox label="Fruit" options={trio} value={null} onChange={onChange} />);
++      await user.click(input());
++      await user.keyboard("{ArrowDown}{ArrowDown}{ArrowDown}");
++      expect(activeOption()).toBe(optionId("Grape"));
++      rerender(<Combobox label="Fruit" options={trio.slice(0, 1)} value={null} onChange={onChange} />);
++      expect(activeOption()).toBeNull();
++      await user.keyboard("{Enter}");
++      expect(onChange).not.toHaveBeenCalled();
++    });
++
++    it("drops the active option when it becomes disabled, and Enter does not select it", async () => {
++      const user = userEvent.setup();
++      const onChange = vi.fn();
++      const { rerender } = render(<Combobox label="Fruit" options={trio} value={null} onChange={onChange} />);
++      await user.click(input());
++      await user.keyboard("{ArrowDown}{ArrowDown}");
++      expect(activeOption()).toBe(optionId("Banana"));
++      const disabledBanana = trio.map((option) => (option.value === "banana" ? { ...option, disabled: true } : option));
++      rerender(<Combobox label="Fruit" options={disabledBanana} value={null} onChange={onChange} />);
++      expect(activeOption()).toBeNull();
++      await user.keyboard("{Enter}");
++      expect(onChange).not.toHaveBeenCalled();
++    });
++
++    it("ArrowDown when closed opens the listbox and activates the first enabled option", async () => {
++      const user = userEvent.setup();
++      render(<Controlled />);
++      await user.click(input());
++      await user.keyboard("{ArrowDown}");
++      expect(input()).toHaveAttribute("aria-expanded", "true");
++      expect(activeOption()).toBe(optionId("Apple"));
++    });
++
++    it("ArrowUp when closed opens the listbox and activates the last enabled option", async () => {
++      const user = userEvent.setup();
++      render(<Controlled />);
++      await user.click(input());
++      await user.keyboard("{ArrowUp}");
++      expect(activeOption()).toBe(optionId("Grape"));
++    });
++
++    it("moves the active option through enabled options, skipping disabled ones and wrapping", async () => {
++      const user = userEvent.setup();
++      render(<Controlled />);
++      await user.click(input());
++      await user.keyboard("{ArrowDown}");
++      expect(activeOption()).toBe(optionId("Apple"));
++      await user.keyboard("{ArrowDown}");
++      expect(activeOption()).toBe(optionId("Banana"));
++      await user.keyboard("{ArrowDown}");
++      expect(activeOption()).toBe(optionId("Grape"));
++      await user.keyboard("{ArrowDown}");
++      expect(activeOption()).toBe(optionId("Apple"));
++      await user.keyboard("{ArrowUp}");
++      expect(activeOption()).toBe(optionId("Grape"));
++    });
++
++    it("keeps focus on the input while the active option changes", async () => {
++      const user = userEvent.setup();
++      render(<Controlled />);
++      await user.click(input());
++      await user.keyboard("{ArrowDown}{ArrowDown}");
++      expect(input()).toHaveFocus();
++    });
++
++    it("has no aria-activedescendant until an arrow key activates an option", async () => {
++      const user = userEvent.setup();
++      render(<Controlled />);
++      await user.click(input());
++      expect(input()).not.toHaveAttribute("aria-activedescendant");
++      await user.type(input(), "a");
++      expect(input()).not.toHaveAttribute("aria-activedescendant");
++    });
++
++    it("leaves nothing active and does not throw when every visible option is disabled", async () => {
++      const user = userEvent.setup();
++      render(<Controlled options={[{ value: "x", label: "X", disabled: true }]} />);
++      await user.click(input());
++      await user.keyboard("{ArrowDown}{ArrowUp}");
++      expect(input()).not.toHaveAttribute("aria-activedescendant");
++    });
++
++    it("calls preventDefault on arrow keys", () => {
++      render(<Controlled />);
++      expect(fireEvent.keyDown(input(), { key: "ArrowDown" })).toBe(false);
++      expect(fireEvent.keyDown(input(), { key: "ArrowUp" })).toBe(false);
++    });
++  });
++
++  describe("selecting (C5)", () => {
++    it("Enter with an active option selects it, closes the listbox and shows its label", async () => {
++      const user = userEvent.setup();
++      const onChange = vi.fn();
++      render(<Controlled onChange={onChange} />);
++      await user.click(input());
++      await user.keyboard("{ArrowDown}{ArrowDown}{Enter}");
++      expect(onChange).toHaveBeenCalledTimes(1);
++      expect(onChange).toHaveBeenCalledWith("banana");
++      expect(input()).toHaveAttribute("aria-expanded", "false");
++      expect(input()).toHaveValue("Banana");
++    });
++
++    it("Enter while closed does not select and does not preventDefault", async () => {
++      const user = userEvent.setup();
++      const onChange = vi.fn();
++      render(<Controlled onChange={onChange} />);
++      await user.click(input());
++      expect(fireEvent.keyDown(input(), { key: "Enter" })).toBe(true);
++      expect(onChange).not.toHaveBeenCalled();
++    });
++
++    it("Enter while open with no active option does not select and does not preventDefault", async () => {
++      const user = userEvent.setup();
++      const onChange = vi.fn();
++      render(<Controlled onChange={onChange} />);
++      await user.type(input(), "ap");
++      expect(fireEvent.keyDown(input(), { key: "Enter" })).toBe(true);
++      expect(onChange).not.toHaveBeenCalled();
++      expect(input()).toHaveAttribute("aria-expanded", "true");
++    });
++
++    it("clicking an enabled option selects it and keeps focus on the input", async () => {
++      const user = userEvent.setup();
++      const onChange = vi.fn();
++      render(<Controlled onChange={onChange} />);
++      await user.click(input());
++      await user.keyboard("{ArrowDown}");
++      expect(fireEvent.mouseDown(screen.getByRole("option", { name: "Grape" }))).toBe(false);
++      await user.click(screen.getByRole("option", { name: "Grape" }));
++      expect(onChange).toHaveBeenCalledWith("grape");
++      expect(input()).toHaveValue("Grape");
++    });
++
++    it("clicking a disabled option does nothing and keeps the listbox open", async () => {
++      const user = userEvent.setup();
++      const onChange = vi.fn();
++      render(<Controlled onChange={onChange} />);
++      await user.click(input());
++      await user.keyboard("{ArrowDown}");
++      await user.click(screen.getByRole("option", { name: "Cherry" }));
++      expect(onChange).not.toHaveBeenCalled();
++      expect(input()).toHaveAttribute("aria-expanded", "true");
++    });
++  });
++
++  describe("escape, blur and tab (C6)", () => {
++    it("Escape while open closes without selecting and restores the label", async () => {
++      const user = userEvent.setup();
++      const onChange = vi.fn();
++      render(<Controlled initial="banana" onChange={onChange} />);
++      await user.type(input(), "zz");
++      expect(fireEvent.keyDown(input(), { key: "Escape" })).toBe(false);
++      expect(input()).toHaveAttribute("aria-expanded", "false");
++      expect(input()).toHaveValue("Banana");
++      expect(onChange).not.toHaveBeenCalled();
++    });
++
++    it("Escape while open stops the event from reaching ancestors", async () => {
++      const user = userEvent.setup();
++      const ancestorKeyDown = vi.fn();
++      render(
++        <div onKeyDown={ancestorKeyDown}>
++          <Controlled />
++        </div>,
++      );
++      await user.type(input(), "a");
++      ancestorKeyDown.mockClear();
++      fireEvent.keyDown(input(), { key: "Escape" });
++      expect(ancestorKeyDown).not.toHaveBeenCalled();
++    });
++
++    it("Escape while closed does nothing and lets the event propagate", () => {
++      const ancestorKeyDown = vi.fn();
++      render(
++        <div onKeyDown={ancestorKeyDown}>
++          <Controlled />
++        </div>,
++      );
++      expect(fireEvent.keyDown(input(), { key: "Escape" })).toBe(true);
++      expect(ancestorKeyDown).toHaveBeenCalledTimes(1);
++    });
++
++    it("Tab closes the listbox without selecting, restores the label and does not prevent Tab", async () => {
++      const user = userEvent.setup();
++      const onChange = vi.fn();
++      render(<Controlled initial="banana" onChange={onChange} />);
++      await user.type(input(), "zz");
++      expect(fireEvent.keyDown(input(), { key: "Tab" })).toBe(true);
++      await user.tab();
++      expect(screen.getByRole("button", { name: "After" })).toHaveFocus();
++      expect(input()).toHaveAttribute("aria-expanded", "false");
++      expect(input()).toHaveValue("Banana");
++      expect(onChange).not.toHaveBeenCalled();
++    });
++  });
++
++  describe("no results (C7)", () => {
++    it("shows 'No results' with no options while open and nothing matches", async () => {
++      const user = userEvent.setup();
++      render(<Controlled />);
++      await user.type(input(), "zz");
++      expect(screen.getByRole("status").textContent).toBe("No results");
++      expect(within(screen.getByRole("listbox")).queryAllByRole("option")).toHaveLength(0);
++    });
++
++    it("hides 'No results' when closed or when there are matches", async () => {
++      const user = userEvent.setup();
++      render(<Controlled />);
++      expect(screen.queryByRole("status")).toBeNull();
++      await user.type(input(), "an");
++      expect(screen.queryByRole("status")).toBeNull();
++    });
++
++    it("shows 'No results' for an empty options array after ArrowDown without throwing", async () => {
++      const user = userEvent.setup();
++      render(<Controlled options={[]} />);
++      await user.click(input());
++      await user.keyboard("{ArrowDown}");
++      expect(screen.getByRole("status").textContent).toBe("No results");
++    });
++  });
++
++  describe("clearing (C8)", () => {
++    it("clearing the text calls onChange(null)", async () => {
++      const user = userEvent.setup();
++      const onChange = vi.fn();
++      render(<Controlled initial="banana" onChange={onChange} />);
++      await user.clear(input());
++      expect(onChange).toHaveBeenCalledWith(null);
++    });
++
++    it("reverts to the value's label once closed when the parent ignores onChange", async () => {
++      const user = userEvent.setup();
++      const onChange = vi.fn();
++      render(
++        <>
++          <Combobox label="Fruit" options={fruits} value="banana" onChange={onChange} />
++          <button type="button">After</button>
++        </>,
++      );
++      await user.clear(input());
++      expect(onChange).toHaveBeenCalledWith(null);
++      expect(input()).toHaveValue("");
++      await user.tab();
++      expect(input()).toHaveValue("Banana");
++    });
++  });
++
++  describe("multiple instances (C9)", () => {
++    it("gives two comboboxes distinct input, listbox and option ids", () => {
++      render(
++        <>
++          <Combobox label="First" options={fruits} value={null} onChange={() => {}} />
++          <Combobox label="Second" options={fruits} value={null} onChange={() => {}} />
++        </>,
++      );
++      const [first, second] = screen.getAllByRole("combobox", { hidden: true });
++      expect(first.id).not.toBe(second.id);
++      const ids = Array.from(document.querySelectorAll("[id]"), (element) => element.id);
++      expect(new Set(ids).size).toBe(ids.length);
++      // per instance: label, input, listbox and 4 options
++      expect(ids).toHaveLength(14);
++    });
++  });
++});
+diff --git a/tests/Dialog.test.tsx b/tests/Dialog.test.tsx
+new file mode 100644
+index 0000000..9c8359e
+--- /dev/null
++++ b/tests/Dialog.test.tsx
+@@ -0,0 +1,568 @@
++import { StrictMode, useState } from "react";
++import type { ReactNode } from "react";
++import { describe, expect, it, vi } from "vitest";
++import { fireEvent, render, screen } from "@testing-library/react";
++import userEvent from "@testing-library/user-event";
++import { Dialog } from "../src/Dialog";
++
++function Controlled({
++  onOpenChange,
++  description,
++  children,
++}: {
++  onOpenChange?: (open: boolean) => void;
++  description?: string;
++  children?: ReactNode;
++}) {
++  const [open, setOpen] = useState(false);
++  return (
++    <>
++      <button type="button" onClick={() => setOpen(true)}>
++        Open
++      </button>
++      <Dialog
++        open={open}
++        title="Settings"
++        description={description}
++        onOpenChange={(next) => {
++          onOpenChange?.(next);
++          setOpen(next);
++        }}
++      >
++        {children ?? <button type="button">Save</button>}
++      </Dialog>
++    </>
++  );
++}
++
++const opener = () => screen.getByRole("button", { name: "Open" });
++
++describe("Dialog", () => {
++  describe("rendering (D1)", () => {
++    it("renders nothing when open is false", () => {
++      const { container } = render(
++        <Dialog open={false} title="Settings" onOpenChange={() => {}}>
++          <button type="button">Save</button>
++        </Dialog>,
++      );
++      expect(screen.queryByRole("dialog")).toBeNull();
++      expect(container).toBeEmptyDOMElement();
++    });
++
++    it("portals a backdrop containing the dialog into document.body", () => {
++      const { container } = render(
++        <Dialog open title="Settings" onOpenChange={() => {}} className="panel" data-testid="dialog">
++          <button type="button">Save</button>
++        </Dialog>,
++      );
++      expect(container).toBeEmptyDOMElement();
++      const dialog = screen.getByRole("dialog");
++      expect(dialog.parentElement?.parentElement).toBe(document.body);
++      expect(dialog).toHaveAttribute("aria-modal", "true");
++      expect(dialog).toHaveClass("panel");
++      expect(dialog).toHaveAttribute("data-testid", "dialog");
++    });
++
++    it("labels the dialog with its h2 title", () => {
++      render(
++        <Dialog open title="Settings" onOpenChange={() => {}}>
++          <button type="button">Save</button>
++        </Dialog>,
++      );
++      const dialog = screen.getByRole("dialog");
++      const heading = screen.getByRole("heading", { name: "Settings" });
++      expect(heading.tagName).toBe("H2");
++      expect(dialog).toHaveAttribute("aria-labelledby", heading.id);
++      expect(dialog).toHaveAccessibleName("Settings");
++    });
++
++    it("describes the dialog with its paragraph when description is given", () => {
++      render(
++        <Dialog open title="Settings" description="Change your preferences" onOpenChange={() => {}}>
++          <button type="button">Save</button>
++        </Dialog>,
++      );
++      const dialog = screen.getByRole("dialog");
++      const paragraph = screen.getByText("Change your preferences");
++      expect(paragraph.tagName).toBe("P");
++      expect(dialog).toHaveAttribute("aria-describedby", paragraph.id);
++      expect(dialog).toHaveAccessibleDescription("Change your preferences");
++    });
++
++    it("has no aria-describedby when description is not given", () => {
++      render(
++        <Dialog open title="Settings" onOpenChange={() => {}}>
++          <button type="button">Save</button>
++        </Dialog>,
++      );
++      expect(screen.getByRole("dialog")).not.toHaveAttribute("aria-describedby");
++    });
++  });
++
++  describe("initial focus (D2)", () => {
++    it("focuses the first enabled focusable element", async () => {
++      render(
++        <Controlled>
++          <button type="button" disabled>
++            Off
++          </button>
++          <input aria-label="Name" />
++          <button type="button">Save</button>
++        </Controlled>,
++      );
++      await userEvent.setup().click(opener());
++      expect(screen.getByLabelText("Name")).toHaveFocus();
++    });
++
++    it("skips tabindex -1 elements and focuses a link with href", async () => {
++      render(
++        <Controlled>
++          <div tabIndex={-1}>Note</div>
++          <a href="#docs">Docs</a>
++        </Controlled>,
++      );
++      await userEvent.setup().click(opener());
++      expect(screen.getByRole("link", { name: "Docs" })).toHaveFocus();
++    });
++
++    it("focuses the dialog itself when it has no focusable elements", async () => {
++      render(<Controlled>Just text</Controlled>);
++      await userEvent.setup().click(opener());
++      const dialog = screen.getByRole("dialog");
++      expect(dialog).toHaveAttribute("tabindex", "-1");
++      expect(dialog).toHaveFocus();
++    });
++  });
++
++  describe("focus trap (D3)", () => {
++    it("Tab on the last focusable wraps to the first", async () => {
++      const user = userEvent.setup();
++      render(
++        <Controlled>
++          <button type="button">A</button>
++          <button type="button">B</button>
++        </Controlled>,
++      );
++      await user.click(opener());
++      expect(screen.getByRole("button", { name: "A" })).toHaveFocus();
++      await user.tab();
++      expect(screen.getByRole("button", { name: "B" })).toHaveFocus();
++      await user.tab();
++      expect(screen.getByRole("button", { name: "A" })).toHaveFocus();
++    });
++
++    it("Shift+Tab on the first focusable wraps to the last", async () => {
++      const user = userEvent.setup();
++      render(
++        <Controlled>
++          <button type="button">A</button>
++          <button type="button">B</button>
++        </Controlled>,
++      );
++      await user.click(opener());
++      await user.tab({ shift: true });
++      expect(screen.getByRole("button", { name: "B" })).toHaveFocus();
++    });
++
++    it("keeps focus on the dialog when there are no focusable elements", async () => {
++      const user = userEvent.setup();
++      render(<Controlled>Just text</Controlled>);
++      await user.click(opener());
++      const dialog = screen.getByRole("dialog");
++      await user.tab();
++      expect(dialog).toHaveFocus();
++      await user.tab({ shift: true });
++      expect(dialog).toHaveFocus();
++    });
++  });
++
++  describe("dismissal (D4)", () => {
++    it("Escape calls onOpenChange(false)", async () => {
++      const user = userEvent.setup();
++      const onOpenChange = vi.fn();
++      render(<Controlled onOpenChange={onOpenChange} />);
++      await user.click(opener());
++      await user.keyboard("{Escape}");
++      expect(onOpenChange).toHaveBeenCalledWith(false);
++    });
++
++    it("Escape does nothing when a child already prevented the default", async () => {
++      const user = userEvent.setup();
++      const onOpenChange = vi.fn();
++      render(
++        <Controlled onOpenChange={onOpenChange}>
++          <button
++            type="button"
++            onKeyDown={(event) => {
++              if (event.key === "Escape") event.preventDefault();
++            }}
++          >
++            Inner
++          </button>
++        </Controlled>,
++      );
++      await user.click(opener());
++      await user.keyboard("{Escape}");
++      expect(onOpenChange).not.toHaveBeenCalled();
++      expect(screen.getByRole("dialog")).toBeInTheDocument();
++    });
++
++    it("clicking the backdrop calls onOpenChange(false)", async () => {
++      const user = userEvent.setup();
++      const onOpenChange = vi.fn();
++      render(<Controlled onOpenChange={onOpenChange} />);
++      await user.click(opener());
++      await user.click(screen.getByRole("dialog").parentElement as HTMLElement);
++      expect(onOpenChange).toHaveBeenCalledWith(false);
++    });
++
++    it("clicking inside the dialog does not close it", async () => {
++      const user = userEvent.setup();
++      const onOpenChange = vi.fn();
++      render(<Controlled onOpenChange={onOpenChange} description="Body copy" />);
++      await user.click(opener());
++      await user.click(screen.getByText("Body copy"));
++      expect(onOpenChange).not.toHaveBeenCalled();
++    });
++
++    it("a press that starts inside and ends on the backdrop does not close it", async () => {
++      const user = userEvent.setup();
++      const onOpenChange = vi.fn();
++      render(<Controlled onOpenChange={onOpenChange} />);
++      await user.click(opener());
++      const backdrop = screen.getByRole("dialog").parentElement as HTMLElement;
++      fireEvent.mouseDown(screen.getByRole("heading", { name: "Settings" }));
++      fireEvent.mouseUp(backdrop);
++      fireEvent.click(backdrop);
++      expect(onOpenChange).not.toHaveBeenCalled();
++    });
++  });
++
++  describe("focus restore (D5)", () => {
++    it("returns focus to the opener when the dialog closes", async () => {
++      const user = userEvent.setup();
++      render(<Controlled />);
++      await user.click(opener());
++      expect(screen.getByRole("button", { name: "Save" })).toHaveFocus();
++      await user.keyboard("{Escape}");
++      expect(screen.queryByRole("dialog")).toBeNull();
++      expect(opener()).toHaveFocus();
++    });
++
++    it("returns focus to the previously focused element when the dialog unmounts", () => {
++      const outside = document.createElement("button");
++      document.body.append(outside);
++      outside.focus();
++      const { unmount } = render(
++        <Dialog open title="Settings" onOpenChange={() => {}}>
++          <button type="button">Save</button>
++        </Dialog>,
++      );
++      expect(screen.getByRole("button", { name: "Save" })).toHaveFocus();
++      unmount();
++      expect(outside).toHaveFocus();
++      outside.remove();
++    });
++
++    it("does not throw when the previously focused element was removed", () => {
++      const outside = document.createElement("button");
++      document.body.append(outside);
++      outside.focus();
++      const { rerender } = render(
++        <Dialog open title="Settings" onOpenChange={() => {}}>
++          <button type="button">Save</button>
++        </Dialog>,
++      );
++      outside.remove();
++      expect(() =>
++        rerender(
++          <Dialog open={false} title="Settings" onOpenChange={() => {}}>
++            <button type="button">Save</button>
++          </Dialog>,
++        ),
++      ).not.toThrow();
++      expect(screen.queryByRole("dialog")).toBeNull();
++    });
++
++    it("restores focus to the opener under StrictMode", async () => {
++      const user = userEvent.setup();
++      render(
++        <StrictMode>
++          <Controlled />
++        </StrictMode>,
++      );
++      await user.click(opener());
++      expect(screen.getByRole("button", { name: "Save" })).toHaveFocus();
++      await user.keyboard("{Escape}");
++      expect(opener()).toHaveFocus();
++    });
++  });
++
++  describe("backdrop press keeps focus (D3)", () => {
++    it("clicking the backdrop keeps focus inside the dialog when the parent ignores onOpenChange", async () => {
++      const user = userEvent.setup();
++      render(
++        <>
++          <button type="button">Outside</button>
++          <Dialog open title="Settings" onOpenChange={() => {}}>
++            <button type="button">Save</button>
++          </Dialog>
++        </>,
++      );
++      const dialog = screen.getByRole("dialog");
++      await user.click(dialog.parentElement as HTMLElement);
++      await user.tab();
++      expect(dialog).toContainElement(document.activeElement as HTMLElement);
++      expect(screen.getByRole("button", { name: "Outside" })).not.toHaveFocus();
++    });
++  });
++
++  describe("nested dialogs (D3)", () => {
++    function Nested({
++      onOuterOpenChange,
++      onInnerOpenChange,
++    }: {
++      onOuterOpenChange: (open: boolean) => void;
++      onInnerOpenChange: (open: boolean) => void;
++    }) {
++      const [inner, setInner] = useState(false);
++      return (
++        <Dialog open title="Outer" onOpenChange={onOuterOpenChange}>
++          <button type="button" onClick={() => setInner(true)}>
++            Open inner
++          </button>
++          <Dialog
++            open={inner}
++            title="Inner"
++            onOpenChange={(next) => {
++              onInnerOpenChange(next);
++              setInner(next);
++            }}
++          >
++            <button type="button">Cancel</button>
++            <button type="button">Confirm</button>
++          </Dialog>
++        </Dialog>
++      );
++    }
++
++    it("Escape closes only the inner dialog", async () => {
++      const user = userEvent.setup();
++      const onOuterOpenChange = vi.fn();
++      const onInnerOpenChange = vi.fn();
++      render(<Nested onOuterOpenChange={onOuterOpenChange} onInnerOpenChange={onInnerOpenChange} />);
++      await user.click(screen.getByRole("button", { name: "Open inner" }));
++      expect(screen.getByRole("dialog", { name: "Inner" })).toContainElement(document.activeElement as HTMLElement);
++      await user.keyboard("{Escape}");
++      expect(onInnerOpenChange).toHaveBeenCalledTimes(1);
++      expect(onInnerOpenChange).toHaveBeenCalledWith(false);
++      expect(onOuterOpenChange).not.toHaveBeenCalled();
++    });
++
++    it("Tab and Shift+Tab inside the inner dialog keep focus inside it", async () => {
++      const user = userEvent.setup();
++      render(<Nested onOuterOpenChange={() => {}} onInnerOpenChange={() => {}} />);
++      await user.click(screen.getByRole("button", { name: "Open inner" }));
++      const inner = screen.getByRole("dialog", { name: "Inner" });
++      await user.tab();
++      expect(screen.getByRole("button", { name: "Confirm" })).toHaveFocus();
++      await user.tab();
++      expect(screen.getByRole("button", { name: "Cancel" })).toHaveFocus();
++      await user.tab({ shift: true });
++      expect(screen.getByRole("button", { name: "Confirm" })).toHaveFocus();
++      expect(inner).toContainElement(document.activeElement as HTMLElement);
++    });
++  });
++
++  describe("focused element removed inside the dialog (D3, D4)", () => {
++    function RemovableButton() {
++      const [shown, setShown] = useState(true);
++      return shown ? (
++        <button type="button" onClick={() => setShown(false)}>
++          Remove
++        </button>
++      ) : null;
++    }
++
++    it("Tab after the focused element is removed moves focus into the dialog", async () => {
++      const user = userEvent.setup();
++      render(
++        <>
++          <button type="button">Outside</button>
++          <Controlled>
++            <RemovableButton />
++            <button type="button">Save</button>
++          </Controlled>
++        </>,
++      );
++      await user.click(opener());
++      await user.click(screen.getByRole("button", { name: "Remove" }));
++      expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
++      await user.tab();
++      expect(screen.getByRole("button", { name: "Save" })).toHaveFocus();
++      expect(screen.getByRole("button", { name: "Outside" })).not.toHaveFocus();
++    });
++
++    it("Escape after the focused element is removed still calls onOpenChange(false)", async () => {
++      const user = userEvent.setup();
++      const onOpenChange = vi.fn();
++      render(
++        <Controlled onOpenChange={onOpenChange}>
++          <RemovableButton />
++          <button type="button">Save</button>
++        </Controlled>,
++      );
++      await user.click(opener());
++      await user.click(screen.getByRole("button", { name: "Remove" }));
++      await user.keyboard("{Escape}");
++      expect(onOpenChange).toHaveBeenCalledTimes(1);
++      expect(onOpenChange).toHaveBeenCalledWith(false);
++    });
++  });
++
++  describe("nested dialogs opened in the same render (D2, D3, D4, D5)", () => {
++    function Together({
++      onOuterOpenChange = () => {},
++      onInnerOpenChange = () => {},
++    }: {
++      onOuterOpenChange?: (open: boolean) => void;
++      onInnerOpenChange?: (open: boolean) => void;
++    }) {
++      const [outer, setOuter] = useState(false);
++      const [inner, setInner] = useState(false);
++      return (
++        <>
++          <button
++            type="button"
++            onClick={() => {
++              setOuter(true);
++              setInner(true);
++            }}
++          >
++            Open both
++          </button>
++          <Dialog
++            open={outer}
++            title="Outer"
++            onOpenChange={(next) => {
++              onOuterOpenChange(next);
++              setOuter(next);
++            }}
++          >
++            <button type="button">o1</button>
++            <button type="button" onClick={() => setOuter(false)}>
++              Close outer
++            </button>
++            <Dialog
++              open={inner}
++              title="Inner"
++              onOpenChange={(next) => {
++                onInnerOpenChange(next);
++                setInner(next);
++              }}
++            >
++              <button type="button">i1</button>
++              <button type="button">i2</button>
++            </Dialog>
++          </Dialog>
++        </>
++      );
++    }
++
++    it("focuses the inner dialog's first element, not the outer one's", () => {
++      render(
++        <Dialog open title="Outer" onOpenChange={() => {}}>
++          <button type="button">o1</button>
++          <Dialog open title="Inner" onOpenChange={() => {}}>
++            <button type="button">i1</button>
++          </Dialog>
++        </Dialog>,
++      );
++      expect(screen.getByRole("button", { name: "i1" })).toHaveFocus();
++      expect(screen.getByRole("button", { name: "o1" })).not.toHaveFocus();
++    });
++
++    it("Escape calls only the inner onOpenChange", async () => {
++      const user = userEvent.setup();
++      const onOuterOpenChange = vi.fn();
++      const onInnerOpenChange = vi.fn();
++      render(
++        <Dialog open title="Outer" onOpenChange={onOuterOpenChange}>
++          <button type="button">o1</button>
++          <Dialog open title="Inner" onOpenChange={onInnerOpenChange}>
++            <button type="button">i1</button>
++          </Dialog>
++        </Dialog>,
++      );
++      await user.keyboard("{Escape}");
++      expect(onInnerOpenChange).toHaveBeenCalledTimes(1);
++      expect(onInnerOpenChange).toHaveBeenCalledWith(false);
++      expect(onOuterOpenChange).not.toHaveBeenCalled();
++    });
++
++    it("Tab wraps inside the inner dialog and never reaches the outer one", async () => {
++      const user = userEvent.setup();
++      render(
++        <Dialog open title="Outer" onOpenChange={() => {}}>
++          <button type="button">o1</button>
++          <Dialog open title="Inner" onOpenChange={() => {}}>
++            <button type="button">i1</button>
++            <button type="button">i2</button>
++          </Dialog>
++        </Dialog>,
++      );
++      const inner = screen.getByRole("dialog", { name: "Inner" });
++      await user.tab();
++      expect(screen.getByRole("button", { name: "i2" })).toHaveFocus();
++      await user.tab();
++      expect(screen.getByRole("button", { name: "i1" })).toHaveFocus();
++      expect(inner).toContainElement(document.activeElement as HTMLElement);
++    });
++
++    it("closing the inner moves focus into the outer dialog, not to the opener", async () => {
++      const user = userEvent.setup();
++      render(<Together />);
++      await user.click(screen.getByRole("button", { name: "Open both" }));
++      expect(screen.getByRole("button", { name: "i1" })).toHaveFocus();
++      await user.keyboard("{Escape}");
++      expect(screen.queryByRole("dialog", { name: "Inner" })).toBeNull();
++      expect(screen.getByRole("button", { name: "o1" })).toHaveFocus();
++    });
++
++    it("after both close, focus returns to the opener", async () => {
++      const user = userEvent.setup();
++      render(<Together />);
++      const opener = screen.getByRole("button", { name: "Open both" });
++      await user.click(opener);
++      await user.keyboard("{Escape}");
++      await user.keyboard("{Escape}");
++      expect(screen.queryByRole("dialog")).toBeNull();
++      expect(opener).toHaveFocus();
++    });
++
++    it("closing the outer while the inner is open returns focus to the opener", async () => {
++      const user = userEvent.setup();
++      render(<Together />);
++      const opener = screen.getByRole("button", { name: "Open both" });
++      await user.click(opener);
++      await user.click(screen.getByRole("button", { name: "Close outer" }));
++      expect(screen.queryByRole("dialog")).toBeNull();
++      expect(opener).toHaveFocus();
++    });
++  });
++
++  describe("controlled open (D6)", () => {
++    it("stays open when the parent ignores onOpenChange(false)", async () => {
++      const user = userEvent.setup();
++      const onOpenChange = vi.fn();
++      render(
++        <Dialog open title="Settings" onOpenChange={onOpenChange}>
++          <button type="button">Save</button>
++        </Dialog>,
++      );
++      await user.keyboard("{Escape}");
++      expect(onOpenChange).toHaveBeenCalledWith(false);
++      expect(screen.getByRole("dialog")).toBeInTheDocument();
++    });
++  });
++});
+diff --git a/tests/Tabs.test.tsx b/tests/Tabs.test.tsx
+new file mode 100644
+index 0000000..4cdfb4d
+--- /dev/null
++++ b/tests/Tabs.test.tsx
+@@ -0,0 +1,342 @@
++import type { ComponentProps } from "react";
++import { useState } from "react";
++import { describe, expect, it, vi } from "vitest";
++import { fireEvent, render, screen } from "@testing-library/react";
++import userEvent from "@testing-library/user-event";
++import { Tab, TabList, TabPanel, Tabs } from "../src/Tabs";
++
++type TabsRootProps = ComponentProps<typeof Tabs>;
++
++function Example({ disabled = [], ...props }: TabsRootProps & { disabled?: string[] }) {
++  return (
++    <Tabs {...props}>
++      <TabList aria-label="Sections">
++        <Tab value="one" disabled={disabled.includes("one")}>
++          One
++        </Tab>
++        <Tab value="two" disabled={disabled.includes("two")}>
++          Two
++        </Tab>
++        <Tab value="three" disabled={disabled.includes("three")}>
++          Three
++        </Tab>
++      </TabList>
++      <TabPanel value="one">Panel one</TabPanel>
++      <TabPanel value="two">Panel two</TabPanel>
++      <TabPanel value="three">Panel three</TabPanel>
++    </Tabs>
++  );
++}
++
++function ControlledExample() {
++  const [value, setValue] = useState("one");
++  return <Example value={value} onValueChange={setValue} />;
++}
++
++function Reorderable({ values }: { values: string[] }) {
++  return (
++    <Tabs defaultValue={values[0]}>
++      <TabList aria-label="Reorder">
++        {values.map((value) => (
++          <Tab key={value} value={value}>
++            {value}
++          </Tab>
++        ))}
++      </TabList>
++    </Tabs>
++  );
++}
++
++const tab = (name: string) => screen.getByRole("tab", { name });
++
++describe("Tabs", () => {
++  describe("structure (T1)", () => {
++    it("renders a labelled tablist of button tabs with aria-selected", () => {
++      render(<Example />);
++      const list = screen.getByRole("tablist", { name: "Sections" });
++      expect(list).toContainElement(tab("One"));
++      expect(tab("One").tagName).toBe("BUTTON");
++      expect(tab("One")).toHaveAttribute("type", "button");
++      expect(tab("One")).toHaveAttribute("aria-selected", "true");
++      expect(tab("Two")).toHaveAttribute("aria-selected", "false");
++    });
++
++    it("links each tab to its panel and each panel back to its tab", () => {
++      render(<Example />);
++      const panel = document.getElementById(tab("One").getAttribute("aria-controls") ?? "");
++      expect(panel).toHaveAttribute("role", "tabpanel");
++      expect(panel).toHaveAttribute("aria-labelledby", tab("One").id);
++      expect(panel).toHaveAttribute("tabindex", "0");
++      expect(panel).toBeVisible();
++    });
++
++    it("hides panels that are not selected", () => {
++      render(<Example />);
++      const hidden = document.getElementById(tab("Two").getAttribute("aria-controls") ?? "");
++      expect(hidden).toHaveAttribute("hidden");
++      expect(screen.getAllByRole("tabpanel")).toHaveLength(1);
++    });
++
++    it("does not share ids between two Tabs instances", () => {
++      render(
++        <>
++          <Example />
++          <Example />
++        </>,
++      );
++      const ids = Array.from(document.querySelectorAll("[id]"), (element) => element.id);
++      expect(ids).toHaveLength(12);
++      expect(new Set(ids).size).toBe(12);
++    });
++
++    it("keeps generated ids free of whitespace when a value contains spaces", () => {
++      render(
++        <Tabs defaultValue="a b">
++          <TabList aria-label="Spaced">
++            <Tab value="a b">A</Tab>
++          </TabList>
++          <TabPanel value="a b">P</TabPanel>
++        </Tabs>,
++      );
++      expect(tab("A").id).not.toMatch(/\s/);
++      expect(screen.getByRole("tabpanel")).toHaveAttribute("aria-labelledby", tab("A").id);
++    });
++  });
++
++  describe("roving tabindex (T2)", () => {
++    it("gives tabIndex 0 to the selected tab and -1 to the others", () => {
++      render(<Example defaultValue="two" />);
++      expect(tab("Two")).toHaveAttribute("tabindex", "0");
++      expect(tab("One")).toHaveAttribute("tabindex", "-1");
++      expect(tab("Three")).toHaveAttribute("tabindex", "-1");
++    });
++
++    it("gives the first enabled tab tabIndex 0 when no tab matches value", () => {
++      render(<Example value="nope" />);
++      expect(tab("One")).toHaveAttribute("tabindex", "0");
++      expect(tab("Two")).toHaveAttribute("tabindex", "-1");
++    });
++
++    it("skips disabled tabs when choosing the fallback tab stop", () => {
++      render(<Example value="nope" disabled={["one"]} />);
++      expect(tab("One")).toHaveAttribute("tabindex", "-1");
++      expect(tab("Two")).toHaveAttribute("tabindex", "0");
++    });
++  });
++
++  describe("keyboard navigation (T3)", () => {
++    it("ArrowRight and ArrowLeft move focus and select the adjacent tab", async () => {
++      const user = userEvent.setup();
++      const onValueChange = vi.fn();
++      render(<Example onValueChange={onValueChange} />);
++      tab("One").focus();
++      await user.keyboard("{ArrowRight}");
++      expect(tab("Two")).toHaveFocus();
++      expect(onValueChange).toHaveBeenLastCalledWith("two");
++      expect(tab("Two")).toHaveAttribute("aria-selected", "true");
++      expect(screen.getByRole("tabpanel")).toHaveTextContent("Panel two");
++      await user.keyboard("{ArrowLeft}");
++      expect(tab("One")).toHaveFocus();
++      expect(onValueChange).toHaveBeenLastCalledWith("one");
++    });
++
++    it("wraps from the last tab to the first and from the first to the last", async () => {
++      const user = userEvent.setup();
++      render(<Example />);
++      tab("Three").focus();
++      await user.keyboard("{ArrowRight}");
++      expect(tab("One")).toHaveFocus();
++      await user.keyboard("{ArrowLeft}");
++      expect(tab("Three")).toHaveFocus();
++    });
++
++    it("skips disabled tabs when moving with the arrow keys", async () => {
++      const user = userEvent.setup();
++      render(<Example disabled={["two"]} />);
++      tab("One").focus();
++      await user.keyboard("{ArrowRight}");
++      expect(tab("Three")).toHaveFocus();
++    });
++
++    it("Home and End go to the first and last enabled tab", async () => {
++      const user = userEvent.setup();
++      render(<Example disabled={["one"]} />);
++      tab("Three").focus();
++      await user.keyboard("{Home}");
++      expect(tab("Two")).toHaveFocus();
++      await user.keyboard("{End}");
++      expect(tab("Three")).toHaveFocus();
++    });
++
++    it("calls preventDefault on arrow, Home and End keys but not on other keys", () => {
++      render(<Example />);
++      for (const key of ["ArrowRight", "ArrowLeft", "Home", "End"]) {
++        expect(fireEvent.keyDown(tab("One"), { key })).toBe(false);
++      }
++      expect(fireEvent.keyDown(tab("One"), { key: "a" })).toBe(true);
++    });
++  });
++
++  describe("mouse and disabled tabs (T4)", () => {
++    it("selects an enabled tab on click", async () => {
++      const user = userEvent.setup();
++      const onValueChange = vi.fn();
++      render(<Example onValueChange={onValueChange} />);
++      await user.click(tab("Two"));
++      expect(tab("Two")).toHaveAttribute("aria-selected", "true");
++      expect(onValueChange).toHaveBeenCalledWith("two");
++    });
++
++    it("marks disabled tabs with aria-disabled and ignores clicks on them", async () => {
++      const user = userEvent.setup();
++      const onValueChange = vi.fn();
++      render(<Example disabled={["two"]} onValueChange={onValueChange} />);
++      expect(tab("Two")).toHaveAttribute("aria-disabled", "true");
++      await user.click(tab("Two"));
++      expect(tab("Two")).toHaveAttribute("aria-selected", "false");
++      expect(tab("One")).toHaveAttribute("aria-selected", "true");
++      expect(onValueChange).not.toHaveBeenCalled();
++    });
++  });
++
++  describe("value and defaultValue (T5)", () => {
++    it("uses defaultValue as the initial tab", () => {
++      render(<Example defaultValue="three" />);
++      expect(tab("Three")).toHaveAttribute("aria-selected", "true");
++      expect(screen.getByRole("tabpanel")).toHaveTextContent("Panel three");
++    });
++
++    it("selects the first enabled tab when neither value nor defaultValue is given", () => {
++      render(<Example disabled={["one"]} />);
++      expect(tab("Two")).toHaveAttribute("aria-selected", "true");
++      expect(tab("One")).toHaveAttribute("aria-selected", "false");
++    });
++
++    it("lets value win over defaultValue", () => {
++      render(<Example value="two" defaultValue="three" />);
++      expect(tab("Two")).toHaveAttribute("aria-selected", "true");
++      expect(screen.getByRole("tabpanel")).toHaveTextContent("Panel two");
++    });
++
++    it("reports changes but keeps the selection when the parent ignores them", async () => {
++      const user = userEvent.setup();
++      const onValueChange = vi.fn();
++      render(<Example value="one" onValueChange={onValueChange} />);
++      await user.click(tab("Two"));
++      expect(onValueChange).toHaveBeenCalledWith("two");
++      expect(tab("One")).toHaveAttribute("aria-selected", "true");
++      expect(tab("Two")).toHaveAttribute("aria-selected", "false");
++      expect(screen.getByRole("tabpanel")).toHaveTextContent("Panel one");
++    });
++
++    it("follows the value prop when the parent updates it", async () => {
++      const user = userEvent.setup();
++      render(<ControlledExample />);
++      await user.click(tab("Two"));
++      expect(tab("Two")).toHaveAttribute("aria-selected", "true");
++      expect(screen.getByRole("tabpanel")).toHaveTextContent("Panel two");
++    });
++  });
++
++  describe("selection happens on click and keys, not on focus (T5, T6)", () => {
++    it("clicking a tab in a controlled tablist that ignores updates calls onValueChange once", async () => {
++      const user = userEvent.setup();
++      const onValueChange = vi.fn();
++      render(<Example value="one" onValueChange={onValueChange} />);
++      await user.click(tab("Two"));
++      expect(onValueChange).toHaveBeenCalledTimes(1);
++      expect(onValueChange).toHaveBeenCalledWith("two");
++    });
++
++    it("tabbing into a tablist whose value matches no tab calls nothing and focuses the first enabled tab", async () => {
++      const user = userEvent.setup();
++      const onValueChange = vi.fn();
++      render(<Example value="nope" onValueChange={onValueChange} />);
++      await user.tab();
++      expect(tab("One")).toHaveFocus();
++      expect(onValueChange).not.toHaveBeenCalled();
++    });
++
++    it("arrow and End keys report the target value when the parent ignores updates", async () => {
++      const user = userEvent.setup();
++      const onValueChange = vi.fn();
++      render(<Example value="one" onValueChange={onValueChange} />);
++      tab("One").focus();
++      await user.keyboard("{ArrowRight}");
++      expect(tab("Two")).toHaveFocus();
++      expect(onValueChange).toHaveBeenLastCalledWith("two");
++      await user.keyboard("{End}");
++      expect(tab("Three")).toHaveFocus();
++      expect(onValueChange).toHaveBeenLastCalledWith("three");
++      expect(tab("One")).toHaveAttribute("aria-selected", "true");
++    });
++
++    it("Home and End select the first and last tab in uncontrolled mode", async () => {
++      const user = userEvent.setup();
++      const onValueChange = vi.fn();
++      render(<Example defaultValue="two" onValueChange={onValueChange} />);
++      tab("Two").focus();
++      await user.keyboard("{End}");
++      expect(onValueChange).toHaveBeenLastCalledWith("three");
++      expect(tab("Three")).toHaveAttribute("aria-selected", "true");
++      await user.keyboard("{Home}");
++      expect(onValueChange).toHaveBeenLastCalledWith("one");
++      expect(tab("One")).toHaveAttribute("aria-selected", "true");
++    });
++  });
++
++  describe("hostile input (T6)", () => {
++    it("does nothing and does not throw when every tab is disabled", async () => {
++      const user = userEvent.setup();
++      const onValueChange = vi.fn();
++      render(<Example disabled={["one", "two", "three"]} onValueChange={onValueChange} />);
++      tab("One").focus();
++      await user.keyboard("{ArrowRight}{ArrowLeft}{Home}{End}");
++      expect(tab("One")).toHaveFocus();
++      expect(onValueChange).not.toHaveBeenCalled();
++    });
++
++    it("keeps focus on a single tab when ArrowRight is pressed", async () => {
++      const user = userEvent.setup();
++      const onValueChange = vi.fn();
++      render(
++        <Tabs defaultValue="only" onValueChange={onValueChange}>
++          <TabList aria-label="Single">
++            <Tab value="only">Only</Tab>
++          </TabList>
++          <TabPanel value="only">P</TabPanel>
++        </Tabs>,
++      );
++      tab("Only").focus();
++      await user.keyboard("{ArrowRight}");
++      expect(tab("Only")).toHaveFocus();
++      expect(onValueChange).not.toHaveBeenCalled();
++    });
++
++    it("navigates in DOM order after tabs are reordered", async () => {
++      const user = userEvent.setup();
++      const { rerender } = render(<Reorderable values={["a", "b", "c"]} />);
++      rerender(<Reorderable values={["c", "b", "a"]} />);
++      tab("c").focus();
++      await user.keyboard("{ArrowRight}");
++      expect(tab("b")).toHaveFocus();
++    });
++
++    it("navigates in DOM order after a tab is removed", async () => {
++      const user = userEvent.setup();
++      const { rerender } = render(<Reorderable values={["a", "b", "c"]} />);
++      rerender(<Reorderable values={["a", "c"]} />);
++      tab("a").focus();
++      await user.keyboard("{ArrowRight}");
++      expect(tab("c")).toHaveFocus();
++    });
++
++    it("does not call onValueChange when re-selecting the selected tab", async () => {
++      const user = userEvent.setup();
++      const onValueChange = vi.fn();
++      render(<Example onValueChange={onValueChange} />);
++      await user.click(tab("One"));
++      expect(onValueChange).not.toHaveBeenCalled();
++    });
++  });
++});
+diff --git a/tests/index.test.ts b/tests/index.test.ts
+new file mode 100644
+index 0000000..11928fa
+--- /dev/null
++++ b/tests/index.test.ts
+@@ -0,0 +1,56 @@
++import { describe, expect, it } from "vitest";
++import readme from "../README.md?raw";
++import indexSource from "../src/index.ts?raw";
++import comboboxSource from "../src/Combobox.tsx?raw";
++import dialogSource from "../src/Dialog.tsx?raw";
++import tabsSource from "../src/Tabs.tsx?raw";
++import * as library from "../src/index";
++import type {
++  ComboboxOption,
++  ComboboxProps,
++  DialogProps,
++  TabListProps,
++  TabPanelProps,
++  TabProps,
++  TabsProps,
++} from "../src/index";
++
++describe("package exports (P1)", () => {
++  it("exports every component", () => {
++    for (const name of ["Tabs", "TabList", "Tab", "TabPanel", "Dialog", "Combobox"] as const) {
++      expect(typeof library[name]).toBe("function");
++    }
++  });
++
++  it("exports prop types, checked at compile time by pnpm typecheck", () => {
++    type ExportedTypes = [
++      TabsProps,
++      TabListProps,
++      TabProps,
++      TabPanelProps,
++      DialogProps,
++      ComboboxProps,
++      ComboboxOption,
++    ];
++    const types: ExportedTypes | null = null;
++    expect(types).toBeNull();
++  });
++
++  it("imports no stylesheets from any source file", () => {
++    for (const source of [indexSource, comboboxSource, dialogSource, tabsSource]) {
++      expect(source).not.toMatch(/\.css["']/);
++    }
++  });
++});
++
++describe("README (P2)", () => {
++  const sections = readme.split(/^## /m).slice(1);
++
++  it.each(["Tabs", "Dialog", "Combobox"])("documents %s with usage, props and keyboard tables", (name) => {
++    const section = sections.find((text) => text.startsWith(`${name}\n`));
++    expect(section).toBeDefined();
++    expect(section).toContain("```tsx");
++    expect(section).toContain("| Prop |");
++    expect(section).toContain("| Key |");
++  });
++});
+diff --git a/tests/integration.test.tsx b/tests/integration.test.tsx
+new file mode 100644
+index 0000000..f7a846e
+--- /dev/null
++++ b/tests/integration.test.tsx
+@@ -0,0 +1,35 @@
++import { describe, expect, it, vi } from "vitest";
++import { render, screen, within } from "@testing-library/react";
++import userEvent from "@testing-library/user-event";
++import { Combobox } from "../src/Combobox";
++import { Dialog } from "../src/Dialog";
++
++const fruits = [
++  { value: "apple", label: "Apple" },
++  { value: "banana", label: "Banana" },
++];
++
++describe("Combobox inside Dialog (I1)", () => {
++  it("Escape closes only the listbox, and a second Escape closes the dialog", async () => {
++    const user = userEvent.setup();
++    const onOpenChange = vi.fn();
++    render(
++      <Dialog open title="Pick a fruit" onOpenChange={onOpenChange}>
++        <Combobox label="Fruit" options={fruits} value={null} onChange={() => {}} />
++      </Dialog>,
++    );
++    const input = screen.getByRole("combobox", { name: "Fruit" });
++    expect(input).toHaveFocus();
++
++    await user.keyboard("{ArrowDown}");
++    expect(within(screen.getByRole("listbox")).getAllByRole("option")).toHaveLength(2);
++
++    await user.keyboard("{Escape}");
++    expect(onOpenChange).not.toHaveBeenCalled();
++    expect(input).toHaveAttribute("aria-expanded", "false");
++
++    await user.keyboard("{Escape}");
++    expect(onOpenChange).toHaveBeenCalledTimes(1);
++    expect(onOpenChange).toHaveBeenCalledWith(false);
++  });
++});
+diff --git a/tests/raw-imports.d.ts b/tests/raw-imports.d.ts
+new file mode 100644
+index 0000000..d342ca3
+--- /dev/null
++++ b/tests/raw-imports.d.ts
+@@ -0,0 +1,5 @@
++// Lets tests import files as text with the Vite `?raw` suffix (used by tests/index.test.ts).
++declare module "*?raw" {
++  const content: string;
++  export default content;
++}
