@@ -1,0 +1,443 @@
+diff --git a/packages/@react-aria/overlays/package.json b/packages/@react-aria/overlays/package.json
+index 558df4c..b0164fa 100644
+--- a/packages/@react-aria/overlays/package.json
++++ b/packages/@react-aria/overlays/package.json
+@@ -32,6 +32,7 @@
+     "@react-aria/ssr": "^3.9.10",
+     "@react-aria/utils": "^3.33.0",
+     "@react-aria/visually-hidden": "^3.8.30",
++    "@react-stately/flags": "^3.1.2",
+     "@react-stately/overlays": "^3.6.22",
+     "@react-types/button": "^3.15.0",
+     "@react-types/overlays": "^3.9.3",
+diff --git a/packages/@react-aria/overlays/src/ariaHideOutside.ts b/packages/@react-aria/overlays/src/ariaHideOutside.ts
+index 763c376..51e47f7 100644
+--- a/packages/@react-aria/overlays/src/ariaHideOutside.ts
++++ b/packages/@react-aria/overlays/src/ariaHideOutside.ts
+@@ -10,7 +10,8 @@
+  * governing permissions and limitations under the License.
+  */
+ 
+-import {getOwnerWindow, nodeContains} from '@react-aria/utils';
++import {getOwnerWindow, isShadowRoot, nodeContains} from '@react-aria/utils';
++import {shadowDOM} from '@react-stately/flags';
+ const supportsInert = typeof HTMLElement !== 'undefined' && 'inert' in HTMLElement.prototype;
+ 
+ interface AriaHideOutsideOptions {
+@@ -29,10 +30,26 @@ interface ObserverWrapper {
+ }
+ let observerStack: Array<ObserverWrapper> = [];
+ 
++// Returns the shadow roots enclosing the targets whose host is inside root. Nothing above root is hidden.
++function getShadowRoots(targets: Element[], root: Element): Set<ShadowRoot> {
++  let shadowRoots = new Set<ShadowRoot>();
++  for (let target of targets) {
++    let node: Node = target.getRootNode();
++    while (isShadowRoot(node)) {
++      if (nodeContains(root, node.host)) {
++        shadowRoots.add(node);
++      }
++      node = node.host.getRootNode();
++    }
++  }
++  return shadowRoots;
++}
++
+ /**
+  * Hides all elements in the DOM outside the given targets from screen readers using aria-hidden,
+  * and returns a function to revert these changes. In addition, changes to the DOM are watched
+- * and new elements outside the targets are automatically hidden.
++ * and new elements outside the targets are automatically hidden. When shadow DOM is enabled,
++ * the shadow roots enclosing the targets are hidden and watched as well.
+  * @param targets - The elements that should remain visible.
+  * @param root - Nothing will be hidden above this element.
+  * @returns - A function to restore all hidden elements.
+@@ -137,8 +154,22 @@ export function ariaHideOutside(targets: Element[], options?: AriaHideOutsideOpt
+     observerStack[observerStack.length - 1].disconnect();
+   }
+ 
++  let shadowRoots = shadowDOM() ? getShadowRoots(targets, root) : new Set<ShadowRoot>();
++
+   walk(root);
+ 
++  for (let shadowRoot of shadowRoots) {
++    // Live announcers and top layer elements are marked first, since walking a child element
++    // would otherwise hide it before the walk of its siblings could mark it visible.
++    for (let element of shadowRoot.querySelectorAll('[data-live-announcer], [data-react-aria-top-layer]')) {
++      visibleNodes.add(element);
++    }
++
++    for (let child of shadowRoot.children) {
++      walk(child);
++    }
++  }
++
+   let observer = new MutationObserver(changes => {
+     for (let change of changes) {
+       if (change.type !== 'childList') {
+@@ -167,14 +198,19 @@ export function ariaHideOutside(targets: Element[], options?: AriaHideOutsideOpt
+     }
+   });
+ 
+-  observer.observe(root, {childList: true, subtree: true});
++  let observe = () => {
++    observer.observe(root, {childList: true, subtree: true});
++    for (let shadowRoot of shadowRoots) {
++      observer.observe(shadowRoot, {childList: true, subtree: true});
++    }
++  };
++
++  observe();
+ 
+   let observerWrapper: ObserverWrapper = {
+     visibleNodes,
+     hiddenNodes,
+-    observe() {
+-      observer.observe(root, {childList: true, subtree: true});
+-    },
++    observe,
+     disconnect() {
+       observer.disconnect();
+     }
+diff --git a/packages/@react-aria/overlays/test/ariaHideOutside.test.js b/packages/@react-aria/overlays/test/ariaHideOutside.test.js
+index 36f9210..4520f07 100644
+--- a/packages/@react-aria/overlays/test/ariaHideOutside.test.js
++++ b/packages/@react-aria/overlays/test/ariaHideOutside.test.js
+@@ -10,8 +10,10 @@
+  * governing permissions and limitations under the License.
+  */
+ 
+-import {act, render, waitFor} from '@react-spectrum/test-utils-internal';
++import {act, createShadowRoot, render, waitFor} from '@react-spectrum/test-utils-internal';
+ import {ariaHideOutside} from '../src';
++import {enableShadowDOM} from '@react-stately/flags';
++import {keepVisible} from '../src/ariaHideOutside';
+ import React, {useRef, useState} from 'react';
+ 
+ describe('ariaHideOutside', function () {
+@@ -505,4 +507,325 @@ describe('ariaHideOutside', function () {
+     revert();
+     expect(row.parentElement).not.toHaveAttribute('aria-hidden', 'true');
+   });
++
++  it('should not hide siblings inside a target shadow root when shadow DOM is disabled', function () {
++    let {shadowRoot, cleanup} = createShadowRoot();
++    shadowRoot.innerHTML = '<input type="checkbox" /><button>Target</button>';
++    let checkbox = shadowRoot.querySelector('input');
++    let button = shadowRoot.querySelector('button');
++
++    let revert = ariaHideOutside([button]);
++
++    expect(checkbox).not.toHaveAttribute('aria-hidden');
++    expect(button).not.toHaveAttribute('aria-hidden');
++
++    revert();
++    cleanup();
++  });
++});
++
++describe('ariaHideOutside with Shadow DOM', function () {
++  let cleanups = [];
++
++  beforeAll(() => {
++    enableShadowDOM();
++  });
++
++  afterEach(() => {
++    for (let cleanup of cleanups) {
++      cleanup();
++    }
++    cleanups = [];
++  });
++
++  let createHost = () => {
++    let host = createShadowRoot();
++    cleanups.push(host.cleanup);
++    return host;
++  };
++
++  let createNestedHost = (shadowRoot) => {
++    let host = document.createElement('div');
++    shadowRoot.appendChild(host);
++    return {shadowHost: host, shadowRoot: host.attachShadow({mode: 'open'})};
++  };
++
++  let createLightCheckbox = () => {
++    let checkbox = document.createElement('input');
++    checkbox.type = 'checkbox';
++    document.body.appendChild(checkbox);
++    cleanups.push(() => checkbox.remove());
++    return checkbox;
++  };
++
++  it('should hide light and shadow DOM siblings but not the target or its host', function () {
++    let light = createLightCheckbox();
++    let {shadowHost, shadowRoot} = createHost();
++    shadowRoot.innerHTML = '<input type="checkbox" /><button>Target</button><input type="radio" />';
++    let checkbox = shadowRoot.querySelector('input[type="checkbox"]');
++    let radio = shadowRoot.querySelector('input[type="radio"]');
++    let button = shadowRoot.querySelector('button');
++
++    let revert = ariaHideOutside([button]);
++
++    expect(light).toHaveAttribute('aria-hidden', 'true');
++    expect(checkbox).toHaveAttribute('aria-hidden', 'true');
++    expect(radio).toHaveAttribute('aria-hidden', 'true');
++    expect(button).not.toHaveAttribute('aria-hidden');
++    expect(shadowHost).not.toHaveAttribute('aria-hidden');
++
++    revert();
++  });
++
++  it('should hide siblings at every shadow level when the target is nested two shadow roots deep', function () {
++    let light = createLightCheckbox();
++    let outer = createHost();
++    outer.shadowRoot.innerHTML = '<input type="checkbox" />';
++    let inner = createNestedHost(outer.shadowRoot);
++    inner.shadowRoot.innerHTML = '<input type="radio" /><button>Target</button>';
++    let outerCheckbox = outer.shadowRoot.querySelector('input');
++    let innerRadio = inner.shadowRoot.querySelector('input');
++    let button = inner.shadowRoot.querySelector('button');
++
++    let revert = ariaHideOutside([button]);
++
++    expect(light).toHaveAttribute('aria-hidden', 'true');
++    expect(outerCheckbox).toHaveAttribute('aria-hidden', 'true');
++    expect(innerRadio).toHaveAttribute('aria-hidden', 'true');
++    expect(button).not.toHaveAttribute('aria-hidden');
++    expect(outer.shadowHost).not.toHaveAttribute('aria-hidden');
++    expect(inner.shadowHost).not.toHaveAttribute('aria-hidden');
++
++    revert();
++  });
++
++  it('should not hide anything inside the shadow root when the target is the shadow host', function () {
++    let light = createLightCheckbox();
++    let {shadowHost, shadowRoot} = createHost();
++    shadowRoot.innerHTML = '<input type="checkbox" />';
++    let checkbox = shadowRoot.querySelector('input');
++
++    let revert = ariaHideOutside([shadowHost]);
++
++    expect(light).toHaveAttribute('aria-hidden', 'true');
++    expect(shadowHost).not.toHaveAttribute('aria-hidden');
++    expect(checkbox).not.toHaveAttribute('aria-hidden');
++
++    revert();
++  });
++
++  it('should hide elements added in the target or enclosing shadow roots, but not inside the target', async function () {
++    let outer = createHost();
++    outer.shadowRoot.innerHTML = '<div class="deep"><span>Deep</span></div><div class="path"><div class="wrapper"></div></div>';
++    let wrapper = outer.shadowRoot.querySelector('.wrapper');
++    let inner = createNestedHost(wrapper);
++    inner.shadowRoot.innerHTML = '<button>Target</button>';
++    let button = inner.shadowRoot.querySelector('button');
++    let deep = outer.shadowRoot.querySelector('.deep');
++
++    let revert = ariaHideOutside([button]);
++    expect(wrapper).not.toHaveAttribute('aria-hidden');
++
++    let addedInInner = document.createElement('input');
++    let addedInOuter = document.createElement('input');
++    let addedInPath = document.createElement('input');
++    let addedInDeep = document.createElement('input');
++    let addedInTarget = document.createElement('input');
++    inner.shadowRoot.appendChild(addedInInner);
++    outer.shadowRoot.appendChild(addedInOuter);
++    // Added deep inside the outer shadow root, under ancestors of the target that stay visible.
++    wrapper.appendChild(addedInPath);
++    deep.appendChild(addedInDeep);
++    button.appendChild(addedInTarget);
++
++    await waitFor(() => expect(addedInInner).toHaveAttribute('aria-hidden', 'true'));
++    expect(addedInOuter).toHaveAttribute('aria-hidden', 'true');
++    expect(addedInPath).toHaveAttribute('aria-hidden', 'true');
++    // The deep node is inside a hidden subtree, so it is hidden through its ancestor.
++    expect(addedInDeep.closest('[aria-hidden="true"]')).not.toBeNull();
++    expect(addedInTarget).not.toHaveAttribute('aria-hidden');
++    expect(button).not.toHaveAttribute('aria-hidden');
++
++    revert();
++  });
++
++  it('should keep live announcers and top layer elements visible in shadow roots', async function () {
++    let outer = createHost();
++    outer.shadowRoot.innerHTML = '<div data-live-announcer="true">Announce</div><div data-react-aria-top-layer="true">Toast</div><button>Target</button>';
++    let inner = createNestedHost(outer.shadowRoot);
++    inner.shadowRoot.innerHTML = '<button>Inner target</button>';
++    let innerButton = inner.shadowRoot.querySelector('button');
++    let announcer = outer.shadowRoot.querySelector('[data-live-announcer]');
++    let toast = outer.shadowRoot.querySelector('[data-react-aria-top-layer]');
++
++    let revert = ariaHideOutside([innerButton]);
++
++    let laterAnnouncer = document.createElement('div');
++    laterAnnouncer.dataset.liveAnnouncer = 'true';
++    let laterToast = document.createElement('div');
++    laterToast.dataset.reactAriaTopLayer = 'true';
++    let sentinel = document.createElement('input');
++    inner.shadowRoot.append(laterAnnouncer, laterToast);
++    outer.shadowRoot.appendChild(sentinel);
++
++    await waitFor(() => expect(sentinel).toHaveAttribute('aria-hidden', 'true'));
++    expect(announcer).not.toHaveAttribute('aria-hidden');
++    expect(toast).not.toHaveAttribute('aria-hidden');
++    expect(laterAnnouncer).not.toHaveAttribute('aria-hidden');
++    expect(laterToast).not.toHaveAttribute('aria-hidden');
++
++    revert();
++  });
++
++  it('should hide a new shadow host appended inside the target shadow root as a whole', async function () {
++    let {shadowRoot} = createHost();
++    shadowRoot.innerHTML = '<button>Target</button>';
++    let button = shadowRoot.querySelector('button');
++
++    let revert = ariaHideOutside([button]);
++
++    let newHost = document.createElement('div');
++    shadowRoot.appendChild(newHost);
++    newHost.attachShadow({mode: 'open'}).innerHTML = '<input type="checkbox" />';
++
++    await waitFor(() => expect(newHost).toHaveAttribute('aria-hidden', 'true'));
++    expect(button).not.toHaveAttribute('aria-hidden');
++
++    revert();
++    expect(newHost).not.toHaveAttribute('aria-hidden');
++  });
++
++  it('should keep targets in different shadow roots visible and hide siblings in both roots', async function () {
++    let hostA = createHost();
++    let hostB = createHost();
++    hostA.shadowRoot.innerHTML = '<input type="checkbox" /><input type="text" />';
++    hostB.shadowRoot.innerHTML = '<input type="radio" /><button>Popover</button>';
++    let checkboxA = hostA.shadowRoot.querySelector('input[type="checkbox"]');
++    let textA = hostA.shadowRoot.querySelector('input[type="text"]');
++    let radioB = hostB.shadowRoot.querySelector('input[type="radio"]');
++    let buttonB = hostB.shadowRoot.querySelector('button');
++
++    let revert = ariaHideOutside([textA, buttonB]);
++
++    expect(hostA.shadowHost).not.toHaveAttribute('aria-hidden');
++    expect(hostB.shadowHost).not.toHaveAttribute('aria-hidden');
++    expect(textA).not.toHaveAttribute('aria-hidden');
++    expect(buttonB).not.toHaveAttribute('aria-hidden');
++    expect(checkboxA).toHaveAttribute('aria-hidden', 'true');
++    expect(radioB).toHaveAttribute('aria-hidden', 'true');
++
++    let addedA = document.createElement('input');
++    let addedB = document.createElement('input');
++    hostA.shadowRoot.appendChild(addedA);
++    hostB.shadowRoot.appendChild(addedB);
++
++    await waitFor(() => expect(addedA).toHaveAttribute('aria-hidden', 'true'));
++    expect(addedB).toHaveAttribute('aria-hidden', 'true');
++
++    revert();
++  });
++
++  it('should keep two targets in the same shadow root visible and restore without leftover aria-hidden', function () {
++    let light = createLightCheckbox();
++    let {shadowRoot} = createHost();
++    shadowRoot.innerHTML = '<button>One</button><button>Two</button><input type="checkbox" />';
++    let [one, two] = shadowRoot.querySelectorAll('button');
++    let checkbox = shadowRoot.querySelector('input');
++
++    let revert = ariaHideOutside([one, two]);
++
++    expect(checkbox).toHaveAttribute('aria-hidden', 'true');
++    expect(one).not.toHaveAttribute('aria-hidden');
++    expect(two).not.toHaveAttribute('aria-hidden');
++
++    revert();
++
++    expect(light).not.toHaveAttribute('aria-hidden');
++    expect(shadowRoot.querySelectorAll('[aria-hidden]')).toHaveLength(0);
++  });
++
++  it('should restore shadow DOM elements and stop observing shadow roots when reverted', async function () {
++    let light = createLightCheckbox();
++    let {shadowRoot} = createHost();
++    shadowRoot.innerHTML = '<input type="checkbox" /><button>Target</button>';
++    let checkbox = shadowRoot.querySelector('input');
++    let button = shadowRoot.querySelector('button');
++
++    let revert = ariaHideOutside([button]);
++
++    expect(checkbox).toHaveAttribute('aria-hidden', 'true');
++
++    revert();
++
++    expect(light).not.toHaveAttribute('aria-hidden');
++    expect(checkbox).not.toHaveAttribute('aria-hidden');
++
++    let added = document.createElement('input');
++    shadowRoot.appendChild(added);
++    await Promise.resolve();
++    expect(added).not.toHaveAttribute('aria-hidden');
++  });
++
++  it('should leave pre-existing aria-hidden in shadow DOM after restore', function () {
++    let {shadowRoot} = createHost();
++    shadowRoot.innerHTML = '<input type="checkbox" aria-hidden="true" /><button>Target</button>';
++    let checkbox = shadowRoot.querySelector('input');
++    let button = shadowRoot.querySelector('button');
++
++    let revert = ariaHideOutside([button]);
++    revert();
++
++    expect(checkbox).toHaveAttribute('aria-hidden', 'true');
++    expect(button).not.toHaveAttribute('aria-hidden');
++  });
++
++  it('should not hide anything when the root does not contain the shadow host', function () {
++    let root = document.createElement('div');
++    document.body.appendChild(root);
++    cleanups.push(() => root.remove());
++    let light = createLightCheckbox();
++    let {shadowRoot} = createHost();
++    shadowRoot.innerHTML = '<input type="checkbox" /><button>Target</button>';
++    let checkbox = shadowRoot.querySelector('input');
++    let button = shadowRoot.querySelector('button');
++
++    let revert;
++    expect(() => {
++      revert = ariaHideOutside([button], {root});
++    }).not.toThrow();
++
++    expect(checkbox).not.toHaveAttribute('aria-hidden');
++    expect(light).not.toHaveAttribute('aria-hidden');
++
++    revert();
++  });
++
++  it('should keep observing outer shadow roots after a nested call is restored', async function () {
++    let {shadowRoot} = createHost();
++    shadowRoot.innerHTML = '<input type="checkbox" /><button>Outer</button>';
++    let button = shadowRoot.querySelector('button');
++    let innerButton = document.createElement('button');
++    document.body.appendChild(innerButton);
++    cleanups.push(() => innerButton.remove());
++
++    let outerRevert = ariaHideOutside([button]);
++    let innerRevert = ariaHideOutside([innerButton]);
++    innerRevert();
++
++    let added = document.createElement('input');
++    shadowRoot.appendChild(added);
++    await waitFor(() => expect(added).toHaveAttribute('aria-hidden', 'true'));
++
++    let popover = document.createElement('div');
++    shadowRoot.appendChild(popover);
++    let undoKeepVisible = keepVisible(popover);
++    let sentinel = document.createElement('input');
++    shadowRoot.appendChild(sentinel);
++
++    await waitFor(() => expect(sentinel).toHaveAttribute('aria-hidden', 'true'));
++    expect(popover).not.toHaveAttribute('aria-hidden');
++
++    undoKeepVisible();
++    outerRevert();
++  });
+ });
