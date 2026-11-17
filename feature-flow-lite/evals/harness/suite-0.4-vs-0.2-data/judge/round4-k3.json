@@ -1,0 +1,2308 @@
+[
+ {
+  "id": "risky-inventory",
+  "reports": [
+   {
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 7,
+     "tests": 8,
+     "docs": 6,
+     "product": 7
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "available() and reserve() add up the open holds by scanning every open reservation (for all SKUs) while holding the global lock. Cost grows linearly with the number of open holds, so a long series of reserves is quadratic overall and all checkout threads queue behind the scan.",
+      "evidence": "shop/inventory.py:87-89 `held = sum(r.qty for r in self._open.values() if r.sku == sku)`. Probe: 20000 sequential inv.reserve('MUG',1) on Inventory({'MUG':10**6}) took 8.02 s."
+     },
+     {
+      "severity": "minor",
+      "what": "The SKU check is over-defensive. It calls str.__str__ on str subclasses and has long comments about caller-defined methods running under the lock. That adds complexity this small codebase doesn't need, and the rest of the shop (cart.py) does nothing like it.",
+      "evidence": "shop/inventory.py:23-33 (_known_sku) and :91-96 (_open_hold identity-only comments); compare shop/cart.py:30-37, which just does `if qty < 1` and lookup(sku)."
+     },
+     {
+      "severity": "minor",
+      "what": "qty validation uses `type(qty) is not int`, so int subclasses such as IntEnum or numpy-style ints get ValueError even though they are positive ints. This is stricter than the spec's 'positive int' and stricter than cart.add.",
+      "evidence": "shop/inventory.py:63; tests/test_inventory.py test_reserve_int_subclass_qty_is_value_error asserts that Big(2) is rejected."
+     },
+     {
+      "severity": "minor",
+      "what": "The test file is very large (501 lines, 37 tests) for a 96-line module. It tests unusual adversarial cases (forged __hash__/__eq__ subclasses, str subclasses with drifting hashes, two 1000-trial property tests) and includes a brittle test that greps README.md for a phrase. It is much heavier than the existing test style, where each test file is 13-31 lines.",
+      "evidence": "wc -l tests/*.py: test_inventory.py 501 vs test_cart.py 31; test_readme_mentions_stock_reservations at tests/test_inventory.py reads ../README.md."
+     },
+     {
+      "severity": "minor",
+      "what": "The documentation is only one README phrase ('stock reservations'). It doesn't explain the reserve/commit/release flow, the thread-safety guarantee, or that the constructor rejects unknown SKUs and negative or non-int counts. Reservation and the exception classes have no docstrings.",
+      "evidence": "README.md line 4; shop/inventory.py:9-20 (no docstrings on OutOfStock, ReservationError, Reservation)."
+     }
+    ],
+    "strengths": [
+     "All spec requirements hold. OutOfStock and ReservationError subclass ValueError. available() is on hand minus open holds. An unknown SKU raises UnknownProduct, and a catalog SKU missing from the dict reads as 0. A bad qty (0, negative, float, str, None, bool) raises a plain ValueError. A second commit/release, or a commit after a release (or the reverse), raises ReservationError.",
+     "Thread safety is correct. One lock covers the check-and-hold in reserve() and settle-once in commit/release. A 20-thread probe got exactly 1000 holds on 1000 units with available 0, and the books balanced after concurrent mixed commits and releases.",
+     "Reservations are matched by identity, so two equal reservations stay separate, and made-up, foreign or forged Reservation objects cannot settle a real hold.",
+     "Failed operations leave the state unchanged, and both tests and probes confirm it. A huge qty (10**30) gives a clean OutOfStock.",
+     "The constructor copies the input dict and validates unit counts. ./check.sh passes with ruff: 46 tests in about 2 s.",
+     "The concurrency tests are meaningful: they start threads together with a barrier, test that oversell is impossible, that one settle wins, and that the books stay balanced under mixed churn."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 520,
+     "test_cases": 37
+    },
+    "summary": "Build A (/tmp/inspect-risky-inventory-A) meets the spec and passes ./check.sh (46 tests OK, ruff clean). My probes confirmed correct validation and error types, settle-once behaviour, and no oversell under concurrency. Identity-keyed reservations stop forged or foreign reservations from settling real holds. There are no blockers or majors. The main weaknesses are quality and fit. available() rescans every open hold under the global lock, which is quadratic over many reserves (20000 reserves took 8 s). The str-subclass and identity handling is over-engineered for a small coffee-shop package. The 501-line test file is out of proportion with the repo's terse test style and includes a brittle README-grep test. Documentation is a single README phrase. A good, solid build that a maintainer might ask to trim before merging.",
+    "letter": "A"
+   },
+   {
+    "letter": "B",
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 8,
+     "tests": 8,
+     "docs": 7,
+     "product": 7
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "The qty check uses `type(qty) is not int`, so int subclasses other than bool (an IntEnum, for example) are rejected even though they are positive ints. It is stricter than the spec asks for.",
+      "evidence": "shop/inventory.py:42. Probe: `class MyInt(int): pass; inv.reserve('MUG', MyInt(1))` raises `ValueError qty must be an int >= 1`."
+     },
+     {
+      "severity": "minor",
+      "what": "An unhashable SKU passed to available() or reserve() raises a bare TypeError from catalog.lookup instead of UnknownProduct. This comes from the existing catalog code, not from the new module.",
+      "evidence": "Probe: `inv.available(['x'])` raises `TypeError unhashable type: 'list'`."
+     },
+     {
+      "severity": "minor",
+      "what": "The constructor raises AttributeError, not a clear error, when it gets something other than a dict. It also rejects stock dicts that contain non-catalog SKUs. The spec doesn't call for that check, though it is reasonable.",
+      "evidence": "`Inventory(None)` raises `AttributeError 'NoneType' object has no attribute 'items'`. `Inventory({'NOPE':3})` raises UnknownProduct (shop/inventory.py:30)."
+     },
+     {
+      "severity": "minor",
+      "what": "Some tests are coupled to implementation details or are meta-tests that don't fit the repo's test style. They assert on private `_on_hand` and `_held`, check that the module has a one-line docstring and imports only the stdlib (via ast), and check that the README overview paragraph contains 'reservation'. The test file is 349 lines; each existing test file has 1 to 4 tests.",
+      "evidence": "tests/test_inventory.py: ModuleTest, ReadmeTest, and test_tampered_qty_settles_with_original_count, which uses inv._on_hand['MUG'] and inv._held['MUG']."
+     },
+     {
+      "severity": "minor",
+      "what": "The public Inventory methods have no docstrings. Their behavior (what is raised and when) is documented only in the tests.",
+      "evidence": "shop/inventory.py:35-60"
+     }
+    ],
+    "strengths": [
+     "Meets the spec in every case probed: available = on hand - held; unknown SKU raises UnknownProduct; a catalog SKU missing from the dict has 0; OutOfStock and ReservationError both subclass ValueError; bool, float, str, None, 0 and negative qty are rejected without changing any state.",
+     "A single lock covers every read-modify-write. reserve checks and holds stock atomically, and settlement goes through one `_close` path, so a reservation can't be settled twice, even when threads race.",
+     "Settlement is keyed by identity and uses the (sku, qty) recorded when the reservation was granted. A reservation that was tampered with, one from another inventory, or a fake can't corrupt the counts. The stored reference keeps the object alive, so id() can't be reused while the reservation is open.",
+     "Strong concurrency tests: threads released together by a barrier, over 200 rounds, covering racing reserves, racing commit/release of a single reservation, and mixed churn checked against serial accounting. There is also a 1500-step property test against a model.",
+     "./check.sh passes (36 tests, plus 31 subtests under pytest). An external ThreadPoolExecutor stress run (5000 jobs, 32 workers) ended with consistent accounting.",
+     "Small, idiomatic module (72 lines) using only the stdlib. The README overview sentence was updated in the same style as the rest of the file."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 360,
+     "test_cases": 27
+    },
+    "summary": "Build B is a correct, thread-safe implementation, and I found no spec failures. All mutations happen under one lock, and settlement is keyed by identity, so each reservation settles exactly once, including under contention. `./check.sh` passes, and my probes covered invalid, zero, negative, non-numeric and very large qty, unknown SKUs, double settlement and a thread-pool stress run; every result matched the spec. The defects are all minor: the int type check is strict and rejects int subclasses, error types are unclear for odd inputs (unhashable SKUs, a non-dict constructor argument), and the public methods have no docstrings. The test suite is thorough but much heavier than the repo's existing style. Some of its tests reach into private state, and some are meta-tests on the module docstring, its imports and the README, which a maintainer might trim before merging."
+   },
+   {
+    "overall": 8.5,
+    "scores": {
+     "correctness": 9.5,
+     "robustness": 9,
+     "code_quality": 8,
+     "tests": 9,
+     "docs": 7,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "Constructor with a non-dict stock (None, list of pairs) raises AttributeError instead of a ValueError/TypeError with a clear message.",
+      "evidence": "Inventory(None) -> \"AttributeError: 'NoneType' object has no attribute 'items'\"; Inventory([('MUG',1)]) -> AttributeError (shop/inventory.py:40)"
+     },
+     {
+      "severity": "minor",
+      "what": "The qty check `type(qty) is not int` rejects int subclasses (and numpy integers) as well as bool. This is strict, but it goes beyond 'positive int' for values that are ints by isinstance.",
+      "evidence": "class MyInt(int): pass; Inventory({'MUG':5}).reserve('MUG', MyInt(2)) -> ValueError: qty must be a positive int (shop/inventory.py:57)"
+     },
+     {
+      "severity": "minor",
+      "what": "Settlement bookkeeping is over-defensive. Open reservations are keyed by id() and duplicate the sku/qty in a tuple to guard against object.__setattr__ on a frozen dataclass and against forged __hash__ subclasses. A set of reservations (eq=False already gives an identity hash) would be simpler. Three tests are spent on these adversarial cases.",
+      "evidence": "shop/inventory.py:38 `self._open = {}  # id(reservation) -> (reservation, sku, qty)`; tests/test_inventory.py test_mutating_reservation_*, test_forged_subclass_with_equal_hash_is_rejected"
+     },
+     {
+      "severity": "minor",
+      "what": "Docs are thin. README gains only a phrase ('thread-safe stock tracking with reservations'), with no usage note on reserve/commit/release or the exceptions. Public methods have no docstrings.",
+      "evidence": "README.md line 4; shop/inventory.py public methods have no docstrings"
+     }
+    ],
+    "strengths": [
+     "All spec requirements met: available = on_hand - held, UnknownProduct for non-catalog SKUs (including unhashable values), 0 for catalog SKUs missing from the dict, OutOfStock and ValueError raised correctly, and settle-at-most-once enforced for every commit/release combination",
+     "Correct locking: the check-then-act in reserve and the settle in commit/release are atomic under one lock. A 32-worker thread-pool stress run left on_hand == available with no leaked open reservations",
+     "Validation happens before any mutation, so a failed call changes nothing. Huge quantities (10**30, 10**100) work. bool, float and str qty are rejected",
+     "Reservations from other inventories, copies and fakes are rejected. Settlement uses the recorded sku/qty, not the caller's object",
+     "Strong tests: barrier-synchronised concurrency tests (oversell, exactly-once settle, reserve/commit throughput) and a 2000-step seeded model-based random test that checks invariants",
+     "./check.sh passes with ruff; 33 tests OK"
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 365,
+     "test_cases": 24
+    },
+    "summary": "Build C is a correct, thread-safe implementation that meets every spec point. My probes found no correctness or concurrency bugs: boundaries, invalid, huge and non-numeric inputs, double or cross settlement, foreign or copied reservations, ID reuse after GC, and a 32-thread pool stress run. Tests are thorough and meaningful, including a model-based random test. The remaining issues are minor: AttributeError for a non-dict stock argument, strict rejection of int subclasses, somewhat over-engineered id()-keyed bookkeeping with tests for adversarial forging, and minimal README/docstring coverage. ./check.sh passes.",
+    "letter": "C"
+   },
+   {
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 9,
+     "code_quality": 8,
+     "tests": 8,
+     "docs": 7,
+     "product": 7
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "Public Inventory methods (available, reserve, commit, release, on_hand) and the class itself have no docstrings, while the codebase documents its functions (e.g. catalog.lookup). The exception classes are also undocumented.",
+      "evidence": "shop/inventory.py:30-73 has no method docstrings; shop/catalog.py:19 has \"Return (name, unit_price) for a SKU.\""
+     },
+     {
+      "severity": "minor",
+      "what": "Reservation is a plain mutable object. The inventory correctly ignores mutated fields, but callers reading reservation.qty after mutating it get values that no longer match the units actually held. A frozen dataclass would fit the codebase's dataclass use (cart.LineItem) and make the _open entries' copied sku/qty unnecessary.",
+      "evidence": "shop/inventory.py:16-21; tests/test_inventory.py test_mutating_reservation_fields_does_not_change_settlement sets reservation.qty = 3 and the settlement uses 1"
+     },
+     {
+      "severity": "minor",
+      "what": "The test file has 259 non-blank lines for 64 lines of source and includes adversarial tests (a forged subclass that overrides __eq__/__hash__, an unhashable subclass) that guard against threats unlikely in this codebase. Existing test files are 13-31 lines.",
+      "evidence": "tests/test_inventory.py test_forged_subclass_cannot_settle_victim and test_unhashable_subclass_is_rejected_not_crashing"
+     },
+     {
+      "severity": "minor",
+      "what": "Reservations that are never committed or released stay in _open and _held for the life of the Inventory. Nothing expires or cleans them up, so an abandoned checkout keeps its stock held.",
+      "evidence": "shop/inventory.py:41 _open dict; there is no removal path except commit or release"
+     },
+     {
+      "severity": "minor",
+      "what": "README mentions the module in one sentence. It does not cover the thread-safety guarantee, the exceptions, or the at-most-once settlement rule.",
+      "evidence": "README.md lines 6-7"
+     }
+    ],
+    "strengths": [
+     "A single lock covers every read-check-write. My stress probe ran 32 threads x 2000 reserve/commit/release cycles with switchinterval=1e-6 and ended consistent: on_hand == available, held == 0.",
+     "Settlement is keyed by object identity, and the stored entry keeps the object alive so its id cannot be reused. The is-check rejects foreign, hand-built and forged reservations. In my probe, 16 threads concurrently committing 500 reservations produced exactly 500 successful commits.",
+     "Input validation is strict and correct: bool, float, str, None, 0 and negative qty raise ValueError; unhashable and non-str SKUs raise UnknownProduct instead of TypeError; 10**30 is handled.",
+     "A failed operation changes nothing. The tests assert state is unchanged after every error path.",
+     "Both exceptions subclass ValueError and messages are exact. A catalog SKU missing from the dict gives 0 on hand, as specified. ./check.sh passes (33 tests OK)."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 323,
+     "test_cases": 23
+    },
+    "summary": "Build D is a correct and carefully thread-safe implementation. Every spec requirement holds: available, reserve, commit and release work as specified, unknown SKUs raise UnknownProduct, catalog SKUs missing from the dict have 0 on hand, qty is validated, and each reservation settles at most once. My throwaway probes found no correctness or concurrency defects: tiny-switch-interval stress runs, concurrent double commits, huge quantities and bad SKU types all behaved correctly. ./check.sh passes. All remaining issues are minor: missing method docstrings, a mutable Reservation where a frozen dataclass would fit the codebase, a test suite heavier than the rest of the repo with somewhat paranoid adversarial cases, abandoned reservations held forever, and a one-line README mention.",
+    "letter": "D"
+   },
+   {
+    "letter": "E",
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 8,
+     "tests": 8,
+     "docs": 7,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "commit/release trust the qty stored on the caller-held Reservation object rather than recording it internally, so mutating the (underscore-private) field corrupts the accounting: held goes negative and on_hand drops by the tampered amount.",
+      "evidence": "probe: inv=Inventory({'MUG':1000}) after 500 commits; r=inv.reserve('MUG',2); r._qty=100; inv.commit(r) -> available 498 but on_hand reduced by 100 and _held negative (shop/inventory.py:66-77)"
+     },
+     {
+      "severity": "minor",
+      "what": "Unhashable SKU (list/dict) raises TypeError from available()/reserve() rather than UnknownProduct; it is inherited from catalog.lookup, but the task says a non-catalog SKU raises UnknownProduct.",
+      "evidence": "probe: inv.available([]) -> TypeError; inv.available(1.5) -> UnknownProduct"
+     },
+     {
+      "severity": "minor",
+      "what": "Some tests are coupled to internals or are meta-tests: one swaps inventory._open for a sleeping set, one asserts the module docstring is a single line, one asserts the README contains specific words.",
+      "evidence": "tests/test_inventory.py test_concurrent_settlement_succeeds_once (inventory._open = SlowOpenSet()), test_module_defines_errors_and_reservation, test_readme_mentions_stock_tracking"
+     },
+     {
+      "severity": "minor",
+      "what": "Inventory(None) or other non-mapping stock gives an AttributeError, not a clear error. The public methods have no docstrings, although catalog.lookup does have one.",
+      "evidence": "probe: Inventory(None) -> AttributeError; shop/inventory.py has no method docstrings"
+     }
+    ],
+    "strengths": [
+     "Every check and state change in reserve/commit/release runs under one lock, so check-then-act is atomic; 1000 mixed reserve/commit/release calls from a 32-thread pool left exactly the expected stock (500)",
+     "Strict validation: type(x) is int rejects bool, float, NaN and -0.0 for qty and for units on hand, and invalid input changes no state",
+     "Settled-once semantics hold through an open-set membership check, which also rejects foreign, forged and non-Reservation objects",
+     "Strong tests: barrier-synchronized races with injected sleeps that would expose a missing lock, plus a 1000-step randomized model-based test against a reference model",
+     "Small, readable module that follows the codebase's style (one-line module docstring, ValueError subclasses, catalog lookup reuse); README updated",
+     "./check.sh passes (33 tests OK)"
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 289,
+     "test_cases": 23
+    },
+    "summary": "Build E (/tmp/inspect-risky-inventory-E/shop/inventory.py) meets the spec and is thread-safe. A single lock covers every read-modify-write, and a thread-pool stress probe kept the counts exact. Validation is strict and correct, and a reservation can be settled only once. The tests are thorough: barrier races with injected delays and a randomized model check. The remaining issues are minor. The reservation's qty is read from the caller-held object, so mutating its private field corrupts the counts. An unhashable SKU gives TypeError instead of UnknownProduct (inherited from catalog.lookup). A few tests depend on internals or check the README and docstring. Public methods have no docstrings."
+   },
+   {
+    "overall": 8.5,
+    "scores": {
+     "correctness": 9,
+     "robustness": 9,
+     "code_quality": 9,
+     "tests": 9,
+     "docs": 8,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "qty validation uses `type(qty) is not int`, so int subclasses (IntEnum, custom int types) are rejected as invalid even though they are ints. This is defensible because it is how the build excludes bool, but it is stricter than needed (`isinstance(qty, int) and not isinstance(qty, bool)` would accept them).",
+      "evidence": "class I(int): pass; Inventory({'MUG':5}).reserve('MUG', I(1)) -> ValueError 'qty must be a positive int' (probe /tmp/claude-0/probeE/p.py)"
+     },
+     {
+      "severity": "minor",
+      "what": "An unhashable SKU leaks a TypeError from catalog.lookup instead of raising UnknownProduct. The same behaviour already exists in the catalog, so this is not new to the change.",
+      "evidence": "inv.available([]) -> TypeError unhashable type: 'list'"
+     },
+     {
+      "severity": "minor",
+      "what": "The constructor raises AttributeError, not a clear error, when it gets a non-mapping. It also adds validation the spec did not ask for (UnknownProduct for SKUs not in the catalog, ValueError for negative or non-int units). That is reasonable but undocumented.",
+      "evidence": "Inventory(None) -> AttributeError 'NoneType' object has no attribute 'items'; shop/inventory.py:27-31"
+     },
+     {
+      "severity": "minor",
+      "what": "Inventory, Reservation and the public methods have no docstrings, and the public on_hand() method the build added is not mentioned in the README. There is only the module docstring, while catalog.lookup has a docstring.",
+      "evidence": "shop/inventory.py:18-50"
+     }
+    ],
+    "strengths": [
+     "Every mutation and read happens under one lock. The check for available stock and the hold are atomic, so concurrent reserves cannot oversell. A 20-trial stress run (32 threads, mixed commit/release) kept on_hand and available consistent.",
+     "Settling once is enforced by popping from an _open map keyed by reservation identity (eq=False). This rejects double commit or release, commit after release (and the reverse), reservations from another inventory, and forged reservations equal in value to a real one.",
+     "The reserved qty is stored inside the inventory, so tampering with the frozen dataclass cannot skew the counts. A test covers this.",
+     "Validation runs before any state changes, and tests check that a failed reserve leaves nothing changed.",
+     "The tests are strong: 23 cases covering bool, float, str, None, 0, -1 and 10**30 qty, a SKU absent from the stock dict, an unknown SKU, all four double-settle orderings, and barrier-synchronised thread races for reserve and settle.",
+     "The code is compact (58 lines) and idiomatic, and it matches the repo's unittest style and its README conventions. ./check.sh passes (32 tests)."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 254,
+     "test_cases": 23
+    },
+    "summary": "Build F meets every spec requirement. available() subtracts open holds, UnknownProduct is raised for SKUs not in the catalog, and a catalog SKU missing from the dict has 0 on hand. reserve raises OutOfStock or ValueError as required, and each reservation can be settled at most once, which raises ReservationError otherwise. Both error classes subclass ValueError. A single lock makes the code thread-safe, and that held up under a stress test. ./check.sh passes with 32 tests. I found only minor issues: it rejects int subclasses, an unhashable SKU leaks a TypeError, the constructor gives an unclear error for a non-mapping, and the docstrings are sparse. The tests are thorough and include races synchronised with a barrier. The README was updated. A maintainer would likely merge it with little or no change.",
+    "letter": "F"
+   },
+   {
+    "overall": 8.5,
+    "scores": {
+     "correctness": 9,
+     "robustness": 9,
+     "code_quality": 9,
+     "tests": 9,
+     "docs": 7,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "A SKU that cannot be hashed, such as a list, raises TypeError instead of UnknownProduct from available() and reserve(). The error comes from catalog.lookup, which the rest of the codebase also uses, so the behavior is inherited.",
+      "evidence": "Inventory({'MUG':5}).reserve(['x'],1) -> TypeError (probe script in the scratchpad dir)"
+     },
+     {
+      "severity": "minor",
+      "what": "The constructor rejects any SKU in the stock dict that is not in the catalog, raising UnknownProduct, and rejects counts that are not ints, raising ValueError. The spec does not ask for either check. Both are reasonable, but they go beyond the spec and are not documented in the README.",
+      "evidence": "shop/inventory.py:44-50; tests/test_inventory.py ConstructionTest"
+     },
+     {
+      "severity": "minor",
+      "what": "Settling a reservation leaves a zero entry in _held. The dict keeps one key per SKU that was ever reserved. This is harmless.",
+      "evidence": "shop/inventory.py:94"
+     },
+     {
+      "severity": "minor",
+      "what": "The README describes reserve, commit and release in a single sentence. It does not mention thread safety, the exceptions raised, or that each reservation can be settled only once.",
+      "evidence": "README.md paragraph 2"
+     }
+    ],
+    "strengths": [
+     "A single lock guards every check-then-act sequence. available() is computed under the lock, and commit and release both go through one _close helper, so settling twice or settling one reservation both ways is rejected atomically.",
+     "Open reservations are tracked by object identity in a set. Reservations from another inventory, forged Reservation objects, and look-alike objects are all rejected, and no state changes.",
+     "Input validation happens before any state changes. bool, float, Decimal and str quantities are rejected, very large ints work, and a failed reserve holds nothing.",
+     "Reservation is read-only (properties only), and the constructor copies the caller's dict.",
+     "The tests are thorough and meaningful. They cover all four double-settle combinations, foreign and forged reservations, barrier-synchronized races for reserve, settle and reserve+commit, and check exact messages and that state is unchanged after an error.",
+     "check.sh passes with ruff, all 30 tests pass, and a 20x4000-operation thread-pool stress probe stayed consistent."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 271,
+     "test_cases": 21
+    },
+    "summary": "Build G is a clean, correct implementation and fully meets the spec. available, reserve, commit and release are all lock-protected and atomic, and each reservation can be settled exactly once, enforced through an identity-based set of open reservations. Edge-case probes found no spec failures: zero, negative, bool, float, NaN, Decimal and str quantities are rejected, huge ints work, unknown SKUs raise UnknownProduct, and a catalog SKU missing from the dict has 0 on hand. A thread-pool stress probe stayed consistent. The 21 tests are meaningful, and three of them are real concurrency tests that synchronize threads with a barrier. The only gaps are minor: TypeError for unhashable SKUs (inherited from catalog.lookup), constructor validation that the spec does not ask for, and a brief README note.",
+    "letter": "G"
+   },
+   {
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 8,
+     "tests": 8,
+     "docs": 7,
+     "product": 7
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "An unhashable SKU (a list or dict) raises TypeError rather than UnknownProduct, because catalog.lookup does a dict lookup. This comes from the existing lookup code, but available(), reserve() and on_hand() pass it straight through.",
+      "evidence": "Inventory({'MUG':5}).available([1]) -> TypeError; available({}) -> TypeError (scratch probe p.py)"
+     },
+     {
+      "severity": "minor",
+      "what": "available() reads self._held[sku] from a defaultdict, so a read-only query inserts a 0 entry for every SKU it is asked about. This is harmless because it happens under the lock, but a read has a side effect. Using self._held.get(sku, 0) would avoid it.",
+      "evidence": "shop/inventory.py:48 and :56 (self._held[sku] on defaultdict(int))"
+     },
+     {
+      "severity": "minor",
+      "what": "The strict type(qty) is not int check rejects int subclasses such as IntEnum or numpy integers. It matches a literal reading of 'positive int' and correctly rejects bool, but it is stricter than the repo's existing Cart.add, which only checks qty < 1.",
+      "evidence": "class I(int): pass; inv.reserve('MUG', I(1)) -> ValueError"
+     },
+     {
+      "severity": "minor",
+      "what": "The test file is much heavier than the repo's terse test style: 358 non-blank lines against tests of 1 to 4 cases elsewhere. Some tests check implementation trivia, such as the module docstring being one line, pickle and deepcopy identity, and exact error-message strings. That makes the tests brittle and larger than a maintainer would expect.",
+      "evidence": "tests/test_inventory.py: ModuleTest.test_module_docstring_is_one_line, test_copies_of_reservation_follow_hold_identity"
+     },
+     {
+      "severity": "minor",
+      "what": "The stock argument is not validated as a mapping. Passing a list or None gives an AttributeError instead of a clear ValueError or TypeError.",
+      "evidence": "Inventory([('MUG',1)]) -> AttributeError: 'list' object has no attribute 'items'"
+     }
+    ],
+    "strengths": [
+     "Every requirement in the spec is met. available() subtracts open holds, an unknown SKU raises UnknownProduct, and a catalog SKU missing from the stock dict counts as 0 on hand. reserve() raises ValueError for non-positive or non-int qty (bool, float, str and Decimal are all rejected) and OutOfStock when fewer units are available. Settling twice in any order raises ReservationError.",
+     "Thread safety is correct. One lock covers every read-modify-write, and the check-then-act in reserve and in settle both run inside the lock. A 16-thread ThreadPoolExecutor stress test of reserve then commit or release, at switchinterval 1e-6, kept the ledger consistent over 30 rounds.",
+     "Reservations are tracked by an opaque per-hold ticket that the Inventory records, so forged or tampered Reservation objects, reservations from another Inventory, and two equal-valued reservations are all handled correctly.",
+     "Failed operations leave state unchanged: OutOfStock, a bad qty and ReservationError all mutate nothing, and the tests check this.",
+     "The tests cover a lot: boundaries, huge qty (10**30), concurrent oversell, a commit/release race where exactly one wins, mixed concurrent operations checked against a ledger, and a 1000-seed random sequence checked against a model.",
+     "./check.sh passes (ruff clean, 40 tests in 0.84s), and the README one-liner was updated to mention stock tracking."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 423,
+     "test_cases": 31
+    },
+    "summary": "Build H is a small, correct, thread-safe Inventory in /tmp/inspect-risky-inventory-H/shop/inventory.py, about 65 non-blank lines. All spec requirements pass, including the edge cases. One lock covers all state changes, and each reservation is settled through its own ticket rather than through its sku and qty fields, which shuts out forged or foreign reservations. ./check.sh passes (40 tests in total, 31 of them new), and my own stress tests with 16 threads found no race. All remaining issues are minor: an unhashable SKU raises TypeError (inherited from catalog.lookup), the read path inserts keys into the defaultdict, int subclasses are rejected, and the stock argument is not checked as a mapping. The test file is far heavier and more implementation-coupled than the repo's terse test style, which hurts product fit somewhat. A maintainer would likely merge it after trimming the tests.",
+    "letter": "H"
+   },
+   {
+    "letter": "I",
+    "overall": 8.5,
+    "scores": {
+     "correctness": 9,
+     "robustness": 9,
+     "code_quality": 9,
+     "tests": 9,
+     "docs": 7,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "A SKU that is not hashable (e.g. a list) raises TypeError from available/reserve, not UnknownProduct. This comes from the existing catalog.lookup, which only catches KeyError.",
+      "evidence": "probe: Inventory({'MUG':3}).available(['x']) -> TypeError unhashable type: 'list' (shop/catalog.py:20-23, shop/inventory.py:38)"
+     },
+     {
+      "severity": "minor",
+      "what": "The qty check uses `type(qty) is not int`, so int subclasses such as IntEnum members are rejected. The tests make this choice on purpose to reject bool, but it also refuses legitimate int subclasses.",
+      "evidence": "probe: inv.reserve('MUG', N.A) where N is IntEnum(A=1) -> ValueError qty must be a positive int (shop/inventory.py:45)"
+     },
+     {
+      "severity": "minor",
+      "what": "Constructor input that is not a dict (e.g. None) fails with AttributeError instead of a clear error. The extra validation of on-hand counts is not in the spec and is not documented.",
+      "evidence": "probe: Inventory(None) -> AttributeError 'NoneType' object has no attribute 'items' (shop/inventory.py:30)"
+     },
+     {
+      "severity": "minor",
+      "what": "The README gives only a one-line mention of stock reservations. The concurrency guarantees and the API are not documented beyond the module docstring.",
+      "evidence": "README.md line 3: 'catalog, stock reservations, cart totals...'"
+     },
+     {
+      "severity": "minor",
+      "what": "One test reaches into the private attributes _lock, _on_hand, _held and _open. The test comments explain why, but it still couples the test to the implementation.",
+      "evidence": "tests/test_inventory.py test_reserve_commit_and_release_wait_for_the_lock"
+     }
+    ],
+    "strengths": [
+     "A single lock guards every check-then-write. Validation runs outside the lock and the reserve check plus the hold happen atomically, so a 16-thread stress probe over 2 SKUs ended exactly consistent (0 0 0 0 drift).",
+     "Reservations use identity equality (eq=False on a frozen dataclass) and are tracked in a per-inventory open set. Double settles, cross-settles, foreign or forged reservations, and non-Reservation objects all raise ReservationError and change nothing.",
+     "Matches the spec: ValueError subclasses, UnknownProduct for SKUs not in the catalog, 0 on hand for catalog SKUs missing from the dict, and bool/float/str/0/negative qty rejected. Very large qty correctly gives OutOfStock.",
+     "Thorough tests: a 2000-step random model-based test, barrier-synchronized race tests with a tiny switch interval, a test proving each method waits for the lock, and checks that partial failure leaves state unchanged.",
+     "Small, idiomatic code that follows the codebase style (module docstring, short method docstrings, dataclass, unittest, catalog.lookup reuse). ./check.sh passes with ruff."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 321,
+     "test_cases": 22
+    },
+    "summary": "This is a clean, correct, thread-safe implementation. All spec requirements hold under probing: the boundaries, invalid qty types, settle-at-most-once in all four orderings, foreign or forged reservations, and heavy concurrent churn across SKUs, which ended with exactly consistent counts. ./check.sh passes (31 tests, ruff clean). The defects are all minor: unhashable SKUs give TypeError instead of UnknownProduct (inherited from catalog.lookup), int subclasses are rejected for qty, there is no clear error for constructor input that is not a dict, the README coverage is thin, and one test inspects private state. The tests are strong and meaningful, but long compared with the codebase's terse existing test style."
+   }
+  ],
+  "judge": {
+   "ranking": [
+    {
+     "letter": "G",
+     "score": 8.5,
+     "confirmed_defects": [
+      "Unhashable SKU raises TypeError, inherited from catalog.lookup (minor)",
+      "commit trusts the qty on the Reservation object (stored in private _qty), so tampering with private fields could skew counts (minor, needs deliberate misuse)",
+      "Constructor validation goes beyond the spec, and the README note is brief (minor)"
+     ],
+     "refuted_defects": [],
+     "rationale": "Correct and thread-safe: my 32-thread pool probe and the 8-thread double-settle race were both exact, and check.sh passed 3 of 3 runs. It is the only build whose qty check rejects bool while still accepting int subclasses, which is the closest reading of 'positive int'. Its docstrings are the most consistent, it has the clearest README paragraph, and its test suite is proportionate. Small and idiomatic.",
+     "score_note": ""
+    },
+    {
+     "letter": "F",
+     "score": 8.5,
+     "confirmed_defects": [
+      "qty check rejects int subclasses (minor)",
+      "Unhashable SKU raises TypeError, inherited (minor)",
+      "Inventory(None) raises AttributeError (minor)"
+     ],
+     "refuted_defects": [],
+     "rationale": "A compact frozen dataclass with eq=False. The inventory records the granted (sku, qty), so tampering with a reservation can't skew counts, and it cleans up zero entries in _held. All of my spec and concurrency probes passed. Tests are proportionate and include barrier-synchronised races. Docs are slightly thinner than G's."
+    },
+    {
+     "letter": "I",
+     "score": 8.3,
+     "confirmed_defects": [
+      "qty check rejects int subclasses (minor)",
+      "Unhashable SKU raises TypeError (minor)",
+      "commit reads qty from the frozen reservation rather than from internal records (only object.__setattr__ can break it, negligible)",
+      "One test inspects private state; the README gets only a one-word mention (minor)"
+     ],
+     "refuted_defects": [],
+     "rationale": "Clean and small, with method docstrings and an identity-equality set of open reservations. Every probe was exact. Tests are strong, including a model-based test, but the README coverage is thin."
+    },
+    {
+     "letter": "D",
+     "score": 8.2,
+     "confirmed_defects": [
+      "Reservation is a mutable plain class, so fields a caller reads can drift (the inventory ignores them, minor)",
+      "No method docstrings (minor)",
+      "Adversarial tests are heavier than the repo's style (minor)"
+     ],
+     "refuted_defects": [],
+     "rationale": "Correct and robust. It records the granted sku/qty in an identity-keyed map, rejects non-str SKUs as UnknownProduct, and has a useful README sentence. All probes passed. Its tests are a bit paranoid."
+    },
+    {
+     "letter": "C",
+     "score": 8.2,
+     "confirmed_defects": [
+      "Inventory(None) raises AttributeError (minor)",
+      "qty check rejects int subclasses (minor)",
+      "id()-keyed bookkeeping is somewhat over-engineered (minor)"
+     ],
+     "refuted_defects": [],
+     "rationale": "Correct, and it maps unhashable SKUs to UnknownProduct. The counts it records internally are robust to tampering, and the model-based tests are good. It has slightly more machinery than needed, and its docs are thin."
+    },
+    {
+     "letter": "B",
+     "score": 8,
+     "confirmed_defects": [
+      "qty check rejects int subclasses (minor)",
+      "Unhashable SKU raises TypeError (minor)",
+      "Tests poke at private _on_hand/_held and include meta-tests on the docstring, imports and README (minor)",
+      "No method docstrings (minor)"
+     ],
+     "refuted_defects": [],
+     "rationale": "The implementation is correct, thread-safe and tamper-resistant, and all probes passed. It is marked down for brittle meta-tests and tests coupled to internals."
+    },
+    {
+     "letter": "H",
+     "score": 7.8,
+     "confirmed_defects": [
+      "available() inserts keys into the defaultdict on reads (harmless, minor)",
+      "qty check rejects int subclasses (minor)",
+      "Test file is about 416 lines, with trivia tests such as the one-line module docstring (minor)"
+     ],
+     "refuted_defects": [],
+     "rationale": "Correct ticket-based design, and all probes passed. Reservation keeps value equality while settlement goes by ticket, which is a slightly odd mix. The test suite is heavy and brittle relative to the repo."
+    },
+    {
+     "letter": "E",
+     "score": 7.8,
+     "confirmed_defects": [
+      "commit/release use the qty stored on the caller-held object, so mutating _qty corrupts held and on_hand (minor, private field)",
+      "Unhashable SKU raises TypeError (minor)",
+      "Tests swap internals (_open) and include README and docstring meta-tests (minor)"
+     ],
+     "refuted_defects": [],
+     "rationale": "Correct and thread-safe in my probes. Bookkeeping is weaker than in the builds that record the granted qty internally, and some tests are coupled to internals."
+    },
+    {
+     "letter": "A",
+     "score": 7.3,
+     "confirmed_defects": [
+      "available() and reserve() scan every open reservation while holding the global lock, which is O(n) per call: 5000 sequential reserves took 0.55 s versus about 0.00 s for the other builds, quadratic in open holds (minor perf issue)",
+      "SKU handling is over-engineered (str.__str__ on subclasses) (minor)",
+      "Test file is 501 lines and includes a README grep test (minor)",
+      "Docs are minimal (minor)"
+     ],
+     "refuted_defects": [],
+     "rationale": "Functionally correct and thread-safe in all probes. It is the only build with a real scalability weakness on the checkout hot path, and it is the most over-engineered relative to the codebase, with the heaviest tests and the thinnest docs."
+    }
+   ],
+   "verdict": "All nine builds are functionally correct. Every one passes ./check.sh on repeated runs and was exact on my spec probes, a 32-thread pool stress test and an 8-thread double-settle race. No inspector claimed a blocker or a major defect, and I found none. What separates them is fit and finish. G, F and I are small and idiomatic with proportionate tests, and G has the best docstrings and README, and the most accurate int check. The middle builds (D, C, B) are correct but heavier than the repo needs. H and E are held back by tests coupled to internals or by trusting fields on the caller's reservation object. A sits last because of a lock-held O(n) scan of open holds, which I measured, plus over-engineering and a 501-line test file."
+  },
+  "judges": [
+   {
+    "ranking": [
+     {
+      "letter": "G",
+      "score": 8.5,
+      "confirmed_defects": [
+       "Unhashable SKU raises TypeError, inherited from catalog.lookup (minor)",
+       "commit trusts the qty on the Reservation object (stored in private _qty), so tampering with private fields could skew counts (minor, needs deliberate misuse)",
+       "Constructor validation goes beyond the spec, and the README note is brief (minor)"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct and thread-safe: my 32-thread pool probe and the 8-thread double-settle race were both exact, and check.sh passed 3 of 3 runs. It is the only build whose qty check rejects bool while still accepting int subclasses, which is the closest reading of 'positive int'. Its docstrings are the most consistent, it has the clearest README paragraph, and its test suite is proportionate. Small and idiomatic.",
+      "score_note": ""
+     },
+     {
+      "letter": "F",
+      "score": 8.5,
+      "confirmed_defects": [
+       "qty check rejects int subclasses (minor)",
+       "Unhashable SKU raises TypeError, inherited (minor)",
+       "Inventory(None) raises AttributeError (minor)"
+      ],
+      "refuted_defects": [],
+      "rationale": "A compact frozen dataclass with eq=False. The inventory records the granted (sku, qty), so tampering with a reservation can't skew counts, and it cleans up zero entries in _held. All of my spec and concurrency probes passed. Tests are proportionate and include barrier-synchronised races. Docs are slightly thinner than G's."
+     },
+     {
+      "letter": "I",
+      "score": 8.3,
+      "confirmed_defects": [
+       "qty check rejects int subclasses (minor)",
+       "Unhashable SKU raises TypeError (minor)",
+       "commit reads qty from the frozen reservation rather than from internal records (only object.__setattr__ can break it, negligible)",
+       "One test inspects private state; the README gets only a one-word mention (minor)"
+      ],
+      "refuted_defects": [],
+      "rationale": "Clean and small, with method docstrings and an identity-equality set of open reservations. Every probe was exact. Tests are strong, including a model-based test, but the README coverage is thin."
+     },
+     {
+      "letter": "D",
+      "score": 8.2,
+      "confirmed_defects": [
+       "Reservation is a mutable plain class, so fields a caller reads can drift (the inventory ignores them, minor)",
+       "No method docstrings (minor)",
+       "Adversarial tests are heavier than the repo's style (minor)"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct and robust. It records the granted sku/qty in an identity-keyed map, rejects non-str SKUs as UnknownProduct, and has a useful README sentence. All probes passed. Its tests are a bit paranoid."
+     },
+     {
+      "letter": "C",
+      "score": 8.2,
+      "confirmed_defects": [
+       "Inventory(None) raises AttributeError (minor)",
+       "qty check rejects int subclasses (minor)",
+       "id()-keyed bookkeeping is somewhat over-engineered (minor)"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct, and it maps unhashable SKUs to UnknownProduct. The counts it records internally are robust to tampering, and the model-based tests are good. It has slightly more machinery than needed, and its docs are thin."
+     },
+     {
+      "letter": "B",
+      "score": 8,
+      "confirmed_defects": [
+       "qty check rejects int subclasses (minor)",
+       "Unhashable SKU raises TypeError (minor)",
+       "Tests poke at private _on_hand/_held and include meta-tests on the docstring, imports and README (minor)",
+       "No method docstrings (minor)"
+      ],
+      "refuted_defects": [],
+      "rationale": "The implementation is correct, thread-safe and tamper-resistant, and all probes passed. It is marked down for brittle meta-tests and tests coupled to internals."
+     },
+     {
+      "letter": "H",
+      "score": 7.8,
+      "confirmed_defects": [
+       "available() inserts keys into the defaultdict on reads (harmless, minor)",
+       "qty check rejects int subclasses (minor)",
+       "Test file is about 416 lines, with trivia tests such as the one-line module docstring (minor)"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct ticket-based design, and all probes passed. Reservation keeps value equality while settlement goes by ticket, which is a slightly odd mix. The test suite is heavy and brittle relative to the repo."
+     },
+     {
+      "letter": "E",
+      "score": 7.8,
+      "confirmed_defects": [
+       "commit/release use the qty stored on the caller-held object, so mutating _qty corrupts held and on_hand (minor, private field)",
+       "Unhashable SKU raises TypeError (minor)",
+       "Tests swap internals (_open) and include README and docstring meta-tests (minor)"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct and thread-safe in my probes. Bookkeeping is weaker than in the builds that record the granted qty internally, and some tests are coupled to internals."
+     },
+     {
+      "letter": "A",
+      "score": 7.3,
+      "confirmed_defects": [
+       "available() and reserve() scan every open reservation while holding the global lock, which is O(n) per call: 5000 sequential reserves took 0.55 s versus about 0.00 s for the other builds, quadratic in open holds (minor perf issue)",
+       "SKU handling is over-engineered (str.__str__ on subclasses) (minor)",
+       "Test file is 501 lines and includes a README grep test (minor)",
+       "Docs are minimal (minor)"
+      ],
+      "refuted_defects": [],
+      "rationale": "Functionally correct and thread-safe in all probes. It is the only build with a real scalability weakness on the checkout hot path, and it is the most over-engineered relative to the codebase, with the heaviest tests and the thinnest docs."
+     }
+    ],
+    "verdict": "All nine builds are functionally correct. Every one passes ./check.sh on repeated runs and was exact on my spec probes, a 32-thread pool stress test and an 8-thread double-settle race. No inspector claimed a blocker or a major defect, and I found none. What separates them is fit and finish. G, F and I are small and idiomatic with proportionate tests, and G has the best docstrings and README, and the most accurate int check. The middle builds (D, C, B) are correct but heavier than the repo needs. H and E are held back by tests coupled to internals or by trusting fields on the caller's reservation object. A sits last because of a lock-held O(n) scan of open holds, which I measured, plus over-engineering and a 501-line test file."
+   },
+   {
+    "ranking": [
+     {
+      "letter": "I",
+      "score": 8.5,
+      "confirmed_defects": [
+       "Unhashable SKU leaks a TypeError, inherited from catalog.lookup (minor)",
+       "type(qty) is int rejects int subclasses (minor)",
+       "Inventory(None) raises AttributeError (minor)",
+       "Docs are a single README phrase (minor)"
+      ],
+      "refuted_defects": [],
+      "rationale": "Small, idiomatic module: a frozen identity-equality dataclass, an open set, and one lock over every check-then-act. It passed all my spec probes and 32-thread stress runs. Its tests are the strongest of the nine on the core requirement: with the lock replaced by a no-op, 5 tests fail (switchinterval races plus a test that each method waits for the lock). The six builds whose tests do not catch a missing lock can't make that claim."
+     },
+     {
+      "letter": "H",
+      "score": 8,
+      "confirmed_defects": [
+       "available() inserts keys into the defaultdict on a read (harmless, minor)",
+       "Unhashable SKU leaks TypeError (minor)",
+       "Test file is heavy (416 lines) and includes meta and trivia tests (minor)",
+       "Strict int-type check (minor)"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct and thread-safe. Settlement goes through an internal ticket, so it cannot be tampered with. Its switchinterval-based concurrency tests fail reliably when the lock is removed, which genuinely verifies the thread-safety requirement. Docked for test bloat and some brittle tests."
+     },
+     {
+      "letter": "E",
+      "score": 8,
+      "confirmed_defects": [
+       "commit/release read qty from the caller-held object, so mutating the private _qty corrupts the counts (minor; it takes private-attribute tampering)",
+       "Unhashable SKU raises TypeError (minor)",
+       "Some tests swap internals (_open) or are README/docstring meta-tests (minor)"
+      ],
+      "refuted_defects": [],
+      "rationale": "Compact and correct. Its concurrency tests inject sleeps through a slow set, so they really detect a missing lock (2 failures under the no-lock mutation). The remaining issues are a small trust-the-object accounting weakness and tests coupled to internals."
+     },
+     {
+      "letter": "F",
+      "score": 8,
+      "confirmed_defects": [
+       "Strict int-type check (minor)",
+       "Unhashable SKU raises TypeError (minor)",
+       "Inventory(None) raises AttributeError (minor)"
+      ],
+      "refuted_defects": [],
+      "rationale": "The cleanest small implementation: a 74-line module that records (sku, qty) internally, plus an on_hand helper. All probes passed. However, its barrier concurrency tests still pass with the lock removed, so they do not actually verify the headline thread-safety requirement. An inspector missed this."
+     },
+     {
+      "letter": "G",
+      "score": 7.5,
+      "confirmed_defects": [
+       "Reads sku/qty from the Reservation object; private-field tampering would skew counts (minor, not flagged by the inspector)",
+       "Concurrency tests pass with the lock removed (missed by the inspector)",
+       "Unhashable SKU raises TypeError (minor)"
+      ],
+      "refuted_defects": [],
+      "rationale": "Clean, well-documented code with docstrings on every method, and it was correct under all probes. Its concurrency tests are vacuous under the GIL, and it accepts int subclasses, which is reasonable. Solid, but its tests do not prove thread safety."
+     },
+     {
+      "letter": "C",
+      "score": 7.5,
+      "confirmed_defects": [
+       "Concurrency tests pass with the lock removed (missed by the inspector)",
+       "Inventory(None) raises AttributeError (minor)",
+       "Somewhat over-defensive id()-keyed bookkeeping (minor)"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct and robust, and the only build besides A and D that maps unhashable SKUs to UnknownProduct. It also has a model-based random test. Its thread-safety tests do not detect a missing lock."
+     },
+     {
+      "letter": "B",
+      "score": 7.5,
+      "confirmed_defects": [
+       "Concurrency tests pass with the lock removed (missed by the inspector)",
+       "Tests reach into private _on_hand/_held and include ast/README meta-tests (minor)",
+       "No method docstrings (minor)"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct, with tamper-safe settlement and a concise module. The test suite is bulky but does not catch a missing lock, and some of its tests are brittle meta-tests."
+     },
+     {
+      "letter": "D",
+      "score": 7.5,
+      "confirmed_defects": [
+       "Concurrency tests pass with the lock removed (missed by the inspector)",
+       "Mutable Reservation object (minor)",
+       "No method docstrings (minor)"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct and robust: it rejects non-str SKUs as UnknownProduct and records sku/qty internally. Its README has a short reserve/commit/release explanation. Its concurrency tests are vacuous, and it is slightly less idiomatic than the dataclass builds."
+     },
+     {
+      "letter": "A",
+      "score": 7,
+      "confirmed_defects": [
+       "available() and reserve() scan every open reservation under the lock, which is O(n) per call (reproduced: 5000 reserves took 0.46s versus about 0.01s for the other builds)",
+       "Over-engineered str-subclass handling (minor)",
+       "Concurrency tests pass with the lock removed (missed by the inspector)",
+       "501-line test file including a README-grep test (minor)"
+      ],
+      "refuted_defects": [],
+      "rationale": "Functionally correct, and it passed every probe. It carries an avoidable quadratic hot path under the global lock, the most over-engineered SKU handling of the nine, and the largest test file, yet its tests still don't detect a missing lock."
+     }
+    ],
+    "verdict": "All nine builds pass ./check.sh, and my spec and 32-thread stress probes found no blocker or major defects in any of them, so the differences are secondary. The key separator I found, which no inspector checked, is whether the tests actually verify the thread-safety requirement. When I replaced the lock with a no-op, only I, H and E had failing tests. The other six builds' barrier tests still pass because of the GIL. After that, the builds differ on simplicity and on whether settlement trusts the caller-held object. F and G are the cleanest but untested for races, and E and G read qty from the object. A falls behind for its O(n)-per-call scan under the lock and its over-engineering."
+   }
+  ]
+ },
+ {
+  "id": "click-param-spec",
+  "reports": [
+   {
+    "letter": "A",
+    "overall": 7,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 6,
+     "tests": 7,
+     "docs": 7,
+     "product": 6
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "The class-definition warning's stacklevel uses about 45 lines of new frame-walking code (_class_statement_stacklevel and _is_metaclass_hook, which inspects metaclass __new__/__init__ code objects and skips the 'abc' and 'types' modules). It is clever, but it is much more than the repo's existing _outside_click_stacklevel pattern needs, and it is fragile: a user module named 'types' would be skipped.",
+      "evidence": "src/click/core.py:129-171 (new helpers); compare with _outside_click_stacklevel just above"
+     },
+     {
+      "severity": "minor",
+      "what": "Option keeps its own get_help_spec, which returns the full left help column ('-t, --times TEXT'), not spec. Only the base method moved to Parameter. This is defensible, because Option.get_help_record depends on it. Still, Option.get_help_spec != Option.spec, and the task said to 'move' the method.",
+      "evidence": "Option(['-t','--times']).get_help_spec(ctx) printed '-t, --times TEXT' while .spec printed '--times' (src/click/core.py:3559)"
+     },
+     {
+      "severity": "minor",
+      "what": "The test additions are heavy and partly out of step with the repo's style. There is a 1500-iteration seeded random fuzz test, a subprocess 'import click -W error' test, six stacklevel-location tests for metaclass/type()/new_class variants, and a _CustomParameter helper duplicated in two test modules.",
+      "evidence": "tests/test_options.py test_spec_over_generated_declarations; tests/test_deprecations.py test_import_click_warns_nothing, test_override_warning_points_* ; _CustomParameter defined in both tests/test_options.py and tests/test_deprecations.py"
+     },
+     {
+      "severity": "minor",
+      "what": "The four new CHANGES.md entries have no {pr}/{issue} reference, unlike the neighbouring entries, and they are wordy. The Option.get_help_spec line describes unchanged behaviour.",
+      "evidence": "CHANGES.md:9-20"
+     }
+    ],
+    "strengths": [
+     "All spec requirements verified by hand: --times for -t/--times (in either order or with an explicit name), --color for --color/--no-color, FILENAME or the metavar for arguments, and [FILENAME]... from Argument.get_help_spec with nargs=-1",
+     "Deprecation and required-error messages now quote the spec: \"The option '--my-option' is deprecated.\" and \"The option '--my-option' is deprecated and still required.\"",
+     "human_readable_name warns at the caller's line and returns spec. Overriding it warns once at the class statement, including through an intermediate class. Subclasses of an overriding class do not warn again. Click no longer reads it anywhere (a test runs Click's code paths with warnings set to error)",
+     "pytest (2278 passed), mypy, ruff check and ruff format --check all pass",
+     "The upgrade guide covers both the deprecation and the message text change, and parameters.md explains spec"
+    ],
+    "stats": {
+     "files": 7,
+     "source_lines": 480,
+     "test_cases": 37
+    },
+    "summary": "Build A works and meets the spec. Parameter.spec, Option.spec and Argument.spec behave correctly. get_help_spec is on Parameter, and Argument overrides it to return its metavar. Messages quote specs, and the human_readable_name deprecation works both on read and on override at class definition, with accurate warning locations. All checks pass. The main drawbacks are about quality, not correctness. The stacklevel machinery for the class-definition warning is overbuilt. The tests are bloated with fuzz, subprocess and metaclass-location cases. The changelog entries are wordy and have no PR references. A maintainer would likely ask for these to be trimmed before merging."
+   },
+   {
+    "letter": "B",
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 8,
+     "tests": 8,
+     "docs": 7,
+     "product": 7
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "The CHANGES.md entries are re-wrapped unevenly: several lines run past the file's ~80-column wrap, up to 105 characters. Unlike the neighbouring entries, they also carry no {pr} reference.",
+      "evidence": "awk 'NR<25 && length>80' CHANGES.md prints lines 10 (85), 11 (105), 12 (82), 15 (82) and 20 (86). The other 8.6.0 entries end with {pr}`3866`; the new ones have no PR link."
+     },
+     {
+      "severity": "minor",
+      "what": "The changelog says spec is the name a parameter is 'known by in help'. For an option, the help column is actually get_help_spec ('-t, --times TEXT'), not spec ('--times'), so the sentence slightly overstates what spec does.",
+      "evidence": "CHANGES.md:9-10. Running Option(['-t','--times']).get_help_spec(ctx) printed '-t, --times TEXT', while .spec printed '--times'."
+     },
+     {
+      "severity": "minor",
+      "what": "The changelog cross-references {meth}`Argument.get_help_spec`, but docs/api.md declares Option and Argument with autoclass and no :members:. The Argument override and Option.spec docstrings are therefore never rendered, and the reference may not resolve.",
+      "evidence": "docs/api.md:182-187 has '.. autoclass:: Option' and '.. autoclass:: Argument' with no :members:."
+     },
+     {
+      "severity": "minor",
+      "what": "The metaclass-skipping stacklevel in __init_subclass__ keys off frame names equal to '__new__'. This is a heuristic: a class statement executed inside any function named __new__ would be skipped too. It is also somewhat more machinery than the repo's existing _outside_click_stacklevel helper uses.",
+      "evidence": "src/click/core.py:2532-2537, the while loop that checks frame.f_code.co_name == \"__new__\"."
+     },
+     {
+      "severity": "minor",
+      "what": "The tests include two 1000-iteration randomized 'property' loops and a cross-module import of a private constant (_CONSONANTS) from test_options into test_arguments. This style is unusual for Click's test suite and duplicates what the parametrized cases already cover.",
+      "evidence": "tests/test_arguments.py:9 has 'from test_options import _CONSONANTS'. The loops are test_spec_property_over_generated_declarations and test_argument_spec_property_over_generated_declarations."
+     },
+     {
+      "severity": "minor",
+      "what": "The base Parameter.get_help_spec is marked '.. versionadded:: 8.6.0'. The method already existed on Option since 8.5.1, so a 'versionchanged: moved from Option' note would be more accurate.",
+      "evidence": "src/click/core.py:2971-2977 and Option.get_help_spec at :3533 ('versionadded:: 8.5.1')."
+     }
+    ],
+    "strengths": [
+     "Every spec point works when exercised. Option(['-t','--times']).spec is '--times', '--color/--no-color' gives '--color', and Argument 'filename' gives 'FILENAME'. Argument get_help_spec with nargs=-1 gives '[FILENAME]...'. A deprecated --my-option prints \"The option '--my-option' is deprecated.\"",
+     "human_readable_name warns with stacklevel set to the user's line and returns spec. Click's source no longer reads it anywhere: grep in src/ finds it only in the deprecation shim.",
+     "Overriding human_readable_name warns at the class statement for direct subclasses, for subclasses of an intermediate class, and for Argument subclasses. A subclass that only inherits an override does not warn again, and the warning still lands on the class statement under ABCMeta or a custom metaclass.",
+     "Option.spec handles ties (first declared wins), unusual prefixes ('/debug', '+x') and secondary spellings correctly, and these cases are tested.",
+     "Argument.get_help_record routes through get_help_spec, so overriding it changes the help output, and a test pins this.",
+     "pytest (2288 passed), mypy, ruff check and ruff format --check all pass.",
+     "The upgrade guide entry and the parameters.md paragraph are clear and follow the existing style."
+    ],
+    "stats": {
+     "files": 8,
+     "source_lines": 470,
+     "test_cases": 16
+    },
+    "summary": "Build B adds Parameter.spec, moves get_help_spec up to Parameter with an Argument override, and switches error and deprecation messages to use spec. It deprecates human_readable_name both on access and when a subclass defines it, and the class-statement warning even handles metaclasses. Every spec requirement holds when exercised, and the full test, type and lint suite passes. The tests are thorough, though two 1000-iteration randomized loops are heavier than Click's usual style. The remaining issues are cosmetic: ragged line wrapping and missing {pr} links in CHANGES.md, a slightly inaccurate 'known by in help' phrase, a cross-reference that may not render because Option and Argument are autodocumented without members, and a heuristic frame walk in __init_subclass__. A maintainer would likely merge it after small edits."
+   },
+   {
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 8,
+     "tests": 9,
+     "docs": 8,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "The new CHANGES.md entries have no {pr}/{issue} reference, while the neighbouring entries under the same unreleased version all end with one (e.g. {pr}`3866`). The change also takes four bullets where two would do.",
+      "evidence": "CHANGES.md lines 9-24 in the diff: none of the four added bullets has a {pr} role. The entries just above them end with {pr}`3866`."
+     },
+     {
+      "severity": "minor",
+      "what": "The private helper _class_statement_stacklevel carries a '.. versionadded:: 8.6.0' directive, which is meant for public API. It also skips any non-Click frame named __new__ or __init_subclass__, so in rare cases (a class statement inside a user function with one of those names) the warning would point at the wrong frame.",
+      "evidence": "src/click/core.py:128-149 (`if not is_click and name not in {\"__new__\", \"__init_subclass__\"}`)"
+     },
+     {
+      "severity": "minor",
+      "what": "Reading human_readable_name warns on every access from a new call site. This is normal DeprecationWarning behaviour, but it means a subclass that keeps calling super().human_readable_name also warns on reads, on top of the warning at class definition.",
+      "evidence": "With warnings.simplefilter('always'), `o=click.Option(['--a-b']); o.human_readable_name; o.human_readable_name` printed the DeprecationWarning twice and returned '--a-b' both times."
+     }
+    ],
+    "strengths": [
+     "Every required check passes in a fresh copy: `uv run pytest -q` gives 2284 passed (also with -W error::DeprecationWarning), and mypy, ruff check and ruff format --check report no issues.",
+     "Option.spec gives the expected values: --times for -t/--times, --color for --color/--no-color, and --verbose when an explicit name is also given. Ties go to the first declaration, and it falls back to a secondary-only declaration. Argument.spec returns FILENAME or the metavar, while get_help_spec returns the decorated form, e.g. [FILENAME]...",
+     "Click no longer reads human_readable_name anywhere in src/. Deprecation messages, the 'deprecated and required' ValueError, MissingParameter.__str__, the parser's 'Argument X takes N values' and get_error_hint all use spec. For example, the output shows `The option '--my-option' is deprecated.` and `Argument 'SRC' takes 2 values.`",
+     "The __init_subclass__ check warns once, at the class statement. Overriding through an intermediate class does not warn again, re-overriding in a subclass does warn, and overrides coming from a non-Parameter mixin are caught. The warning points at the right line under custom metaclasses, cooperative __init_subclass__ and type() calls.",
+     "Thorough, targeted tests check warning text, filename and line number, that Click ignores an overridden human_readable_name, that an overridden spec flows into messages, and the parametrized spec edge cases.",
+     "The upgrade guide and parameters docs are clear and accurate and explain the behaviour change (my_option becomes --my-option)."
+    ],
+    "stats": {
+     "files": 9,
+     "source_lines": 470,
+     "test_cases": 46
+    },
+    "summary": "Build C meets every requirement in the task. Parameter.spec, Option.spec and Argument.spec are correct. get_help_spec is now on Parameter, and Argument has an override that returns the decorated metavar. Error and deprecation messages name parameters by spec, and Click itself no longer reads human_readable_name. The human_readable_name deprecation works both on reads and on subclass definitions, including overrides through an intermediate class or a mixin, and each class warns only once with the correct stacklevel. In a fresh copy the tests, mypy and ruff all pass, and the tests are thorough and meaningful. All three defects are minor: the changelog bullets lack PR references and could be consolidated, a private helper has a versionadded tag and a frame-name heuristic, and reads warn per call site. A maintainer would merge it with small edits.",
+    "letter": "C"
+   },
+   {
+    "letter": "D",
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 8,
+     "tests": 7,
+     "docs": 8,
+     "product": 7
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "Test module imports a helper class from another test module (`from test_options import CustomParameter`). The repo does not do this elsewhere; a shared fixture or conftest helper is the usual place. It also couples test_deprecations to test_options.",
+      "evidence": "tests/test_deprecations.py:8 `from test_options import CustomParameter`"
+     },
+     {
+      "severity": "minor",
+      "what": "A 1000-iteration randomized loop test for Option.spec recomputes the expected value with its own prefix-stripping logic. This is not Click's test style, and it adds little beyond the parametrized test_spec cases. test_spec_is_read_only and test_argument_does_not_define_human_readable_name test implementation details, not behavior.",
+      "evidence": "tests/test_options.py test_spec_property_over_generated_option_lists (random.Random(860), 1000 iterations); tests/test_deprecations.py test_argument_does_not_define_human_readable_name asserts on Argument.__dict__"
+     },
+     {
+      "severity": "minor",
+      "what": "`_class_statement_stacklevel` is a name-based heuristic: it skips any frame named `__new__` or `__init_subclass__`, or any frame in module `abc`. A class statement executed inside a user function named `__new__` would get the wrong stacklevel. The private helper also carries a `versionadded` tag, which adds noise.",
+      "evidence": "src/click/core.py:128-150"
+     },
+     {
+      "severity": "minor",
+      "what": "The Parameter.get_help_spec docstring says it returns 'the left column of the parameter's help record', but base Parameter.get_help_record returns None. The method actually just returns spec.",
+      "evidence": "src/click/core.py Parameter.get_help_spec docstring (~line 2585)"
+     },
+     {
+      "severity": "minor",
+      "what": "The subclass-override check only looks at `cls.__dict__`. A non-Parameter mixin that defines human_readable_name (`class X(Mixin, click.Option)`) shadows the deprecated property without any warning. A subclass of an overriding class does not warn again, which is reasonable.",
+      "evidence": "src/click/core.py:2551 `if \"human_readable_name\" in cls.__dict__`"
+     },
+     {
+      "severity": "minor",
+      "what": "The CHANGES.md entries have no {pr}/{issue} references, unlike the neighbouring entries. The get_help_spec entry says 'Add Parameter.get_help_spec' even though the method was moved up from Option.",
+      "evidence": "CHANGES.md lines 9-22 of the diff"
+     }
+    ],
+    "strengths": [
+     "All required checks pass in a fresh copy: pytest (2289 passed), mypy (no issues), ruff check and ruff format --check.",
+     "Option.spec uses _split_opt prefix length with first-declared tie-break. Verified: --times for -t/--times, --color for --color/--no-color, --t over -tt, /debug for /debug;/no-debug. Argument.spec returns the metavar or the upper-cased name.",
+     "Argument.get_help_spec returns make_metavar ('[FILENAME]...' for nargs=-1 optional). Parameter.get_help_spec returns spec. Option keeps its existing richer override.",
+     "Error messages switched to spec: \"The option '--my-option' is deprecated.\" and \"The option '--my-option' is deprecated and still required...\". Click's src no longer reads human_readable_name, and a test checks this end to end.",
+     "human_readable_name warns with a caller-pointing stacklevel and returns spec. Subclass overrides warn at the class statement line, including through an intermediate class, a mixin __init_subclass__ and a custom ABCMeta metaclass, and each case is tested.",
+     "Docs added to parameters.md (new section with examples), upgrade-guides.md (migration note that names the value change) and CHANGES.md."
+    ],
+    "stats": {
+     "files": 6,
+     "source_lines": 380,
+     "test_cases": 48
+    },
+    "summary": "Build D meets every spec requirement and passes the full pytest, mypy and ruff checks. I exercised the specs, help specs, error messages and the deprecation warnings by hand, and they behave as the task asks; the warnings point at the user's line or class statement. The core change is small and idiomatic. The class-definition stacklevel helper is careful but relies on matching frame names. The tests are thorough, but some are off the repo's style: a cross-module test import, a 1000-iteration randomized loop, and asserts on implementation details. The docs and changelog are complete apart from missing PR references. A maintainer would likely merge it after small cleanups to the tests."
+   },
+   {
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 8,
+     "tests": 8,
+     "docs": 8,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "The class-definition warning walks the stack by hand in __init_subclass__ (it skips the abc and click modules) instead of reusing or extending the existing _outside_click_stacklevel helper. The walk is correct but duplicates logic that already exists.",
+      "evidence": "src/click/core.py:2519-2545 (the while-loop over frame.f_globals['__name__']); human_readable_name uses _outside_click_stacklevel() a few lines below."
+     },
+     {
+      "severity": "minor",
+      "what": "Option.spec falls back to secondary_opts, which also changes a user-visible error. A required option declared only with a secondary spelling now reports \"Missing option '--no-name'.\" instead of \"'name'\". The changelog documents it, but the task did not ask for it.",
+      "evidence": "tests/test_options.py test_missing_option_with_only_secondary_spelling_names_it; CHANGES.md entry text."
+     },
+     {
+      "severity": "minor",
+      "what": "Some of the new tests add little: deepcopy/pickle round-trips of a plain property, read-only property assertions, and nameless-subclass edge cases. Together they make the test diff long for the behavior it covers.",
+      "evidence": "tests/test_arguments.py test_argument_survives_deepcopy_and_pickle, test_spec_is_read_only; tests/test_options.py test_option_survives_deepcopy_and_pickle"
+     },
+     {
+      "severity": "minor",
+      "what": "The Option.get_help_spec docstring has no note that the method now also exists on Parameter. The new CHANGES entries carry no {pr} reference, which every surrounding entry has.",
+      "evidence": "src/click/core.py:3538-3546 still reads only 'versionadded:: 8.5.1'; CHANGES.md new bullets have no {pr}"
+     }
+    ],
+    "strengths": [
+     "All required checks pass: pytest (2287 passed), mypy, ruff check and ruff format --check.",
+     "Option.spec gives the required results: -t,--times gives --times; --color/--no-color gives --color; ties go to the first declaration. Argument.spec returns the metavar or the upper-cased name.",
+     "Parameter.get_help_spec returns spec. Argument overrides it to return its metavar ([FILENAME]...), and get_help_record goes through it.",
+     "Every place Click read human_readable_name now reads spec, and a test proves Click no longer reads it. Deprecation output reads \"The option '--my-option' is deprecated.\"",
+     "The __init_subclass__ warning fires on direct overrides, on overrides through an intermediate class, and on plain attribute overrides. It does not fire again for children of the warned class or at import. Its stacklevel points at the class statement, and a test checks the line number.",
+     "CHANGES.md, the upgrade guide and docs/parameters.md are all updated, and the new members carry versionadded notes."
+    ],
+    "stats": {
+     "files": 8,
+     "source_lines": 470,
+     "test_cases": 47
+    },
+    "summary": "Build E meets every requirement in the task. pytest, mypy and ruff (check and format) all pass. I exercised it by hand. Option spec gives --times and --color, argument spec gives FILENAME or the metavar, and Argument.get_help_spec gives [FILENAME]... for an optional repeated argument. Deprecation messages quote '--my-option'. human_readable_name warns and returns spec. Overriding it warns at class definition, both directly and through an intermediate class, and the warning points at the user's class line. Click no longer reads the old property, and importing click emits no deprecation warning. All findings are minor: the stack walk is written by hand instead of reusing the existing helper, an extra behavior change for options declared only with a secondary spelling (documented in the changelog), some filler tests, and changelog entries without {pr} references. A maintainer would merge it with small edits.",
+    "letter": "E"
+   },
+   {
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 7,
+     "tests": 8,
+     "docs": 8,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "The new CHANGES.md entries have no {pr}/{issue} reference, although the neighbouring entries under the same unreleased version all carry one.",
+      "evidence": "CHANGES.md:9-20 (the four added bullets); compare line 6 '... {pr}`3866`'"
+     },
+     {
+      "severity": "minor",
+      "what": "_class_statement_stacklevel finds the class statement by skipping frames from the click and abc modules and any metaclass `__new__` frame, detected by inspecting the first local. It works in the tested cases, but the heuristic is fragile and over-built for a deprecation warning. A user metaclass whose `__new__` builds classes on the user's behalf gets skipped, so the warning points one frame too high.",
+      "evidence": "src/click/core.py:108-135 (is_metaclass_hook check using frame.f_locals.get(code.co_varnames[0]))"
+     },
+     {
+      "severity": "minor",
+      "what": "Docstring directives are used oddly. Argument.get_help_spec uses `.. versionadded:: 8.6.0 Overrides ...` where versionchanged or a plain note fits. The private helper _class_statement_stacklevel carries a versionadded directive.",
+      "evidence": "src/click/core.py:3931-3937; src/click/core.py:108-114"
+     },
+     {
+      "severity": "minor",
+      "what": "The tests are heavy compared with the size of the change: 293 new lines in test_deprecations.py, including a subprocess `import click -W error` test and several metaclass and stacklevel line-number tests. A maintainer would likely trim them.",
+      "evidence": "tests/test_deprecations.py diff +293 lines (test_import_click_emits_no_warning, test_subclass_with_metaclass_defining_new_warns_at_its_class_statement, etc.)"
+     }
+    ],
+    "strengths": [
+     "All required checks pass: pytest (2289 passed), mypy (no issues in 29 files), ruff check and ruff format --check.",
+     "Option.spec uses max over opts with _split_opt prefix length, so the first declared option wins a tie. Results: '--times' for -t/--times, '--color' for --color/--no-color, '/debug' for /debug;/no-debug. Argument.spec returns the metavar, else name.upper().",
+     "Parameter.get_help_spec returns spec. Argument overrides it to return make_metavar ('[FILENAME]...'), and get_help_record now goes through it. Option keeps its richer override, so help output does not change.",
+     "Click no longer reads human_readable_name anywhere in src. The deprecated-option message now shows '--my-option', and the missing or invalid option and argument errors are correct.",
+     "Defining human_readable_name in a subclass warns at the class statement, also through an intermediate class (class Leaf(Base) warned at t.py:4). A child of a subclass that defines it does not warn again. Reading the property warns once per call site under the default filters, and the warning points at the user's line.",
+     "The upgrade guide, parameters docs and changelog are all updated, and the wording matches the repo's existing style."
+    ],
+    "stats": {
+     "files": 7,
+     "source_lines": 110,
+     "test_cases": 48
+    },
+    "summary": "Build F meets every point of the spec, and pytest, mypy and both ruff checks pass. spec behaves as specified on options and arguments. get_help_spec is moved to Parameter, and Argument overrides it to return its metavar. Messages now name options by their spec. human_readable_name warns on access and returns spec, and Click no longer reads it anywhere. Subclasses that override it warn at the class statement, also through an intermediate class, and the warning points at the user's code. Docs, changelog and upgrade guide follow the repo's conventions. All four defects are minor: the stack-level heuristic for metaclasses is more complex and fragile than a deprecation warning needs, the changelog bullets have no PR references, two docstring directives are used oddly, and the test additions are heavy. A maintainer would merge it with small edits.",
+    "letter": "F"
+   },
+   {
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 7,
+     "tests": 8,
+     "docs": 8,
+     "product": 7
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "The class-definition warning checks only `cls.__dict__`. An override that comes from a mixin that is not a Parameter subclass never warns, and Click silently stops using it.",
+      "evidence": "`class Mixin: human_readable_name = property(lambda s: 'mix')`; `class X(Mixin, click.Option): pass` emits no DeprecationWarning (run with warnings.simplefilter('default')), and `X(['--a']).human_readable_name` prints 'mix'. Check is at src/click/core.py ~2550."
+     },
+     {
+      "severity": "minor",
+      "what": "`_class_creation_stacklevel` adds about 25 lines of frame-walking that identify frames by function name (`__init_subclass__`, `__new__`, `types.new_class`). It is clever and fragile for a deprecation warning. The tests that come with it (metaclasses that delete their first argument, varargs `__new__`, and so on) cost more than the feature is worth.",
+      "evidence": "src/click/core.py:128-153; tests/test_deprecations.py:514-625"
+     },
+     {
+      "severity": "minor",
+      "what": "The `Parameter.spec` docstring says it is the spelling used \"in messages and help\". Option help actually uses the `get_help_spec` override (`-t, --times TEXT`), not `spec`.",
+      "evidence": "src/click/core.py ~2561 docstring compared with the `Option.get_help_spec` output '-t, --times TEXT'"
+     },
+     {
+      "severity": "minor",
+      "what": "The `MissingParameter.__str__` change with no context, and the special case for options that have only secondary spellings, are scope additions that the CHANGES entry describes at length. The CHANGES entries are verbose and none of them has a {pr} reference, unlike the neighbouring entries.",
+      "evidence": "CHANGES.md:9-21; src/click/exceptions.py:226"
+     },
+     {
+      "severity": "minor",
+      "what": "The tests are heavy. They include randomized 1000-iteration oracle tests that copy the 8.5.1 `get_help_spec` implementation verbatim, and a subprocess import test. This does not match the repo's usual parametrized test style.",
+      "evidence": "tests/test_options.py:710-793; tests/test_arguments.py:331-367; tests/test_deprecations.py:468-476"
+     }
+    ],
+    "strengths": [
+     "All required behaviour works. `--times` for `-t/--times`, `--color` for `--color/--no-color`, `FILENAME` for an argument and its metavar when one is given, and `[FILENAME]...` from `Argument.get_help_spec` for an optional nargs=-1 argument.",
+     "Deprecation and error messages now quote the spec: \"The option '--my-option' is deprecated.\", and the required+deprecated ValueError names '--foo'.",
+     "`human_readable_name` warns once per call site with stacklevel pointing at the caller, and returns `spec`. Click no longer reads it anywhere. A test checks this under -W error across invoke, help, completion and to_info_dict.",
+     "The class-definition warning fires for a direct override and for an intermediate subclass that overrides it, and not again for that subclass's children. It points at the user's class statement.",
+     "pytest (2287 passed), mypy, ruff check and ruff format --check all pass. CHANGES, the upgrade guide and parameters.md are updated, and versionadded/versionchanged annotations follow the repo's conventions."
+    ],
+    "stats": {
+     "files": 8,
+     "source_lines": 640,
+     "test_cases": 45
+    },
+    "summary": "Build G meets the spec. `spec` and `get_help_spec` behave correctly on options and arguments, messages quote specs, and the `human_readable_name` deprecation works on both instance access and subclass definition. All tests, mypy and ruff pass. The defects are minor: an override that comes from a mixin is not detected, the frame-name heuristic for the warning's stacklevel is over-engineered, the CHANGES entries are verbose and have no {pr} references, and the test suite is heavier than the repo's usual style. A maintainer would likely merge it after trimming the stacklevel helper and the tests.",
+    "letter": "G"
+   },
+   {
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 8,
+     "tests": 9,
+     "docs": 8,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "The new CHANGES.md entries have no {pr} or {issue} reference, while the neighbouring entries under 8.6.0 all have one.",
+      "evidence": "CHANGES.md:9-20 has three new bullets with no {pr}`...`; the entries just above them end with {pr}`3866`."
+     },
+     {
+      "severity": "minor",
+      "what": "A subclass that overrides human_readable_name gets a warning at class definition, but Click then ignores that override. A custom display name silently stops appearing in messages. This is what the task asked for, but the upgrade guide doesn't say outright that such an override now has no effect on Click's output.",
+      "evidence": "In a subclass of click.Option with @property human_readable_name returning 'x', the deprecation message still prints the spec ('--my-option'), because core.py:2925 reads self.spec. docs/upgrade-guides.md:19 says to override spec but not that the old override is ignored."
+     },
+     {
+      "severity": "minor",
+      "what": "Changing MissingParameter.__str__ also changes output for options that has nothing to do with deprecation: 'Missing parameter: a' becomes '-a'. It's a reasonable reading of the task and it is in the changelog, but it changes behaviour existing tests relied on.",
+      "evidence": "tests/test_options.py:1132 and tests/test_arguments.py:643 were changed from 'Missing parameter: a' to '-a' and 'A'."
+     }
+    ],
+    "strengths": [
+     "Every spec item checks out by hand. Option.spec gives --times for -t/--times and --color for --color/--no-color. Argument.spec gives FILENAME, or the metavar when one is set. Argument.get_help_spec gives [FILENAME]... for nargs=-1. The deprecated-option message reads \"The option '--my-option' is deprecated.\" and the \"deprecated and still required\" error uses the spec.",
+     "Click itself no longer reads human_readable_name (grep of src/ finds only the deprecated property and the __init_subclass__ check). The property warns with a stacklevel that points at the caller and returns spec.",
+     "__init_subclass__ checks cls.__dict__, so it warns once for the class that defines the override, whether as an attribute, a method or a property, directly or through an intermediate class. A subclass that doesn't redefine it stays silent. It passes **kwargs on through super(). The stacklevel skips the abc module so the warning points at the class statement. All of this is tested, including two-level subclassing and the warning's filename.",
+     "pytest (2268 passed), mypy, ruff check and ruff format --check all pass. pyright reports the same 5 errors as the baseline, so the change adds none.",
+     "Tests are focused and parametrized, following the repo's style, and cover edge cases: slash prefixes, an option with only secondary opts, ties, and a base Parameter subclass.",
+     "The upgrade guide, the parameters docs and the versionadded/versionchanged/deprecated directives follow the repo's conventions. The local `import warnings` follows the pattern already used in core.py."
+    ],
+    "stats": {
+     "files": 8,
+     "source_lines": 100,
+     "test_cases": 27
+    },
+    "summary": "Build H is a clean, complete implementation. Parameter.spec, Option.spec and Argument.spec behave as specified. get_help_spec moves to Parameter, and Argument gets an override that returns its metavar. Messages now name parameters by spec. human_readable_name warns and returns spec, and Click no longer reads it. The class-definition warning for subclasses works directly and through intermediate classes, points at the user's class statement, and is tested thoroughly. All required checks pass, and pyright adds no new errors over the baseline. The docs, upgrade guide and changelog are updated. The only gaps are small: the changelog entries lack PR references, and the upgrade guide could say plainly that an overridden human_readable_name no longer affects Click's output.",
+    "letter": "H"
+   },
+   {
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 8,
+     "tests": 8,
+     "docs": 7,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "An override of human_readable_name that comes from a non-Parameter mixin is not detected. __init_subclass__ checks only cls.__dict__, so the class defines without a warning, and because Click no longer reads human_readable_name the override is silently ignored in messages.",
+      "evidence": "class M: @property def human_readable_name(self): return 'CUSTOM'; class X(M, click.Option): pass -> with warnings.simplefilter('always') no warning is printed and X(['--a']).human_readable_name returns 'CUSTOM' (script /tmp/claude-0/s/ex2.py). The check is at src/click/core.py:2555."
+     },
+     {
+      "severity": "minor",
+      "what": "The new CHANGES.md entries have no {pr}/{issue} reference, although the neighbouring entries under Unreleased all carry one. The upgrade-guide bullet also has no 'See #...' link, unlike the other bullets in that list.",
+      "evidence": "CHANGES.md:9-19 (new bullets) vs CHANGES.md:6-8 ('{pr}`3866`'); docs/upgrade-guides.md:19"
+     },
+     {
+      "severity": "minor",
+      "what": "Option.get_help_spec now overrides the new Parameter.get_help_spec, but its docstring still says only 'versionadded 8.5.1' and has no versionchanged note. The private helper _class_statement_stacklevel carries a public-style '.. versionadded:: 8.6.0'.",
+      "evidence": "src/click/core.py:3551-3558; src/click/core.py:128-135"
+     },
+     {
+      "severity": "minor",
+      "what": "MissingParameter.__str__ without a message still names the parameter by its internal name rather than its spec. This is pre-existing and was left untouched.",
+      "evidence": "src/click/exceptions.py:226-227 uses self.param.name"
+     }
+    ],
+    "strengths": [
+     "All required checks pass in a fresh copy: pytest (2270 passed), mypy (no issues), ruff check, and ruff format --check.",
+     "Parameter.spec behaves as the task describes on every input tried: --times for -t/--times, --color for --color/--no-color, FILENAME, a given metavar, and a fallback to secondary_opts for an option with only a secondary declaration. It is a read-only property.",
+     "get_help_spec now lives on Parameter (returns spec), Option keeps its override, and Argument's override returns its metavar (e.g. [FILENAME]...). Argument.get_help_record now routes through get_help_spec.",
+     "Click no longer reads human_readable_name anywhere in src/. Deprecation messages read \"The option '--my-option' is deprecated.\"",
+     "The warning for a subclass that overrides human_readable_name points at the user's class statement, including when a user mixin defines __init_subclass__, and the tests check this by filename and line number. Inheriting an override does not warn again, and reading the property warns at the caller's line.",
+     "Tests target real behavior: exact message strings, edge-case declarations, help records, stack-level attribution, and a spec override flowing into the deprecation output."
+    ],
+    "stats": {
+     "files": 7,
+     "source_lines": 330,
+     "test_cases": 29
+    },
+    "summary": "Build I is a solid, close-to-mergeable implementation. Parameter.spec, get_help_spec on Parameter with Argument and Option overrides, error messages that quote the spec, and the human_readable_name deprecation (on read, and at class definition with an accurate stack level) all work. Tests, mypy and ruff pass. The gaps are small: an override that comes from a non-Parameter mixin goes undetected and is silently ignored, the changelog and upgrade-guide entries have no PR references unlike their neighbours, and a few docstring version notes are uneven. No requirement of the task fails.",
+    "letter": "I"
+   }
+  ],
+  "judge": {
+   "ranking": [
+    {
+     "letter": "H",
+     "score": 8.5,
+     "confirmed_defects": [
+      "CHANGES entries have no {pr} reference (true of every build)",
+      "MissingParameter.__str__ now uses spec, so 'Missing parameter: a' becomes '-a'. Reproduced. This fits the task's 'name by spec' rule and is in the changelog."
+     ],
+     "refuted_defects": [],
+     "rationale": "It is the smallest and most idiomatic change. It extends the existing _outside_click_stacklevel with skip=('abc',) instead of adding a new frame walker. Every spec output reproduced: --times, --color, FILENAME/FOO, [FILENAME]..., '--my-option', and the class warning lands on the class line. pytest, mypy and ruff pass. The tests are focused and parametrized. The one gap is that a mixin override is not detected.",
+     "letter_note": ""
+    },
+    {
+     "letter": "C",
+     "score": 8.5,
+     "confirmed_defects": [
+      "Private helper carries versionadded and relies on a frame-name heuristic",
+      "No {pr} references"
+     ],
+     "refuted_defects": [],
+     "rationale": "It is the only build that warns on an override inherited from a non-Parameter mixin. I reproduced warnings at both lines 16 and 17. It also uses spec in MissingParameter and in the parser's 'Argument SRC takes 2 values'. All checks pass and the tests are thorough. It is slightly larger than H, and its stacklevel helper is custom."
+    },
+    {
+     "letter": "B",
+     "score": 8,
+     "confirmed_defects": [
+      "Ragged CHANGES line wrapping and no {pr} references",
+      "Uses a __new__ frame-name heuristic",
+      "Adds 1000-iteration randomized tests and imports _CONSONANTS from another test module"
+     ],
+     "refuted_defects": [],
+     "rationale": "It is functionally complete: all probes passed, and MissingParameter uses spec. The code is reasonably tidy, but the test style is off-repo and the changelog formatting is sloppy."
+    },
+    {
+     "letter": "I",
+     "score": 8,
+     "confirmed_defects": [
+      "A mixin override is not detected",
+      "MissingParameter.__str__ still uses the internal name (reproduced: 'Missing parameter: a')",
+      "Private helper has a versionadded tag"
+     ],
+     "refuted_defects": [],
+     "rationale": "It is compact and correct on every required point, and all checks pass. The tests are focused. It leaves one error message on the internal name and has a small custom stack helper."
+    },
+    {
+     "letter": "E",
+     "score": 8,
+     "confirmed_defects": [
+      "Hand-written stack walk in __init_subclass__ instead of reusing _outside_click_stacklevel",
+      "MissingParameter.__str__ still uses name",
+      "Some filler tests (pickle/deepcopy round-trips)"
+     ],
+     "refuted_defects": [],
+     "rationale": "It is correct and all checks pass. Its code is moderate, and the docs are clear about the secondary-spelling behaviour change. It carries some padding tests."
+    },
+    {
+     "letter": "D",
+     "score": 7.5,
+     "confirmed_defects": [
+      "Imports CustomParameter from test_options into another test module",
+      "1000-iteration randomized test and tests of implementation details",
+      "MissingParameter.__str__ still uses name",
+      "Mixin override not detected"
+     ],
+     "refuted_defects": [],
+     "rationale": "Its source change is small and correct, and all checks pass. The test style needs cleanup before a merge."
+    },
+    {
+     "letter": "F",
+     "score": 7.5,
+     "confirmed_defects": [
+      "Fragile metaclass-detecting stacklevel helper that inspects f_locals",
+      "Heavy tests, including a subprocess import test",
+      "MissingParameter.__str__ unchanged"
+     ],
+     "refuted_defects": [],
+     "rationale": "It is correct and all checks pass. The stacklevel machinery is overbuilt and fragile for a deprecation warning, and the tests are bloated."
+    },
+    {
+     "letter": "G",
+     "score": 7,
+     "confirmed_defects": [
+      "Mixin override not detected",
+      "Roughly 25-line frame-name stacklevel helper with matching exotic tests",
+      "Randomized oracle tests copy an old implementation, plus a subprocess test; it has the largest diff overall"
+     ],
+     "refuted_defects": [],
+     "rationale": "It is correct, but it is the biggest diff, and a maintainer would ask for much of the helper and the tests to be trimmed."
+    },
+    {
+     "letter": "A",
+     "score": 7,
+     "confirmed_defects": [
+      "About 45 lines of _class_statement_stacklevel/_is_metaclass_hook that skips modules named 'types'/'abc'",
+      "1500-iteration fuzz test, subprocess test, and a helper duplicated across test modules",
+      "MissingParameter.__str__ unchanged"
+     ],
+     "refuted_defects": [],
+     "rationale": "It is functionally correct and all checks pass. It has the most over-engineered stacklevel code and test bloat of the set."
+    }
+   ],
+   "verdict": "All nine builds pass pytest, mypy and both ruff checks. My probe gave identical results for spec, get_help_spec, the deprecation messages and the human_readable_name warnings, and no inspector claimed a blocker or major defect. What separates them is restraint and coverage at the edges. H does the job by extending the existing stacklevel helper with a one-argument skip and uses focused tests. C is the only build that catches an override inherited from a mixin, and it also moves MissingParameter and the parser message to spec. A, F and G spend dozens of lines on fragile frame-walking heuristics and fuzz, subprocess and metaclass tests that a maintainer would trim."
+  },
+  "judges": [
+   {
+    "ranking": [
+     {
+      "letter": "H",
+      "score": 8.5,
+      "confirmed_defects": [
+       "CHANGES entries have no {pr} reference (true of every build)",
+       "MissingParameter.__str__ now uses spec, so 'Missing parameter: a' becomes '-a'. Reproduced. This fits the task's 'name by spec' rule and is in the changelog."
+      ],
+      "refuted_defects": [],
+      "rationale": "It is the smallest and most idiomatic change. It extends the existing _outside_click_stacklevel with skip=('abc',) instead of adding a new frame walker. Every spec output reproduced: --times, --color, FILENAME/FOO, [FILENAME]..., '--my-option', and the class warning lands on the class line. pytest, mypy and ruff pass. The tests are focused and parametrized. The one gap is that a mixin override is not detected.",
+      "letter_note": ""
+     },
+     {
+      "letter": "C",
+      "score": 8.5,
+      "confirmed_defects": [
+       "Private helper carries versionadded and relies on a frame-name heuristic",
+       "No {pr} references"
+      ],
+      "refuted_defects": [],
+      "rationale": "It is the only build that warns on an override inherited from a non-Parameter mixin. I reproduced warnings at both lines 16 and 17. It also uses spec in MissingParameter and in the parser's 'Argument SRC takes 2 values'. All checks pass and the tests are thorough. It is slightly larger than H, and its stacklevel helper is custom."
+     },
+     {
+      "letter": "B",
+      "score": 8,
+      "confirmed_defects": [
+       "Ragged CHANGES line wrapping and no {pr} references",
+       "Uses a __new__ frame-name heuristic",
+       "Adds 1000-iteration randomized tests and imports _CONSONANTS from another test module"
+      ],
+      "refuted_defects": [],
+      "rationale": "It is functionally complete: all probes passed, and MissingParameter uses spec. The code is reasonably tidy, but the test style is off-repo and the changelog formatting is sloppy."
+     },
+     {
+      "letter": "I",
+      "score": 8,
+      "confirmed_defects": [
+       "A mixin override is not detected",
+       "MissingParameter.__str__ still uses the internal name (reproduced: 'Missing parameter: a')",
+       "Private helper has a versionadded tag"
+      ],
+      "refuted_defects": [],
+      "rationale": "It is compact and correct on every required point, and all checks pass. The tests are focused. It leaves one error message on the internal name and has a small custom stack helper."
+     },
+     {
+      "letter": "E",
+      "score": 8,
+      "confirmed_defects": [
+       "Hand-written stack walk in __init_subclass__ instead of reusing _outside_click_stacklevel",
+       "MissingParameter.__str__ still uses name",
+       "Some filler tests (pickle/deepcopy round-trips)"
+      ],
+      "refuted_defects": [],
+      "rationale": "It is correct and all checks pass. Its code is moderate, and the docs are clear about the secondary-spelling behaviour change. It carries some padding tests."
+     },
+     {
+      "letter": "D",
+      "score": 7.5,
+      "confirmed_defects": [
+       "Imports CustomParameter from test_options into another test module",
+       "1000-iteration randomized test and tests of implementation details",
+       "MissingParameter.__str__ still uses name",
+       "Mixin override not detected"
+      ],
+      "refuted_defects": [],
+      "rationale": "Its source change is small and correct, and all checks pass. The test style needs cleanup before a merge."
+     },
+     {
+      "letter": "F",
+      "score": 7.5,
+      "confirmed_defects": [
+       "Fragile metaclass-detecting stacklevel helper that inspects f_locals",
+       "Heavy tests, including a subprocess import test",
+       "MissingParameter.__str__ unchanged"
+      ],
+      "refuted_defects": [],
+      "rationale": "It is correct and all checks pass. The stacklevel machinery is overbuilt and fragile for a deprecation warning, and the tests are bloated."
+     },
+     {
+      "letter": "G",
+      "score": 7,
+      "confirmed_defects": [
+       "Mixin override not detected",
+       "Roughly 25-line frame-name stacklevel helper with matching exotic tests",
+       "Randomized oracle tests copy an old implementation, plus a subprocess test; it has the largest diff overall"
+      ],
+      "refuted_defects": [],
+      "rationale": "It is correct, but it is the biggest diff, and a maintainer would ask for much of the helper and the tests to be trimmed."
+     },
+     {
+      "letter": "A",
+      "score": 7,
+      "confirmed_defects": [
+       "About 45 lines of _class_statement_stacklevel/_is_metaclass_hook that skips modules named 'types'/'abc'",
+       "1500-iteration fuzz test, subprocess test, and a helper duplicated across test modules",
+       "MissingParameter.__str__ unchanged"
+      ],
+      "refuted_defects": [],
+      "rationale": "It is functionally correct and all checks pass. It has the most over-engineered stacklevel code and test bloat of the set."
+     }
+    ],
+    "verdict": "All nine builds pass pytest, mypy and both ruff checks. My probe gave identical results for spec, get_help_spec, the deprecation messages and the human_readable_name warnings, and no inspector claimed a blocker or major defect. What separates them is restraint and coverage at the edges. H does the job by extending the existing stacklevel helper with a one-argument skip and uses focused tests. C is the only build that catches an override inherited from a mixin, and it also moves MissingParameter and the parser message to spec. A, F and G spend dozens of lines on fragile frame-walking heuristics and fuzz, subprocess and metaclass tests that a maintainer would trim."
+   },
+   {
+    "ranking": [
+     {
+      "letter": "C",
+      "score": 8.5,
+      "confirmed_defects": [
+       "CHANGES.md bullets have no {pr} reference (true of all builds)",
+       "_class_statement_stacklevel skips any non-Click frame named __new__/__init_subclass__ (name heuristic) and carries versionadded on a private helper"
+      ],
+      "refuted_defects": [
+       "Read-per-call-site warnings are standard DeprecationWarning behaviour, not a defect"
+      ],
+      "rationale": "All checks pass (2284 tests, mypy, ruff check/format). Every spec point reproduced: --times, --color, FILENAME/metavar, [FILENAME]..., '--my-option' in deprecation and required errors. It is the only build that warns when a non-Parameter mixin supplies human_readable_name, which I confirmed with a probe (mixin warns 1, every other build 0). It also changes the parser's 'Argument SRC takes 2 values' message to use spec. Its upgrade guide is the only one that says plainly that an overridden human_readable_name no longer affects Click's messages. Plain subclasses and ABCMeta subclasses stay silent. The MRO logic and the frame heuristic add some complexity."
+     },
+     {
+      "letter": "H",
+      "score": 8.5,
+      "confirmed_defects": [
+       "CHANGES.md entries lack {pr} references",
+       "Mixin-supplied human_readable_name is not detected (cls.__dict__ check only)",
+       "MissingParameter.__str__ now names options by spec ('Missing parameter: --times'), a small extra output change that the changelog documents"
+      ],
+      "refuted_defects": [],
+      "rationale": "This is the smallest and cleanest implementation: 89 source lines. Instead of writing a new frame walker, it extends the existing _outside_click_stacklevel helper with a skip tuple. Option.spec is a single max() over opts or secondary_opts. Its tests are focused and parametrized (171 lines). All checks pass, and every spec behaviour reproduced. It ranks just behind C because it misses mixin overrides and its upgrade guide does not say that an old override is now ignored."
+     },
+     {
+      "letter": "I",
+      "score": 8,
+      "confirmed_defects": [
+       "Mixin override not detected",
+       "CHANGES.md and upgrade-guide entries lack PR references",
+       "Option-specific opts/secondary_opts logic sits in the base Parameter.spec, and secondary-only falls back to secondary_opts[0] rather than the longest secondary"
+      ],
+      "refuted_defects": [
+       "MissingParameter.__str__ using param.name was pre-existing behaviour and is not required by the task"
+      ],
+      "rationale": "Compact and correct, and all checks pass. Its stacklevel helper is a small walker that skips __init_subclass__ and abc frames. It reads human_readable_name with stacklevel=2 rather than the repo helper, which is fine. The tests are focused. Its design is slightly less tidy than H's because the option logic lives in the base class."
+     },
+     {
+      "letter": "B",
+      "score": 8,
+      "confirmed_defects": [
+       "CHANGES.md lines are wrapped unevenly and lack {pr} references",
+       "Mixin override not detected",
+       "Two 1000-iteration randomized loops, and test_arguments imports a private constant from test_options"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct on every probe and all checks pass. The class-statement warning handles metaclasses. The tests are heavier than the repo's style, and the changelog formatting is rough."
+     },
+     {
+      "letter": "E",
+      "score": 8,
+      "confirmed_defects": [
+       "The stack walk in __init_subclass__ is written by hand instead of reusing the existing helper",
+       "Mixin override not detected",
+       "Some filler tests (deepcopy/pickle of a property)"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct and all checks pass. Docs are complete. Its code is somewhat more duplicated than H's, and its tests are padded."
+     },
+     {
+      "letter": "D",
+      "score": 7.5,
+      "confirmed_defects": [
+       "The tests import CustomParameter from another test module",
+       "1000-iteration randomized loop and implementation-detail asserts",
+       "Mixin override not detected",
+       "The Parameter.get_help_spec docstring overstates what the method does"
+      ],
+      "refuted_defects": [],
+      "rationale": "Functionally complete and all checks pass. The deprecation message wording differs ('Parameter.human_readable_name is deprecated.' with no removal version). The test-style issues would need cleanup before merging."
+     },
+     {
+      "letter": "F",
+      "score": 7.5,
+      "confirmed_defects": [
+       "_class_statement_stacklevel inspects the first local of metaclass __new__ frames, which is fragile and overbuilt",
+       "Heavy tests (443 lines, including a subprocess import test)",
+       "Odd versionadded directives"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct and all checks pass. A maintainer would trim the stacklevel machinery and the tests."
+     },
+     {
+      "letter": "G",
+      "score": 7,
+      "confirmed_defects": [
+       "Mixin override not detected",
+       "Frame-name stacklevel helper and its tests are overbuilt",
+       "Largest test diff (496 lines), with randomized oracle tests that copy the old implementation",
+       "Verbose CHANGES.md entries"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct and all checks pass. Of all the builds, it has the most extra code and tests for what the task needs."
+     },
+     {
+      "letter": "A",
+      "score": 7,
+      "confirmed_defects": [
+       "About 45 lines of metaclass-aware frame walking that skips modules named 'abc'/'types'",
+       "Bloated tests (1500-iteration fuzz, subprocess, six stacklevel-location variants, duplicated helper)",
+       "Wordy changelog without PR references",
+       "Mixin override not detected"
+      ],
+      "refuted_defects": [
+       "Option keeping its richer get_help_spec is correct, because help output depends on it, and every other build does the same"
+      ],
+      "refuted_defects_note": "",
+      "rationale": "Correct and all checks pass. Its stacklevel machinery is the most overbuilt of the nine, and its tests are bloated, so it would need the most trimming."
+     }
+    ],
+    "verdict": "No inspector claimed a blocker or major defect. I copied all nine builds, synced their venvs, and ran pytest, mypy, ruff check and ruff format --check: all pass. A behaviour probe gives identical, correct results for spec, get_help_spec, the deprecation messages, the human_readable_name warning and the class-definition warning. What separates the builds is robustness at the edges and restraint. C is the only build that catches an override supplied by a mixin, and the only one whose upgrade guide warns that such overrides are now ignored. H is the cleanest: it reuses the existing stacklevel helper and keeps its tests focused. A, F and G pile frame-walking heuristics and fuzz or subprocess tests on top, and a maintainer would ask for those to be trimmed."
+   }
+  ]
+ },
+ {
+  "id": "fd-count",
+  "reports": [
+   {
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 9,
+     "code_quality": 8,
+     "tests": 8,
+     "docs": 8,
+     "product": 7
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "Tests don't use the repo's TestEnv assert helpers. They add four new helpers (fd_command, run_fd, assert_count_output, plain_entry_count) that spawn the binary directly. The suite is about 345 lines, large next to the roughly 40-line feature, and it includes a libc SIGINT/pre_exec test that is heavier than the repo's usual style.",
+      "evidence": "tests/tests.rs diff: +fn fd_command / run_fd / assert_count_output / plain_entry_count; test_count_sigint_prints_no_partial_count uses unsafe libc::signal and libc::kill"
+     },
+     {
+      "severity": "minor",
+      "what": "The zsh completion doesn't mark --count as exclusive with --quiet or --format. The file has no entries for those flags yet, so this matches what is already there, but the CLI enforces those conflicts and the completion doesn't.",
+      "evidence": "contrib/completion/_fd:97-98 '(long-listing exec-cmds null-sep)--count[...]'"
+     },
+     {
+      "severity": "minor",
+      "what": "The CHANGELOG entry has no issue/PR reference or author, unlike neighbouring entries. It also replaces the '-' placeholder line, which is fine.",
+      "evidence": "CHANGELOG.md:4 '- Add `--count` to print the number of matching entries instead of the entries themselves'"
+     },
+     {
+      "severity": "minor",
+      "what": "Usage errors for -l with --count list --exec and --exec-batch too, because the conflict is added through the 'execs' ArgGroup. The message is slightly confusing.",
+      "evidence": "fd --count -l -> 'error: the argument '--count' cannot be used with:\\n  --list-details\\n  --exec <cmd>...\\n  --exec-batch <cmd>...'"
+     }
+    ],
+    "strengths": [
+     "Small, focused core change: one count flag in Config, is_printing() returns false when counting so per-entry LS_COLORS styling and the Ctrl-C handler are skipped, the receiver skips buffering, and stop() prints the count",
+     "Every spec behaviour checked by hand: 0 with exit 0 on no matches, filters (-e, -H, -t, -S, --changed-within), one total across several paths, --max-results/-1 cap the count, --max-results=0 is unlimited, all six conflicts give exit 2 in either order",
+     "Write errors are handled. A broken pipe exits 1 silently, the same as plain fd. Writing to /dev/full reports 'Could not write to output'",
+     "Tests compare the count against plain fd output across many option combinations, and cover more than 1000 results (past the receiver's buffer size), newline-in-filename, invalid paths, and help text",
+     "Man page entry is in the right place next to --max-results/-1 and lists the conflicts. The clap long_help doc comment follows the repo pattern. cargo test (291 tests), clippy -D warnings and fmt --check all pass"
+    ],
+    "stats": {
+     "files": 8,
+     "source_lines": 351,
+     "test_cases": 17
+    },
+    "summary": "Build A meets every spec requirement. The fix is minimal and fits the code: count mode reuses the existing receiver, max-results and stop paths, and turns off printing-only work through is_printing(). The build, all 291 tests, clippy -D warnings and fmt --check pass. Manual runs confirmed: correct counts with filters and multiple paths, 0 and exit 0 on no match, max-results and -1 capping the count, usage errors (exit 2) for exec, exec-batch, list-details, format, print0 and quiet, and broken-pipe behaviour matching plain fd. The man page, zsh completion and CHANGELOG are all updated. The weak points are style. The test suite is oversized and brings its own process-spawning helpers plus an unsafe SIGINT test instead of the repo's TestEnv assertions. The completion leaves out the quiet and format conflicts, and the changelog line has no reference. A maintainer would likely merge it after trimming the tests.",
+    "letter": "A"
+   },
+   {
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 9,
+     "code_quality": 8,
+     "tests": 8,
+     "docs": 8,
+     "product": 7
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "The zsh completion adds new `--format` and `-q/--quiet/--has-results` entries that weren't there before. This goes beyond what the task asked for. It is useful, but it is unrelated churn in a feature PR.",
+      "evidence": "contrib/completion/_fd:100-104 (new '+ (format)' and '+ (quiet)' groups added in the diff)"
+     },
+     {
+      "severity": "minor",
+      "what": "The tests are heavier than the repo's usual style. There are 3 new helper functions plus a 150-iteration xorshift-randomized combination test. It overlaps heavily with test_count_applies_search_filters and test_count_ignores_color_hyperlink_and_path_flags, so a maintainer would likely trim it.",
+      "evidence": "tests/tests.rs: test_count_equals_listed_lines_for_generated_options; helpers listed_lines, assert_count_matches_listing, fd_in_root, run_fd_in_root"
+     },
+     {
+      "severity": "minor",
+      "what": "The conflicts with exec, exec-batch and list-details are declared through the `execs` ArgGroup. The other conflicts are declared in the `count` arg's own conflicts_with_all. Splitting them across two places is a little scattered, but it works and matches how `quiet` is set up.",
+      "evidence": "src/cli.rs:29 (\"count\" added to execs group conflicts) and the count arg's conflicts_with_all([\"quiet\",\"format\",\"null_separator\"])"
+     },
+     {
+      "severity": "minor",
+      "what": "The CHANGELOG entry has no issue/PR reference or author handle, unlike the neighbouring entries (an expected gap for an unsubmitted change).",
+      "evidence": "CHANGELOG.md:4 '- Add `--count` option to print the number of search results instead of the results themselves'"
+     }
+    ],
+    "strengths": [
+     "Every spec requirement checked out by hand: `--count rs` -> 3, no matches -> `0` with rc 0, `rs a a` -> 4 (one total over repeated paths), -H and -t d respected, --max-results=2 -> 2, -1 -> 1, --max-results=0 -> uncapped",
+     "All six conflicts (-x, -X, -l, --format, -0, -q) are clap usage errors with exit code 2, whichever order the flags come in",
+     "Counting is a separate path (count_entries) that doesn't buffer, sort or print entries. It sets quit_flag at max_results so the walk stops early, and prints no partial count on SIGINT",
+     "Write errors are handled the same way as the normal output path: a broken pipe exits 1 silently, and /dev/full gives 'Could not write to output' with exit 1",
+     "cargo build, cargo test (160 unit + 130 integration), clippy -D warnings and fmt --check all pass",
+     "The tests compare the count against the line count of the matching normal listing, which is a solid oracle. They also cover --show-errors stderr behaviour, broken pipe, /dev/full and the conflicts in both orders, plus unit tests for count_entries",
+     "Man page entry is placed next to --quiet in the existing style, and the long help, config doc comment and zsh completion are all updated"
+    ],
+    "stats": {
+     "files": 7,
+     "source_lines": 390,
+     "test_cases": 16
+    },
+    "summary": "Build B is a correct, solid implementation of --count. In my copy (/tmp/inspect-fd-count-B), the build, all tests, clippy and fmt pass. Every spec requirement behaves correctly when run by hand: total over several search paths, filters, the max-results and -1 caps, 0 with exit 0 on no matches, and usage errors (exit 2) for all six conflicting options. The count path is a clean, dedicated function that stops the walk early once the cap is reached, handles SIGINT, and handles broken pipes and write errors the same way normal output does. Docs are present in the man page, the help text, the CHANGELOG and the zsh completion. The only problems are minor: unrelated zsh completion additions for --format and --quiet, an over-engineered randomized test, conflict declarations split across two places, and no PR reference in the changelog. A maintainer would merge it with small trims.",
+    "letter": "B"
+   },
+   {
+    "letter": "C",
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 8,
+     "tests": 9,
+     "docs": 8,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "A broken pipe with --count prints an error, but fd normally exits quietly on a broken pipe. ReceiverBuffer::print skips BrokenPipe errors and flush() fails without a message; print_count reports every write error.",
+      "evidence": "In /tmp/cnttree: `fd --count | head -0` prints `[fd error]: Could not write to output: Broken pipe (os error 32)` and exits 1. `fd | head -0` prints nothing and exits 1 (src/walk.rs print_count vs print). test_count_closed_pipe_fails locks this behavior in."
+     },
+     {
+      "severity": "minor",
+      "what": "The SIGINT test depends on timing: it sleeps 40ms after spawning fd, then sends the signal, and assumes fd is still walking 30000 files. It could be flaky on a fast or a heavily loaded machine. Writing 30000 files also makes it slow.",
+      "evidence": "tests/tests.rs test_count_interrupted_prints_no_count: `std::thread::sleep(Duration::from_millis(40)); kill(..., SIGINT)`"
+     },
+     {
+      "severity": "minor",
+      "what": "The zsh completion adds exclusions on the --count side only. The -l, -0, -x and -X entries do not list the new 'count' group, so `fd -l --<TAB>` still offers --count.",
+      "evidence": "contrib/completion/_fd:91 `'(abs-path null-sep max-results exec-cmds)'{-l,--list-details}` has no `count` group; the same is true of line 88 (-0) and lines 151-152 (-x and -X)."
+     },
+     {
+      "severity": "minor",
+      "what": "In count mode, poll() still goes through the Buffering/Streaming state machine: on timeout it calls stream() and flush() on an empty buffer. This does no harm but adds dead work. An early branch would be cleaner than the nested `if !self.config.count { match ... }`.",
+      "evidence": "src/walk.rs:207-219 and the Timeout arm at about line 240"
+     }
+    ],
+    "strengths": [
+     "Small, focused change: Opts and Config get a field, the receiver skips buffering and printing and prints num_results in stop(). --max-results and -1 cap the count because the existing max_results check now runs in count mode too.",
+     "Conflicts use clap conflicts_with_all, so all six combinations fail as usage errors with exit 2 in either order. --has-results is covered through the quiet alias.",
+     "Every spec case checks out by hand: no matches prints `0` with exit 0, multiple paths print one total, filters apply (-e, -t, -H, -I, --size), and the output is a plain integer even with --color=always.",
+     "Thorough, meaningful tests: --count is compared against plain fd output for 10 filter sets, plus duplicate and multiple paths, a file name containing a newline, max-results ordering including --max-results=0, conflicts in both orders, /dev/full write errors, broken pipe, SIGINT, and a check that the docs, completion and changelog mention --count.",
+     "The man page entry follows the existing troff style. The CHANGELOG entry sits under Upcoming Release > Features. The long help comes from a doc comment, as the other options do.",
+     "cargo build, cargo test (156+130 passed), clippy -D warnings and fmt --check all pass."
+    ],
+    "stats": {
+     "files": 8,
+     "source_lines": 262,
+     "test_cases": 12
+    },
+    "summary": "Build C meets the spec. --count prints a single total, applies every filter, prints 0 with exit 0 when nothing matches, is capped by --max-results and -1, and is a usage error (exit 2) with all six conflicting options. The implementation in walk.rs is small and the test suite is thorough. The man page, zsh completion and CHANGELOG are all updated. Build, tests, clippy and fmt all pass. The defects are minor. A broken pipe prints an error where fd normally exits quietly. The SIGINT test relies on a 40ms sleep and could be flaky. The completion exclusions run in one direction only. The poll() branching is slightly clumsy. A maintainer would likely merge it after small edits."
+   },
+   {
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 8,
+     "tests": 8,
+     "docs": 8,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "In the zsh completion, the --count exclusion list leaves out null-sep (-0/--print0). -0 hides --count, but once --count is typed, -0 is still offered as a completion.",
+      "evidence": "contrib/completion/_fd: `'(long-listing exec-cmds)--count[...]'` vs `'(long-listing count)'{-0,--print0}`"
+     },
+     {
+      "severity": "minor",
+      "what": "The conflict test runs std::process::Command by hand instead of the existing TestEnv helpers (assert_failure_with_error / assert_error), which doesn't match the test style used elsewhere in the file.",
+      "evidence": "tests/tests.rs test_count conflict loop; tests/testenv/mod.rs:296,312 provide helpers"
+     },
+     {
+      "severity": "minor",
+      "what": "The CHANGELOG entry has no issue/PR reference or author, which other entries in the file have.",
+      "evidence": "CHANGELOG.md line 4: '- Add `--count` option to print the number of search results instead of the results themselves'"
+     }
+    ],
+    "strengths": [
+     "Small, targeted change in ReceiverBuffer: it skips buffering and printing when counting and writes the count in stop(), so the existing max_results path caps the count with no extra code",
+     "Clap conflicts_with_all covers every required option; `fd --count -x echo` exits 2 with 'cannot be used with'",
+     "No matches prints 0 and exits 0; several search paths give one total (`--count . a a` = 6, the same as the plain line count); --max-results 2 gives 2, -1 gives 1",
+     "Handles broken pipes like plain output (both exit 1 under `| head -c0`), and SIGINT is still honoured in stop()",
+     "The test cross-checks the count against the plain output's line count across many filters, and checks conflicts in both argument orders, including the -l/-0/-q/--has-results aliases",
+     "cargo build, test (275 pass), clippy -D warnings and fmt --check all pass; the man page, zsh completion and CHANGELOG are updated"
+    ],
+    "stats": {
+     "files": 8,
+     "source_lines": 140,
+     "test_cases": 1
+    },
+    "summary": "Build D meets every spec point. The code change is minimal and idiomatic: count mode skips output in ReceiverBuffer::poll and prints num_results in stop(), so filters, multiple paths and --max-results/-1 all work without special handling. Every listed conflict is a clap usage error (exit 2). No matches prints 0 and exits 0, and broken pipes behave the same as plain output. Build, tests, clippy and fmt all pass. The one test function is thorough and checks the count against real output. The defects are all minor: the zsh exclusion is one-sided for -0, the conflict test doesn't use the TestEnv helpers, and the CHANGELOG entry has no PR reference. A maintainer would merge it with small edits.",
+    "letter": "D"
+   },
+   {
+    "letter": "E",
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 8,
+     "tests": 8,
+     "docs": 7,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "The man page entry for --count does not say which options it conflicts with, that -1 also caps the count, or that a search with no matches prints 0 and exits 0. The neighbouring --quiet entry does describe its exit-code behaviour.",
+      "evidence": "doc/fd.1:167-172 says only 'Print the number of matching entries as a single integer ... and --max-results caps the count.'"
+     },
+     {
+      "severity": "minor",
+      "what": "--count makes clap silently drop the requirement that --batch-size needs --exec-batch, so a stray --batch-size is accepted instead of being reported as an error. -l already behaves this way in the base repo, so this is a clap quirk rather than new logic.",
+      "evidence": "In a temp tree, `fd --count --batch-size 2` printed 20007 and exited 0, while `fd --batch-size 2` gives 'error: the following required arguments were not provided: --exec-batch'."
+     },
+     {
+      "severity": "minor",
+      "what": "test_count_completion checks exact substrings of the zsh completion file. It breaks on harmless reformatting and does not check that the completion actually works.",
+      "evidence": "tests/tests.rs test_count_completion: assert!(completion.contains(\"count)'{-l,--list-details}\")) and similar lines."
+     },
+     {
+      "severity": "minor",
+      "what": "print_count handles write and broken-pipe errors itself instead of reusing the existing print/flush helpers. The behaviour matches (a broken pipe exits 1 with no message), but the logic is now in two places.",
+      "evidence": "src/walk.rs:283-300, compared with flush() at src/walk.rs:320-326."
+     }
+    ],
+    "strengths": [
+     "Small, targeted change in the receiver: with --count, entries skip buffering and printing, num_results still counts them, and stop() prints a single integer. --max-results and -1 cap the count through the existing early-stop path.",
+     "Conflicts are declared on the clap arg, so `--count` with -x, -X, -l, --format, -0 or -q (including the --has-results alias) gives a usage error with exit code 2, in either argument order.",
+     "Manual runs gave correct output: 0 with exit 0 for no matches, one total across several search paths, correct counts with filters (-e, -t, -H, -S, --prune), 1 for -1, 20000 on a large tree, and exit 1 with no output on a broken pipe, as plain fd does.",
+     "Thorough tests: test_count_matches_plain_output compares --count against plain output line counts for 12 filter combinations. Others cover the conflicts with exact messages and exit codes, more matches than the buffer holds (with and without --max-buffer-time=0), /dev/full, a closed stdout, and SIGINT.",
+     "The zsh completion exclusions are updated in both directions, and the CHANGELOG entry is under Upcoming Release > Features.",
+     "cargo build, cargo test (156 + 128 tests), clippy with -D warnings and fmt --check all pass."
+    ],
+    "stats": {
+     "files": 7,
+     "source_lines": 255,
+     "test_cases": 10
+    },
+    "summary": "Build E meets every spec requirement and fits the repo's conventions; a maintainer would likely merge it with at most small edits. --count skips printing in the receiver and prints num_results when the search stops. That means filters, multiple search paths, --max-results and -1 all work, and no matches prints 0 with exit 0. The six conflicting options are usage errors (exit 2) in either order, and a broken pipe behaves like plain fd. Tests are thorough and meaningful, and the man page, zsh completion and CHANGELOG are updated. All four cargo checks pass. The only gaps are minor: the man page is sparse, the completion test is brittle, the stdout error handling is duplicated, and an inherited clap quirk lets --count --batch-size through. Work was done in /tmp/inspect-fd-count-E."
+   },
+   {
+    "letter": "F",
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 8,
+     "tests": 9,
+     "docs": 8,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "On a broken pipe, --count prints an error message to stderr. Plain output treats a broken pipe as quiet: print() skips BrokenPipe and flush() exits 1 without a message. A test (test_count_write_errors) locks in the difference.",
+      "evidence": "In /tmp/cnt: `fd --count | head -c0` prints '[fd error]: Could not write to output: Broken pipe (os error 32)' and exits 1. `fd | head -c0` exits 1 with no message. Code: src/walk.rs stop(), the writeln!/flush block."
+     },
+     {
+      "severity": "minor",
+      "what": "The CHANGELOG entry has no issue/PR reference or author. Neighbouring entries use the 'see #NNNN (@user)' form.",
+      "evidence": "CHANGELOG.md line 4: '- Add `--count` option to print the number of search results instead of the results themselves'"
+     },
+     {
+      "severity": "minor",
+      "what": "The count path still sets up buffering and stream()/flush() even though there is nothing to print. It is guarded by an extra nested `if !self.config.count`, which adds indentation; it works but is not the cleanest structure.",
+      "evidence": "src/walk.rs poll(): `if !self.config.count { match self.mode { ... } }`"
+     }
+    ],
+    "strengths": [
+     "Every spec point works when run by hand: no matches prints 0 and exits 0; filters, -H and multiple paths give one total; --max-results and -1 cap the count; the six options in the spec conflict through clap and exit 2 (--has-results is covered too, as an alias of --quiet)",
+     "The change is small and in the right place: the receiver skips buffering and printing and writes num_results in stop(), and a partial count is not printed after an interrupt",
+     "Thorough tests: a table-driven check that the count equals the plain-output line count across many filters, a filename containing a newline, conflicts in both argument orders, write errors on /dev/full and a closed pipe, and a check that the option is documented",
+     "The zsh completion exclusion groups are updated both ways (--count excludes and is excluded by -l, -0, -x and -X); the man page entry sits next to --max-results; the long help explains the option",
+     "cargo build, test (all pass), clippy -D warnings and fmt --check all pass"
+    ],
+    "stats": {
+     "files": 7,
+     "source_lines": 200,
+     "test_cases": 8
+    },
+    "summary": "Build F implements --count cleanly in the receiver loop and meets the whole spec, including max-results capping, multiple search paths, the six conflicts and the zero-match case. Tests are comprehensive and meaningful, the docs, completion and changelog are updated, and all of cargo test, clippy and fmt pass. The remaining issues are minor. The broken-pipe handling prints an error, unlike plain output, which fails quietly. The changelog line has no issue or author reference. The receiver code has a little extra nesting. A maintainer would likely merge it with small edits."
+   },
+   {
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 8,
+     "tests": 9,
+     "docs": 8,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "The receiver still goes through the buffering/streaming machinery in count mode: stop() calls stream() and poll() flushes stdout in streaming mode, even though nothing is ever buffered. The `if !self.config.count` wrapper also re-indents the whole match block, which makes the diff bigger than it needs to be. Both are harmless no-ops, but the flow is a little indirect.",
+      "evidence": "src/walk.rs:207-220 (the match block wrapped in `if !self.config.count`) and src/walk.rs:299-310 (stop() calls stream() before the count branch)"
+     },
+     {
+      "severity": "minor",
+      "what": "The CHANGELOG entry doesn't follow the style of its neighbouring entries: it has no issue/PR reference and no author.",
+      "evidence": "CHANGELOG.md:4 `- Add `--count` option to print the number of search results instead of the results themselves`. The other entries end with `see #NNNN (@user)`."
+     },
+     {
+      "severity": "minor",
+      "what": "The tests add their own Command-building helper (fd_raw_output) instead of extending TestEnv, which duplicates how the test harness invokes the binary.",
+      "evidence": "tests/tests.rs: new `fd_raw_output` and `plain_line_count` helpers placed right after test_quiet"
+     },
+     {
+      "severity": "minor",
+      "what": "If the user presses Ctrl-C during a long count, fd exits with the SIGINT code and prints no partial count. That's reasonable, but no test or doc covers it.",
+      "evidence": "src/walk.rs stop(): `if self.interrupt_flag.load(..) { return Err(ExitCode::KilledBySigint); }` comes before print_count"
+     }
+    ],
+    "strengths": [
+     "Every spec point checks out in practice. Counts: `--count rs`→3, no match→`0` with rc 0, `--max-results 2`→2, `-1`→1, several paths→one total, `--color=always` prints a plain number, filters (-H, -t d, -E, -I) apply.",
+     "Conflicts go through clap `conflicts_with_all`: -x, -X, -l, --format, -0, -q and --has-results each give a usage error with rc=2, whichever order the flags come in.",
+     "Broken pipes are handled: `fd --count rs | head -0` exits 0. A write error to /dev/full is reported and exits 1. Both cases have tests.",
+     "Small, targeted implementation. The existing num_results counter is reused, so --max-results caps the count with no extra logic.",
+     "13 meaningful tests, including one that checks the count against the plain output's line count for 10 filter combinations, conflicts in both orders, a filename containing a newline, and streaming mode.",
+     "Man page, long help (hidden from short help, as with similar options), zsh completion exclusion groups, and a CHANGELOG entry under Upcoming Release are all present.",
+     "cargo build/test (287 tests pass), clippy -D warnings and fmt --check all pass."
+    ],
+    "stats": {
+     "files": 8,
+     "source_lines": 292,
+     "test_cases": 13
+    },
+    "summary": "Build G is a correct, well-tested --count that meets the whole spec. The count reuses the receiver's existing num_results counter, so --max-results and -1 cap it with no extra code. A final print_count step prints the total and ignores broken pipes the same way the normal entry output does. Conflicts are declared with clap, and the man page, zsh completion and CHANGELOG are all updated. Build, tests, clippy and fmt all pass, and every manual check against a temp tree behaved as specified. The findings are all minor: some leftover buffering/streaming flow and a re-indented block, a CHANGELOG entry that doesn't match the house style, and a test helper that duplicates the harness. A maintainer would likely merge it with small edits.",
+    "letter": "G"
+   },
+   {
+    "overall": 8.5,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8.5,
+     "code_quality": 8,
+     "tests": 8.5,
+     "docs": 8.5,
+     "product": 8.5
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "Count mode is put into the receiver's mode match as a guard arm (`_ if self.config.count => {}`) ahead of the Buffering/Streaming arms. It works, but it is an odd idiom. An `if !self.config.count { match ... }` or an early branch would read more clearly. The Buffering timeout path also still calls stream()/flush() in count mode, which does nothing useful.",
+      "evidence": "src/walk.rs:208-209 (`_ if self.config.count => {}` inside `match self.mode`)"
+     },
+     {
+      "severity": "minor",
+      "what": "When writing the count hits a broken pipe, fd exits with code 1 and prints nothing. This matches fd's existing flush behaviour, but no test covers it, and the comment saying it 'exits gracefully' overstates things because the exit code is still a failure.",
+      "evidence": "python: os.pipe() with the read end closed, then run fd --count -> returncode 1, stderr b''; `fd --count | head -c0` -> PIPESTATUS 1 0. src/walk.rs:311-317"
+     },
+     {
+      "severity": "minor",
+      "what": "The CHANGELOG entry has no issue or PR reference, while the neighbouring entries carry one ('see #NNNN').",
+      "evidence": "CHANGELOG.md:4"
+     }
+    ],
+    "strengths": [
+     "Meets every spec requirement I checked. Counts for 0 and N matches are correct, and an empty result prints `0` with exit 0. Filters (-e, -t, -H, -I, --exclude, --size, --and) apply. Several search paths print one total. --max-results and -1 cap the count, and --max-results=0 means unlimited.",
+     "All six conflicts (-x, -X, -l, --format, -0, -q/--has-results) are declared in clap with conflicts_with_all and give usage errors with exit code 2 in either argument order.",
+     "Small, focused implementation: the count is printed in a dedicated stop_count. When Ctrl-C was pressed it prints no partial count and returns KilledBySigint. It skips the per-entry ls_colors work when counting. Non-broken-pipe write errors are reported (`> /dev/full` gives 'No space left on device', exit 1).",
+     "Tests follow the tests.rs style: 5 test functions. They cover the exact `2\\n`/`0\\n` raw output, filters, multiple paths, max-results edge values including u64::MAX, and a table of conflict cases that checks both the error message and exit code 2.",
+     "Docs follow the repo's conventions: man page entry placed after --quiet with the same quoting style, a long_help doc comment with hide_short_help like --quiet, zsh completion groups updated in both directions (count against long-listing, null-sep and exec-cmds), and a CHANGELOG entry under Upcoming Release > Features.",
+     "cargo build, cargo test (156 + 123 passed), cargo clippy --all-targets -D warnings and cargo fmt --check all pass."
+    ],
+    "stats": {
+     "files": 8,
+     "source_lines": 145,
+     "test_cases": 5
+    },
+    "summary": "Build H is a clean, complete implementation of --count, and I found no spec failures. The count respects all filters, sums across several paths, is capped by --max-results and -1, and prints 0 with exit 0 when nothing matches. Every required conflict is a clap usage error with exit code 2. The change is small and fits the receiver design: a count-mode branch that skips buffering and printing, plus a stop_count that does not print a partial count after an interrupt and reports write errors. The man page, zsh completion and CHANGELOG are all updated in the repo's style. The tests are meaningful and follow the existing TestEnv conventions. My only remarks are minor: the match-guard idiom in walk.rs, no test for the broken-pipe path (which silently exits 1, as fd already does elsewhere), and no issue reference in the CHANGELOG entry. A maintainer would likely merge it with at most cosmetic edits.",
+    "letter": "H"
+   },
+   {
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 8,
+     "tests": 8,
+     "docs": 8,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "With --count, workers still compute LS_COLORS styles for every entry when colors are on, because Config::is_printing() only checks `command.is_none()` and was not updated to account for count. This is wasted work, and the output is unaffected.",
+      "evidence": "src/walk.rs:607 `if config.is_printing() && let Some(ls_colors) = &config.ls_colors { entry.style(ls_colors); }`; src/config.rs:143-145 is_printing() returns `self.command.is_none()` only."
+     },
+     {
+      "severity": "minor",
+      "what": "In count mode, Ctrl-C is not checked while results are being received. The interrupt is only noticed at the end in print_count, because the print() path that normally checks interrupt_flag is skipped. The walker still stops through quit_flag, so the effect is small.",
+      "evidence": "src/walk.rs:207-219: the `if !self.config.count` block skips print(), which holds the interrupt check at walk.rs:261. The flag is checked only in print_count (walk.rs:303)."
+     },
+     {
+      "severity": "minor",
+      "what": "When stdout is a closed pipe, the count fails with exit code 1 and no message. This matches how fd's flush() already behaves, but it is not documented or tested.",
+      "evidence": "`fd --count | head -0; echo ${PIPESTATUS[0]}` prints `1`. In src/walk.rs:print_count, a BrokenPipe error returns ExitCode::GeneralError without a message."
+     },
+     {
+      "severity": "minor",
+      "what": "The CHANGELOG entry does not follow the file's usual `see #NNNN (@user)` reference style. No issue exists to cite, so this is cosmetic.",
+      "evidence": "CHANGELOG.md:4 `- Add `--count` option to print the number of search results instead of the results themselves.`"
+     }
+    ],
+    "strengths": [
+     "Every spec requirement checks out by hand: filters (-e, -t, -H, --exclude), several paths giving one total, --max-results and -1 capping the count, 0 with exit 0 when nothing matches, and the six conflicts each giving a clap usage error with exit 2",
+     "Small, focused change: count mode skips buffering and printing, prints num_results in stop(), and reuses the existing max_results early-stop path",
+     "Conflicts are declared in clap with conflicts_with_all, and the tests check both argument orders and exit code 2",
+     "Tests are meaningful and follow the repo's tests.rs style (doc comments, assert_output and assert_error), and they cover a duplicated path being counted twice and --max-results=0",
+     "The man page entry is placed next to --quiet, the --help long text is clear, the zsh completion has a new exclusion group and is updated on the -0, -l, -x and -X lines, and the CHANGELOG entry is under Upcoming Release Features",
+     "cargo build, cargo test (156 + 122 pass), cargo clippy -D warnings and cargo fmt --check are all clean"
+    ],
+    "stats": {
+     "files": 8,
+     "source_lines": 160,
+     "test_cases": 4
+    },
+    "summary": "Build I meets the spec. --count prints one total across all paths, honours every filter and --max-results/-1, prints 0 with exit 0 when nothing matches, and rejects -x, -X, -l, --format, -0 and -q as usage errors (exit 2) in either argument order. The implementation is a minimal change to the ReceiverBuffer in src/walk.rs plus a clap flag, and it fits the codebase's patterns. Tests, the man page, the zsh completion and the CHANGELOG are all updated, and test, clippy and fmt pass. The only issues are minor: colour styles are still computed in count mode because is_printing() was not updated, Ctrl-C is only noticed at the end of a count, a broken pipe gives a silent exit 1, and the CHANGELOG entry has no reference. A maintainer would likely merge it with at most small edits.",
+    "letter": "I"
+   }
+  ],
+  "judge": {
+   "ranking": [
+    {
+     "letter": "H",
+     "score": 8.5,
+     "confirmed_defects": [
+      "Count mode is a match guard arm (`_ if self.config.count => {}`), an unusual idiom (cosmetic)",
+      "Broken pipe exits 1 silently with no test; this matches plain fd",
+      "CHANGELOG entry has no issue/PR reference"
+     ],
+     "refuted_defects": [],
+     "rationale": "Every spec behaviour reproduced with its own target dir: one total across paths, filters, max-results and -1 caps, max-results=0, 0 with rc0, and all 6 conflicts plus --has-results give exit 2 in both orders. A separate stop_count prints no partial count after SIGINT, stays silent on a broken pipe and reports other write errors. It also skips the per-entry LS_COLORS work. Tests use the repo's TestEnv helpers (assert_output, assert_output_raw, assert_error) and are compact, with exact raw-output and exit-code checks. The man page lists the -1 cap and all conflicts. Zsh exclusions go both ways. Test, clippy and fmt all pass."
+    },
+    {
+     "letter": "I",
+     "score": 8,
+     "confirmed_defects": [
+      "is_printing() not updated, so LS_COLORS styles are still computed per entry in count mode (wasted work, output unaffected)",
+      "Ctrl-C is only noticed at stop(), though quit_flag stops the walker quickly",
+      "CHANGELOG entry has no reference"
+     ],
+     "refuted_defects": [],
+     "rationale": "Behaviour matches H on every check. The receiver change is minimal, the broken pipe is silent and other write errors are reported. Tests are idiomatic TestEnv tests. The man page is complete and the completion is bidirectional. It ranks just below H because it skips no styling work and its tests are slightly thinner."
+    },
+    {
+     "letter": "G",
+     "score": 8,
+     "confirmed_defects": [
+      "A broken pipe exits 0 (print_count swallows BrokenPipe, then returns Success), while plain fd exits 1",
+      "Adds its own fd_raw_output Command helper instead of using TestEnv",
+      "The receiver still goes through the stream/flush machinery in count mode"
+     ],
+     "refuted_defects": [],
+     "rationale": "Correct on every spec check, and tests, clippy and fmt pass. Docs are the most explicit (zero-match exit 0, -1, every conflict). Tests are thorough. The exit-0-on-broken-pipe divergence is small but a real behavioural inconsistency."
+    },
+    {
+     "letter": "A",
+     "score": 8,
+     "confirmed_defects": [
+      "Heavy test suite with its own process-spawning helpers and an unsafe libc SIGINT test",
+      "Errors for -l --count also list --exec/--exec-batch because the conflict goes through the execs ArgGroup",
+      "CHANGELOG entry has no reference"
+     ],
+     "refuted_defects": [
+      "The completion 'missing quiet/format' claim: those flags have no completion entries in the base file, so nothing is left out"
+     ],
+     "rationale": "Correct on all checks. The core change is elegant: is_printing() returns false when counting, so styling and the Ctrl-C handler are skipped. A broken pipe is silent with exit 1 and /dev/full errors are reported. The docs are complete. The oversized, non-idiomatic tests cost it some code-quality credit."
+    },
+    {
+     "letter": "B",
+     "score": 7.5,
+     "confirmed_defects": [
+      "A separate count_entries path duplicates the receiver's max-results and error-printing logic",
+      "Unrelated zsh additions for --format and --quiet",
+      "A 150-iteration randomized combination test overlaps other tests",
+      "Conflict declarations are split between the ArgGroup and the arg"
+     ],
+     "refuted_defects": [],
+     "rationale": "Correct and robust: it stops early at max-results, handles SIGINT, a silent broken pipe and reported /dev/full errors, and has unit tests for count_entries. But it is the largest change, duplicates receiver logic instead of reusing it, and adds churn beyond the spec, so a maintainer would ask for trimming."
+    },
+    {
+     "letter": "D",
+     "score": 7.5,
+     "confirmed_defects": [
+      "Zsh --count exclusion omits null-sep (one-sided)",
+      "The conflict test hand-rolls std::process::Command instead of the TestEnv helpers",
+      "Writing to /dev/full exits 1 with no message, because writeln goes to the BufWriter and flush() fails silently (an inspector missed this; plain fd behaves the same for small output)",
+      "Only one test function"
+     ],
+     "refuted_defects": [],
+     "rationale": "The smallest correct implementation; every spec check passes. Weaknesses are a silent full-disk error, thinner and less idiomatic tests, and a one-sided completion."
+    },
+    {
+     "letter": "E",
+     "score": 7.5,
+     "confirmed_defects": [
+      "The man page does not mention the conflicts or that -1 caps the count",
+      "The completion test asserts exact substrings and is brittle",
+      "--count --batch-size is accepted silently (an inherited clap quirk, also present with -l)"
+     ],
+     "refuted_defects": [],
+     "rationale": "Correct and robust (silent broken pipe, reported /dev/full errors, no partial count after SIGINT), with thorough tests. The man page entry is the sparsest of the nine."
+    },
+    {
+     "letter": "C",
+     "score": 7,
+     "confirmed_defects": [
+      "A broken pipe prints '[fd error]: Could not write to output: Broken pipe' and exits 1; plain fd is silent (reproduced in a shell pipeline), and a test locks this in",
+      "The zsh exclusions are one-directional: -l, -0, -x and -X do not exclude count",
+      "The SIGINT test relies on a 40ms sleep and writes 30000 files (could be flaky and is slow)"
+     ],
+     "refuted_defects": [],
+     "rationale": "Functionally correct with thorough tests and good docs. But the noisy broken-pipe handling departs from fd's convention, the completion is one-sided and one test depends on timing."
+    },
+    {
+     "letter": "F",
+     "score": 7,
+     "confirmed_defects": [
+      "A broken pipe prints an error message, unlike plain fd (reproduced)",
+      "The man page does not list the conflicting options",
+      "CHANGELOG entry has no reference"
+     ],
+     "refuted_defects": [],
+     "rationale": "A correct, compact receiver change with good table-driven tests and bidirectional completion. It has the same noisy broken-pipe divergence as C, and its man page is thinner."
+    }
+   ],
+   "verdict": "All nine builds meet the spec. I rebuilt each one in its own target directory: a shared target first produced nine identical binaries because of stale cargo fingerprints. Counts, the multi-path total, the max-results/-1 caps, 0 with exit 0, and exit-2 conflicts for all six options were identical across builds, and test, clippy and fmt pass everywhere. No inspector claimed a blocker or major defect, so the builds are separated only by minor points. These are broken-pipe behaviour (C and F print an error, G exits 0, D is silent on /dev/full), whether tests use the repo's TestEnv helpers instead of hand-rolled processes or heavyweight tests (H and I lead; A and B are oversized), and how complete the man page and zsh completion are (E's and F's man pages are thin, and C's and D's completions are one-sided). H edges ahead with the cleanest combination of a minimal change, idiomatic tests and complete docs."
+  },
+  "judges": [
+   {
+    "ranking": [
+     {
+      "letter": "H",
+      "score": 8.5,
+      "confirmed_defects": [
+       "Count mode is a match guard arm (`_ if self.config.count => {}`), an unusual idiom (cosmetic)",
+       "Broken pipe exits 1 silently with no test; this matches plain fd",
+       "CHANGELOG entry has no issue/PR reference"
+      ],
+      "refuted_defects": [],
+      "rationale": "Every spec behaviour reproduced with its own target dir: one total across paths, filters, max-results and -1 caps, max-results=0, 0 with rc0, and all 6 conflicts plus --has-results give exit 2 in both orders. A separate stop_count prints no partial count after SIGINT, stays silent on a broken pipe and reports other write errors. It also skips the per-entry LS_COLORS work. Tests use the repo's TestEnv helpers (assert_output, assert_output_raw, assert_error) and are compact, with exact raw-output and exit-code checks. The man page lists the -1 cap and all conflicts. Zsh exclusions go both ways. Test, clippy and fmt all pass."
+     },
+     {
+      "letter": "I",
+      "score": 8,
+      "confirmed_defects": [
+       "is_printing() not updated, so LS_COLORS styles are still computed per entry in count mode (wasted work, output unaffected)",
+       "Ctrl-C is only noticed at stop(), though quit_flag stops the walker quickly",
+       "CHANGELOG entry has no reference"
+      ],
+      "refuted_defects": [],
+      "rationale": "Behaviour matches H on every check. The receiver change is minimal, the broken pipe is silent and other write errors are reported. Tests are idiomatic TestEnv tests. The man page is complete and the completion is bidirectional. It ranks just below H because it skips no styling work and its tests are slightly thinner."
+     },
+     {
+      "letter": "G",
+      "score": 8,
+      "confirmed_defects": [
+       "A broken pipe exits 0 (print_count swallows BrokenPipe, then returns Success), while plain fd exits 1",
+       "Adds its own fd_raw_output Command helper instead of using TestEnv",
+       "The receiver still goes through the stream/flush machinery in count mode"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct on every spec check, and tests, clippy and fmt pass. Docs are the most explicit (zero-match exit 0, -1, every conflict). Tests are thorough. The exit-0-on-broken-pipe divergence is small but a real behavioural inconsistency."
+     },
+     {
+      "letter": "A",
+      "score": 8,
+      "confirmed_defects": [
+       "Heavy test suite with its own process-spawning helpers and an unsafe libc SIGINT test",
+       "Errors for -l --count also list --exec/--exec-batch because the conflict goes through the execs ArgGroup",
+       "CHANGELOG entry has no reference"
+      ],
+      "refuted_defects": [
+       "The completion 'missing quiet/format' claim: those flags have no completion entries in the base file, so nothing is left out"
+      ],
+      "rationale": "Correct on all checks. The core change is elegant: is_printing() returns false when counting, so styling and the Ctrl-C handler are skipped. A broken pipe is silent with exit 1 and /dev/full errors are reported. The docs are complete. The oversized, non-idiomatic tests cost it some code-quality credit."
+     },
+     {
+      "letter": "B",
+      "score": 7.5,
+      "confirmed_defects": [
+       "A separate count_entries path duplicates the receiver's max-results and error-printing logic",
+       "Unrelated zsh additions for --format and --quiet",
+       "A 150-iteration randomized combination test overlaps other tests",
+       "Conflict declarations are split between the ArgGroup and the arg"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct and robust: it stops early at max-results, handles SIGINT, a silent broken pipe and reported /dev/full errors, and has unit tests for count_entries. But it is the largest change, duplicates receiver logic instead of reusing it, and adds churn beyond the spec, so a maintainer would ask for trimming."
+     },
+     {
+      "letter": "D",
+      "score": 7.5,
+      "confirmed_defects": [
+       "Zsh --count exclusion omits null-sep (one-sided)",
+       "The conflict test hand-rolls std::process::Command instead of the TestEnv helpers",
+       "Writing to /dev/full exits 1 with no message, because writeln goes to the BufWriter and flush() fails silently (an inspector missed this; plain fd behaves the same for small output)",
+       "Only one test function"
+      ],
+      "refuted_defects": [],
+      "rationale": "The smallest correct implementation; every spec check passes. Weaknesses are a silent full-disk error, thinner and less idiomatic tests, and a one-sided completion."
+     },
+     {
+      "letter": "E",
+      "score": 7.5,
+      "confirmed_defects": [
+       "The man page does not mention the conflicts or that -1 caps the count",
+       "The completion test asserts exact substrings and is brittle",
+       "--count --batch-size is accepted silently (an inherited clap quirk, also present with -l)"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct and robust (silent broken pipe, reported /dev/full errors, no partial count after SIGINT), with thorough tests. The man page entry is the sparsest of the nine."
+     },
+     {
+      "letter": "C",
+      "score": 7,
+      "confirmed_defects": [
+       "A broken pipe prints '[fd error]: Could not write to output: Broken pipe' and exits 1; plain fd is silent (reproduced in a shell pipeline), and a test locks this in",
+       "The zsh exclusions are one-directional: -l, -0, -x and -X do not exclude count",
+       "The SIGINT test relies on a 40ms sleep and writes 30000 files (could be flaky and is slow)"
+      ],
+      "refuted_defects": [],
+      "rationale": "Functionally correct with thorough tests and good docs. But the noisy broken-pipe handling departs from fd's convention, the completion is one-sided and one test depends on timing."
+     },
+     {
+      "letter": "F",
+      "score": 7,
+      "confirmed_defects": [
+       "A broken pipe prints an error message, unlike plain fd (reproduced)",
+       "The man page does not list the conflicting options",
+       "CHANGELOG entry has no reference"
+      ],
+      "refuted_defects": [],
+      "rationale": "A correct, compact receiver change with good table-driven tests and bidirectional completion. It has the same noisy broken-pipe divergence as C, and its man page is thinner."
+     }
+    ],
+    "verdict": "All nine builds meet the spec. I rebuilt each one in its own target directory: a shared target first produced nine identical binaries because of stale cargo fingerprints. Counts, the multi-path total, the max-results/-1 caps, 0 with exit 0, and exit-2 conflicts for all six options were identical across builds, and test, clippy and fmt pass everywhere. No inspector claimed a blocker or major defect, so the builds are separated only by minor points. These are broken-pipe behaviour (C and F print an error, G exits 0, D is silent on /dev/full), whether tests use the repo's TestEnv helpers instead of hand-rolled processes or heavyweight tests (H and I lead; A and B are oversized), and how complete the man page and zsh completion are (E's and F's man pages are thin, and C's and D's completions are one-sided). H edges ahead with the cleanest combination of a minimal change, idiomatic tests and complete docs."
+   },
+   {
+    "ranking": [
+     {
+      "letter": "H",
+      "score": 8.5,
+      "confirmed_defects": [
+       "Match-guard idiom `_ if self.config.count => {}` in the receiver mode match is slightly unusual (cosmetic)",
+       "Broken pipe gives a silent exit 1, the same as plain fd; no test covers it",
+       "CHANGELOG entry has no issue/PR reference"
+      ],
+      "refuted_defects": [],
+      "rationale": "Every spec point checks out on my matrix: 3, 0 with rc 0, one total across several paths, -H, --max-results 2 gives 2, -1 gives 1, --max-results=0 is unlimited, a plain integer under --color=always, and all six conflicts give exit 2. clippy, fmt and tests (156+123) pass. The diff is the smallest clean one. It skips per-entry LS_COLORS work in count mode, doesn't print a partial count after SIGINT, and handles a broken pipe like plain fd while reporting /dev/full. Its tests use the existing TestEnv helpers (assert_output_raw, assert_error) and check exact messages and exit 2. The man page lists the caps and conflicts, and the zsh exclusions go both ways. A maintainer would merge it as is."
+     },
+     {
+      "letter": "I",
+      "score": 8.3,
+      "confirmed_defects": [
+       "is_printing() not updated, so LS_COLORS styles are still computed per entry in count mode (wasted work only)",
+       "Ctrl-C is only checked in print_count. Refuted as a practical issue: the ctrlc handler also sets quit_flag, and in my test the walk stopped about 10ms after SIGINT with rc 130",
+       "CHANGELOG entry has no reference"
+      ],
+      "refuted_defects": [],
+      "rationale": "Behaves the same as H on every check: correct counts, caps, zero case, conflicts with exit 2, broken pipe matching plain fd, /dev/full reported. All checks pass. The implementation is small and idiomatic, and the tests follow repo conventions, including both conflict orders with exact messages. The docs are complete. It is slightly behind H only because it still does the colour work in count mode."
+     },
+     {
+      "letter": "D",
+      "score": 8,
+      "confirmed_defects": [
+       "zsh completion: --count does not exclude null-sep, so the exclusion is one-sided",
+       "The conflict loop in the test spawns Command by hand instead of using TestEnv::assert_error",
+       "Everything is in a single large test_count function",
+       "/dev/full gives a silent exit 1. This matches plain fd's flush path, so it is not a regression"
+      ],
+      "refuted_defects": [],
+      "rationale": "Minimal and correct. All behaviours pass and all checks are green. The test oracle compares the count with plain output line counts across filters, which is a good design. Small style gaps in the completion and the test structure keep it below H and I."
+     },
+     {
+      "letter": "E",
+      "score": 8,
+      "confirmed_defects": [
+       "The man page entry leaves out the conflicts and the -1 cap",
+       "The completion test asserts exact substrings and is brittle",
+       "print_count has its own write-error handling. Its behaviour matches plain fd: broken pipe gives a silent 1 and /dev/full is reported"
+      ],
+      "refuted_defects": [
+       "--count --batch-size acceptance is an inherited clap quirk; -l already behaves the same way, so it is not a defect of this build"
+      ],
+      "rationale": "Correct on every check, with a clean print_count that returns an ExitCode and a tolerant, non-flaky SIGINT test. The tests are solid. The sparse man page is the main gap."
+     },
+     {
+      "letter": "G",
+      "score": 7.8,
+      "confirmed_defects": [
+       "A broken pipe exits 0 with --count, while plain fd exits 1: print_count swallows BrokenPipe and returns Success",
+       "stop() still calls stream() before the count branch (harmless no-op)",
+       "CHANGELOG entry has no reference; the test adds its own fd_raw_output helper"
+      ],
+      "refuted_defects": [],
+      "rationale": "Functionally correct with the most complete man page, and all checks pass. The broken-pipe exit code differs from fd's normal behaviour, and the receiver flow is a little indirect."
+     },
+     {
+      "letter": "A",
+      "score": 7.8,
+      "confirmed_defects": [
+       "The test suite is oversized (about 345 lines), with four custom process-spawning helpers and an unsafe libc SIGINT test instead of the TestEnv helpers",
+       "The zsh completion doesn't exclude quiet or format for --count (minor)",
+       "Conflicts with exec, exec-batch and list-details go through the execs ArgGroup, so the -l error message also lists --exec and --exec-batch"
+      ],
+      "refuted_defects": [],
+      "rationale": "Elegant core change: is_printing() returns false for count, which removes both the colour work and the Ctrl-C handler, and the existing receiver, cap and stop paths are reused. Broken pipe and /dev/full behave correctly, and every behaviour and check passes. It loses points because the tests are heavy and don't follow the repo's conventions, which a maintainer would ask to trim."
+     },
+     {
+      "letter": "B",
+      "score": 7.6,
+      "confirmed_defects": [
+       "A separate count_entries/print_count path duplicates the receiver's max_results, error-printing and interrupt logic instead of reusing ReceiverBuffer",
+       "Unrelated zsh completion churn: adds --format and --quiet entries",
+       "Heavy tests, including a 150-iteration randomized combination test, and conflicts declared in two places"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct and robust: it stops early at the cap, handles SIGINT, and broken pipe and /dev/full both match plain fd. All checks pass, including 4 new unit tests. The parallel code path and the scope creep make it more to maintain than the receiver-based designs."
+     },
+     {
+      "letter": "F",
+      "score": 7.5,
+      "confirmed_defects": [
+       "On a broken pipe, --count prints '[fd error]: Could not write to output: Broken pipe' to stderr, while plain fd stays silent (reproduced: plain gives rc 1 with empty stderr), and a test locks this in",
+       "Extra nesting in poll(); the CHANGELOG entry has no reference"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct on every spec point, with good tests and docs, and all checks pass. The noisy broken-pipe error is a small but real user-facing inconsistency with fd's existing behaviour (e.g. `fd --count | head -c0`)."
+     },
+     {
+      "letter": "C",
+      "score": 7.4,
+      "confirmed_defects": [
+       "On a broken pipe, --count prints an error message, while plain fd is silent (reproduced), and a test enforces this",
+       "The SIGINT test depends on timing (40ms sleep, 30000 files). It passed in my run, but it could be flaky",
+       "The zsh exclusion is one-sided: the -l, -0, -x and -X entries don't exclude count",
+       "Nested `if !count { match ... }` in poll()"
+      ],
+      "refuted_defects": [],
+      "rationale": "Functionally correct, with thorough tests, and all checks pass. It has the same broken-pipe noise as F, plus a potentially flaky timing test and an incomplete completion update, which puts it last of a closely matched field."
+     }
+    ],
+    "verdict": "All nine builds meet the spec. My matrix (filters, several paths, the 0 case with exit 0, --max-results, -1 and 0, conflicts in both orders with exit 2), and cargo test, clippy -D warnings and fmt --check, passed for every build. No inspector claimed a blocker or major defect, and none turned up when I reproduced the claims. What separates them is fit and polish. H and I make small receiver-based changes with tests in the TestEnv style, keep plain fd's broken-pipe behaviour, and have complete docs; H also skips the unneeded colour work. C and F print an error on a broken pipe where plain fd stays silent, and G exits 0 instead of 1. A and B are correct but come with oversized tests (B also duplicates the receiver logic and changes completions beyond the task), so a maintainer would trim them before merging."
+   }
+  ]
+ }
+]
