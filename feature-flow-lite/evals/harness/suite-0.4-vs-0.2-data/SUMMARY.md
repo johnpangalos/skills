@@ -203,3 +203,53 @@ Known bugs are now scored with deterministic answer-key probes (`probes/keys.jso
   - Add a proportion line for the implementor: "no machinery the criteria don't need", aimed at the over-building.
 - **Check the fd-count case** before shipping: is the "conflicting flags give an error" item pushing builds toward clap ArgGroups?
 - **Grow the checklist only from recurring misses**, and keep held-out tasks to catch overfitting.
+
+# Round 4: candidate-0.5b and 0.5c (2026-11-17)
+
+`candidate-0.5b` is 0.5 with five changes:
+- triggered checks copied word for word into every handoff, fix rounds included;
+- a hard cap of two fix rounds, counting every implementor call after the first;
+- a test that can't fail is [blocking];
+- a proportion rule for the implementor;
+- new conflicts and registrations are declared on the new thing, not added to shared groups.
+
+`candidate-0.5c` is 0.5b plus a mod that enforces the same rules from outside the prompt. It:
+- restores triggered checks a handoff drops, and adds the exact text of any check that was paraphrased;
+- carries the reviewer's blocking findings into the next implementor handoff;
+- escalates a [minor] finding that says a test can't fail;
+- notes the last fix round;
+- notes when the main thread edits repo files itself.
+
+0.5b ran 3 builds each on the six tasks the changes should move most. 0.5c ran 3 each on chi-etag, risky-auth and risky-refunds. They were blind-judged in one pool per task with the round-3 0.2 and 0.5 builds (`judge/prep_round4.sh`, `plan4.tsv`, `round4-k*.json`, `remap4-*.json`).
+
+| Task | 0.2 | 0.5 | 0.5b | 0.5c | Hidden tests, answer keys and cost |
+|---|---|---|---|---|---|
+| chi-etag † | **8.10** | 7.15 | 7.25 | 7.25 | Flush: 0.2 0/5, every candidate passes. Cost: 0.5 $1.88, 0.5b $1.70, 0.5c $1.95 |
+| ui-lib | 6.75 | **8.15** | 8.00 | – | Keyed bugs per build: 0.2 2.6, 0.5 1.0, 0.5b 0.67 |
+| risky-refunds | 7.50 | 7.10 | 7.83 | **7.92** | Stress test 3/3 for each candidate. Cost: $1.05 → $0.85 (0.5b) |
+| risky-auth | 6.85 | **7.90** | – | 7.57 | 0.5c builds all lock, but accept NaN timestamps |
+| risky-inventory | **8.03** | 7.63 | **8.02** | – | Tests 0.5: +420 lines, 0.5b: +306 |
+| click-param-spec | **8.33** | 7.50 | 7.50 | – | Frame-walking heuristics remain |
+| fd-count ‡ | **8.13** | 7.78 | 7.40 | – | Hidden tests: 0.5 1/3, 0.5b 3/3 (none edits the shared `execs` group) |
+| Mean, the six 0.5b tasks | 7.81 | 7.55 | 7.67 | | |
+
+† The judges didn't probe Flush. ‡ The judges marked down two 0.5b builds for an error on a broken pipe, and didn't run the hidden conflict-message test.
+
+These six tasks were picked because 0.5 was weak on them, so 0.2 leading here doesn't overturn round 3, where 0.5 led 0.2 by 0.34 over all 14 tasks.
+
+## What it shows
+
+- **0.5b keeps every correctness gain and trims Python over-building.** Refunds rose 0.73 and inventory 0.39. The fd-count regression is fixed. It's cheaper than 0.5 on four of six tasks.
+- **It doesn't trim over-building in Go or click.** Judges still mark down net/http emulation, meta-tests that read the README, and frame-walking heuristics.
+- **The cap held everywhere.** No 0.5b or 0.5c build ran a third fix round. But the second round is never re-reviewed, and audit must-fixes on chi-etag and ui-lib came in with those last fixes.
+- **The mod made no measurable difference.** In every 0.5c build the orchestrator already sent blocking findings, stopped at the cap and escalated weak tests, because SKILL.md says to. The builders' audit of the mod found three bugs, all fixed with tests (52 pass):
+  - the checks rewrite could delete the orchestrator's own text, so it now only adds;
+  - the main-edit note could never fire in `/tmp` workspaces;
+  - background agents hid results from it.
+
+## Next
+
+Ship 0.5b plus the fixed mod as 0.5, with these open:
+- a final re-review after the last fix round that reports instead of looping;
+- a proportion rule that names meta-tests and emulation layers;
+- NaN handling under the money and numbers check.
