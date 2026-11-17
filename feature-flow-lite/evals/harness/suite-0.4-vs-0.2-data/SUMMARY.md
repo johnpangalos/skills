@@ -94,3 +94,57 @@ Mean judge score per task (average of both judges over the 3 builds):
 - 3 builds per setup per task. A difference of about 0.5 points on one task is within noise. The suite-wide means are steadier, but they're one day's builds.
 - Judges and hidden tests measure different things (see † and ‡). Read the judge column together with the outcome checks, not instead of them.
 - One blind mapping had a wrong rep number: the chi-etag 0.2 rerun in slice-5 was recorded as rep 2 instead of rep 3. It's fixed in `slice-5/blind-mapping.json` and `judge/remap-chi-etag.json`.
+
+# Five setups, round 2 (2026-11-17)
+
+Two more arms, both on 0.2 at `9f82cef`:
+- `lite-reviewer-plus` (`harness/variants/reviewer-plus/`): the Haiku reviewer gets a fixed set of probes — wrappers against the unwrapped original, nesting, driving built UI, and 8+ threads on shared state.
+- `lite-tests-first` (`harness/variants/tests-first/`): the implementor writes a failing test for every criterion and hostile input before any code, and the reviewer blocks on a missing test.
+
+They ran 5 builds each on the 6 hard tasks and 2 each on 4 easy ones. 0.2 and 0.4 got 2 top-up builds on the 6 hard tasks, so they also have 5 there. risky-auth and risky-refunds gained hidden stress tests that force a thread switch on every line (`hidden/*/_interleave.py`).
+
+Each task's builds were pooled again under fresh letters with the round-1 builds (13 or 23 per task) and blind-judged (`judge/plan2.tsv`, `judge/prep_round2.sh`). Results are in `judge/round2-g*.json`, unblinded with `judge/remap2-<task>.json`. D1 holds them as `judge_scores.pass = 'round2'` (`store/judge_sql.py <suite> <dir> round2`).
+
+Across the 10 tasks every setup ran:
+
+| | 0.2 | 0.2 + criteria-checker | reviewer-plus | tests-first | 0.4 |
+|---|---|---|---|---|---|
+| Builds | 42 | 30 | 38 | 38 | 42 |
+| Mean judge score (task-balanced) | 7.48 | 7.32 | 7.47 | **7.70** | 7.35 |
+| Mean cost per build | **$1.00** | $1.29 | $1.04 | $1.07 | $2.18 |
+| Outcome checks pass (not counting stress tests) | 34/42 | 27/30 | 28/38 | 31/38 | **39/42** |
+| Stress tests pass (risky-auth + risky-refunds, 5 builds each) | 6/10 | – | **8/10** | 4/10 | 2/10 |
+| chi-etag hidden Flush test | 0/5 | 2/3 | 0/5 | 1/5 | **5/5** |
+| rac: target nested in another target's shadow root | 2/5 | 0/3 | 1/5 | 4/5 | **5/5** |
+
+Mean judge score per task (both judges, all builds in the pool):
+
+| Task | 0.2 | criteria | reviewer-plus | tests-first | 0.4 |
+|---|---|---|---|---|---|
+| chi-etag † | **8.13** | 6.97 | 7.36 | 8.02 | 7.98 |
+| chi-mount-routes | 7.97 | **8.13** | 7.65 | 8.00 | 7.22 |
+| discount-codes | **8.43** | 8.32 | 8.15 | **8.43** | 7.90 |
+| fd-count | 8.00 | 7.92 | 7.75 | **8.50** | 7.75 |
+| rac-shadow-hide | 5.95 | 5.42 | 6.10 | 7.05 | **7.65** |
+| risky-auth | 6.95 | 6.75 | **8.00** | 6.35 | 6.10 |
+| risky-refunds | **7.56** | 7.27 | 7.04 | **7.56** | 6.46 |
+| tailwind-anchor | 7.50 | 7.67 | 8.25 | **8.38** | 7.08 |
+| ui-lib | 6.70 | 6.73 | 6.98 | 7.11 | **8.03** |
+| website-bookshop | 7.59 | **7.98** | 7.45 | 7.61 | 7.33 |
+
+† Both judges rewarded builds that stream on Flush, which the request rules out and the hidden test checks. Read chi-etag by the Flush row above.
+
+## What it shows
+
+- **tests-first is the best cheap setup.** It has the highest judge mean at about 0.2's cost, wins or ties 4 of 10 tasks, and is second to 0.4 on both deep-behaviour tasks (rac 7.05, ui-lib 7.11).
+- **Its weak spot is races.** Writing tests first doesn't make anyone write a concurrent test: 0 of 5 risky-auth builds pass the stress test.
+- **reviewer-plus fixes races and little else.** Its shared-state probe gives the best stress result (8/10) and the clear risky-auth win. Its wrapper, nesting and UI probes did not move chi-etag, rac or ui-lib. On risky-refunds the orchestrator twice dropped a reproduced race, which `reviewer-plus-2` (not run yet) forbids.
+- **0.4 still wins deep behaviour, at about twice the cost.** It wins chi-etag Flush 5/5, rac nesting 5/5 and ui-lib, and has the most outcome passes. It loses races (2/10) and polish. Its two ui-lib top-up builds fail the hidden accessibility tests, even though the judges ranked them high.
+- **The criteria-checker didn't earn its cost here.** It's last on the judge mean.
+- **Next candidate:** tests-first plus the reviewer-plus-2 reviewer and rule. That combines tests-first's behaviour coverage with the probe that catches races, at about $1.10 a build.
+
+## Caveats
+
+- 2–5 builds per setup per task. Gaps of about 0.5 on one task are noise, and the 4 easy tasks have only 2 new builds per arm.
+- The stress tests were added after 0.2, criteria and 0.4's first 3 builds were graded. For those builds, the stress row comes from running the stress tests afterwards. reviewer-plus and tests-first come from their own grading (`newarms-5`, `newarms-6`). tests-first fails all 5 on risky-auth and 1 on risky-refunds. The outcome row leaves stress out so all arms are counted the same way.
+- 10 `lite-routed` builds on risky-auth and risky-refunds were made before routing was dropped. They're in D1 but weren't judged.
