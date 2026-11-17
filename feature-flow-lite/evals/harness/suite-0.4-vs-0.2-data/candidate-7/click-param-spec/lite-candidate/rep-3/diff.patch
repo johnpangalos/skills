@@ -1,0 +1,711 @@
+diff --git a/CHANGES.md b/CHANGES.md
+index 8853860..ad9bb36 100644
+--- a/CHANGES.md
++++ b/CHANGES.md
+@@ -6,6 +6,18 @@ Unreleased
+   keyword, is deprecated and raises `TypeError` in Click 9.0. {pr}`3866`
+ - An {class}`Option` name written as a Python identifier is deprecated when it
+   is not already lower-cased. {pr}`3866`
++- Added {attr}`Parameter.spec`, the name a parameter is shown by in messages and
++  help. For an {class}`Option` it is the primary declaration with the longest
++  prefix, like `--times` for `-t, --times`. For an {class}`Argument` it is the
++  metavar, or the upper-cased name.
++- {meth}`Parameter.get_help_spec` moved up from {class}`Option`. It returns
++  {attr}`Parameter.spec` by default, and {class}`Argument` overrides it to show
++  the usage metavar, like `[FILENAME]...`.
++- Messages name an {class}`Option` by its {attr}`Parameter.spec`, so a deprecated
++  `--my-option` is reported as `'--my-option'` rather than `'my_option'`.
++- {attr}`Parameter.human_readable_name` is deprecated and will be removed in Click
++  9.0. Use {attr}`Parameter.spec` instead. A subclass that defines it also warns,
++  and should override `spec`.
+ 
+ ## Version 8.5.1
+ 
+diff --git a/docs/parameters.md b/docs/parameters.md
+index 58f3219..2bdc0ac 100644
+--- a/docs/parameters.md
++++ b/docs/parameters.md
+@@ -38,6 +38,8 @@ values.
+ In the example, the argument's name is `filename`. The name must match the python arg name. To provide a different name for use in help text, see {ref}`doc-meta-variables`.
+ The option's names are `-t` and `--times`. More names are available for options and are covered in {ref}`options`.
+ 
++Click refers to each parameter by its `spec` in messages and help. The spec of the argument `filename` is `FILENAME`, and the spec of the option `-t, --times` is `--times`: an option's spec is its primary declaration with the longest prefix, and an argument's is its metavar or upper-cased name.
++
+ ```{eval-rst}
+ .. click:example::
+ 
+diff --git a/docs/upgrade-guides.md b/docs/upgrade-guides.md
+index 19dcf67..65a4a02 100644
+--- a/docs/upgrade-guides.md
++++ b/docs/upgrade-guides.md
+@@ -16,6 +16,7 @@ For each deprecation, provide a brief explanation, and direct users to new funct
+ - A parameter name that is not a valid Python identifier, or that is a [Python keyword](https://docs.python.org/3/reference/lexical_analysis.html#keywords), is deprecated and raises `TypeError` in 9.0. [`str.isidentifier()`](https://docs.python.org/3/library/stdtypes.html#str.isidentifier) decides the first case, so `click.argument("0foo")` fails it. It accepts a keyword, so `click.option("--from")` names a parameter `from`, which no callback can declare. [Soft keywords](https://docs.python.org/3/reference/lexical_analysis.html#soft-keywords) such as `match` and `type` are contextual and unaffected, and `--True` and `--None` lower case out of the keyword set. To migrate, pass an explicit name (`click.option("--from", "source")`, `click.option("--0-file", "zero_file")`). An argument takes one declaration and has no explicit-name channel, so rename it and pass `metavar` to keep its old display (`click.argument("zero_file", metavar="0-FILE")`). See [#3827](https://github.com/pallets/click/pull/3827) and [#3866](https://github.com/pallets/click/pull/3866).
+ - An option name written as a Python identifier is deprecated when it is not already lower cased: `click.option("--x", "Foo_Bar")` names `foo_bar` rather than `Foo_Bar`. To migrate, spell the name the way the callback declares it. See [#3827](https://github.com/pallets/click/pull/3827).
+ - `CliRunner.isolated_filesystem()` is deprecated and will be removed in Click 9.0. The helper predates Python 3 and modern pytest, and it relies on `os.chdir`, which mutates process-global state and is therefore not thread-safe. Replace it with a temporary directory (`tempfile.TemporaryDirectory`, or pytest's `tmp_path` fixture) and pass absolute paths to the command instead of relying on the current working directory. To run commands in parallel, use process-based isolation (such as `pytest-xdist`) rather than threads, since `CliRunner.invoke()` also redirects the process-global standard streams and other interpreter-wide state. See [#3700](https://github.com/pallets/click/issues/3700), [#3501](https://github.com/pallets/click/issues/3501) and the [testing guide](testing.md#running-tests-in-parallel).
++- `Parameter.human_readable_name` is deprecated and will be removed in Click 9.0. Use `Parameter.spec` instead. Reading `human_readable_name` warns and returns `spec`. An option's `spec` is its primary declaration with the longest prefix (`--times` for `-t, --times`), and an argument's is its metavar or upper-cased name (`FILENAME`). Click names an option by its `spec` in its messages now, so `click.option("--my-option", deprecated=True)` reports `'--my-option'` rather than `'my_option'`. A subclass that defines `human_readable_name` also warns when the class is defined. To migrate, rename the property to `spec` and return the name the messages should show.
+ 
+ ### Removals with prior deprecation
+ 
+diff --git a/src/click/core.py b/src/click/core.py
+index 1f9323a..2669cb1 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -105,6 +105,36 @@ def _echo_aborted() -> None:
+     echo(_("Aborted!"), file=sys.stderr)
+ 
+ 
++def _class_statement_stacklevel() -> int:
++    """Depth of the class statement that is creating a subclass. Between it and
++    ``__init_subclass__`` sit Click frames, ``abc`` frames, and the ``__new__``
++    of any user metaclass.
++
++    .. versionadded:: 8.6.0
++    """
++    frame: FrameType | None = sys._getframe(1)
++    level = 1
++
++    while frame is not None:
++        module = frame.f_globals.get("__name__", "")
++        code = frame.f_code
++        first = frame.f_locals.get(code.co_varnames[0]) if code.co_argcount else None
++        is_metaclass_hook = (
++            code.co_name == "__new__"
++            and isinstance(first, type)
++            and issubclass(first, type)
++        )
++        skipped = module in ("click", "abc") or module.startswith("click.")
++
++        if not skipped and not is_metaclass_hook:
++            return level
++
++        frame = frame.f_back
++        level += 1
++
++    return level
++
++
+ def _outside_click_stacklevel() -> int:
+     """Depth of the first stack frame outside Click.
+ 
+@@ -2432,7 +2462,7 @@ class Parameter(ABC):
+ 
+             if required and deprecated:
+                 raise ValueError(
+-                    f"The {self.param_type_name} '{self.human_readable_name}' "
++                    f"The {self.param_type_name} '{self.spec}' "
+                     "is deprecated and still required. A deprecated "
+                     f"{self.param_type_name} cannot be required."
+                 )
+@@ -2517,12 +2547,55 @@ class Parameter(ABC):
+         )
+ 
+     @property
+-    def human_readable_name(self) -> str:
+-        """Returns the human readable name of this parameter.  This is the
+-        same as the name for options, but the metavar for arguments.
++    def spec(self) -> str:
++        """The name this parameter is shown by in messages and help: for an
++        option, its primary declaration with the longest prefix; for an
++        argument, its metavar or upper-cased name.
++
++        .. versionadded:: 8.6.0
+         """
+         return self.name
+ 
++    def get_help_spec(self, ctx: Context) -> str:
++        """Returns the left column of the parameter's help record.
++
++        .. versionadded:: 8.5.1
++        .. versionchanged:: 8.6.0
++            Moved from :class:`Option` to :class:`Parameter`; returns :attr:`spec` by
++            default.
++        """
++        return self.spec
++
++    def __init_subclass__(cls, **kwargs: t.Any) -> None:
++        super().__init_subclass__(**kwargs)
++
++        if "human_readable_name" in vars(cls):
++            import warnings
++
++            warnings.warn(
++                f"{cls.__name__} defines 'human_readable_name', which is deprecated"
++                " and will be removed in Click 9.0. Override 'spec' instead.",
++                DeprecationWarning,
++                stacklevel=_class_statement_stacklevel(),
++            )
++
++    @property
++    def human_readable_name(self) -> str:
++        """Returns the human readable name of this parameter.
++
++        .. deprecated:: 8.6.0
++            Use :attr:`spec` instead. Removed in Click 9.0.
++        """
++        import warnings
++
++        warnings.warn(
++            "'human_readable_name' is deprecated and will be removed in Click"
++            " 9.0. Use 'spec' instead.",
++            DeprecationWarning,
++            stacklevel=_outside_click_stacklevel(),
++        )
++        return self.spec
++
+     def make_metavar(self, ctx: Context) -> str:
+         if self.metavar is not None:
+             return self.metavar
+@@ -2873,7 +2946,7 @@ class Parameter(ABC):
+                     "{extra_message}"
+                 ).format(
+                     param_type=self.param_type_name,
+-                    name=self.human_readable_name,
++                    name=self.spec,
+                     extra_message=_format_deprecated_suffix(self.deprecated),
+                 )
+                 echo(style(message, fg="red"), err=True)
+@@ -2933,7 +3006,7 @@ class Parameter(ABC):
+         .. versionchanged:: 8.4.0
+             ``ctx`` can be ``None``.
+         """
+-        hint_list = self.opts or [self.human_readable_name]
++        hint_list = self.opts or [self.spec]
+         return " / ".join(f"'{x}'" for x in hint_list)
+ 
+     def shell_complete(self, ctx: Context, incomplete: str) -> list[CompletionItem]:
+@@ -3461,6 +3534,16 @@ class Option(Parameter):
+                 nargs=self.nargs,
+             )
+ 
++    @property
++    def spec(self) -> str:
++        """The primary declaration with the longest prefix, like ``--times`` for
++        ``-t, --times``. The first one declared wins a tie. Secondary declarations
++        and the Python name are never used.
++
++        .. versionadded:: 8.6.0
++        """
++        return max(self.opts or [self.name], key=lambda opt: len(_split_opt(opt)[0]))
++
+     def get_help_spec(self, ctx: Context) -> str:
+         """Returns the left column of the option's help record: its spellings
+         and metavar, like ``-v, --verbose`` or ``-c, --config TEXT``.
+@@ -3835,11 +3918,25 @@ class Argument(Parameter):
+         super().__init__(param_decls, required=required, help=help, **attrs)
+ 
+     @property
+-    def human_readable_name(self) -> str:
++    def spec(self) -> str:
++        """The metavar if one is set, else the upper-cased name. Unlike the usage
++        metavar, it does not depend on ``required``, ``nargs`` or ``deprecated``.
++
++        .. versionadded:: 8.6.0
++        """
+         if self.metavar is not None:
+             return self.metavar
+         return self.name.upper()
+ 
++    def get_help_spec(self, ctx: Context) -> str:
++        """Returns the usage metavar, which shows whether the argument is optional
++        and how many values it takes, like ``[FILENAME]...``.
++
++        .. versionadded:: 8.6.0
++            Overrides :meth:`Parameter.get_help_spec`.
++        """
++        return self.make_metavar(ctx)
++
+     def make_metavar(self, ctx: Context) -> str:
+         if self.metavar is not None:
+             return self.metavar
+@@ -3894,12 +3991,12 @@ class Argument(Parameter):
+             Always returns a tuple. It used to return ``None`` when ``help`` was
+             not set.
+         """
+-        return self.make_metavar(ctx), self.help or ""
++        return self.get_help_spec(ctx), self.help or ""
+ 
+     def get_error_hint(self, ctx: Context | None) -> str:
+         if ctx is not None:
+             return f"'{self.make_metavar(ctx)}'"
+-        return f"'{self.human_readable_name}'"
++        return f"'{self.spec}'"
+ 
+     def add_to_parser(self, parser: _OptionParser, ctx: Context) -> None:
+         parser.add_argument(dest=self.name, nargs=self.nargs, obj=self)
+diff --git a/tests/test_arguments.py b/tests/test_arguments.py
+index 75f7288..6e247b7 100644
+--- a/tests/test_arguments.py
++++ b/tests/test_arguments.py
+@@ -1197,3 +1197,63 @@ def test_argument_custom_class_can_override_type_cast_value_and_never_sees_unset
+     result = runner.invoke(cmd, pass_argv)
+     assert not result.exception
+     assert result.exit_code == 0
++
++
++@pytest.mark.parametrize(
++    ("param_decls", "kwargs", "expected"),
++    [
++        (["filename"], {}, "FILENAME"),
++        (["my-file"], {}, "MY_FILE"),
++        (["filename"], {"metavar": "SRC"}, "SRC"),
++        (["filename"], {"nargs": -1, "required": False}, "FILENAME"),
++        (["filename"], {"deprecated": True, "required": False}, "FILENAME"),
++    ],
++)
++def test_spec(param_decls, kwargs, expected):
++    """An argument's spec is its metavar, else its upper-cased name, whatever its
++    requirement, nargs or deprecation.
++    """
++    assert click.Argument(param_decls, **kwargs).spec == expected
++
++
++def test_spec_of_unexposed_nameless_argument_is_empty():
++    with pytest.warns(DeprecationWarning, match="uses '' as its name"):
++        arg = click.Argument([], expose_value=False)
++
++    assert arg.spec == ""
++
++
++@pytest.mark.parametrize(
++    ("param_decls", "kwargs", "expected"),
++    [
++        (["filename"], {"nargs": -1, "required": False}, "[FILENAME]..."),
++        (["filename"], {}, "FILENAME"),
++        (["filename"], {"metavar": "SRC"}, "SRC"),
++    ],
++)
++def test_help_spec_is_metavar(param_decls, kwargs, expected):
++    arg = click.Argument(param_decls, **kwargs)
++    ctx = click.Context(click.Command("cli"))
++
++    assert arg.get_help_spec(ctx) == expected
++    assert arg.get_help_record(ctx) == (expected, "")
++
++
++def test_error_hint_without_context_uses_spec():
++    assert click.Argument(["my-file"]).get_error_hint(None) == "'MY_FILE'"
++    assert click.Argument(["filename"], metavar="SRC").get_error_hint(None) == "'SRC'"
++
++
++@pytest.mark.parametrize(
++    ("kwargs", "expected"),
++    [({}, "FILENAME"), ({"metavar": "SRC"}, "SRC")],
++)
++def test_missing_argument_message_names_spec(runner, kwargs, expected):
++    @click.command()
++    @click.argument("filename", **kwargs)
++    def cli(filename):
++        pass
++
++    result = runner.invoke(cli, [])
++    assert result.exit_code == 2
++    assert result.output.splitlines()[-1] == f"Error: Missing argument '{expected}'."
+diff --git a/tests/test_deprecations.py b/tests/test_deprecations.py
+index 49e709a..0019d45 100644
+--- a/tests/test_deprecations.py
++++ b/tests/test_deprecations.py
+@@ -1,4 +1,7 @@
++import abc
+ import importlib.metadata
++import subprocess
++import sys
+ import warnings
+ 
+ import pytest
+@@ -217,3 +220,293 @@ def test_unnormalized_name_on_a_refused_option_is_silent():
+         with warnings.catch_warnings():
+             warnings.simplefilter("error", DeprecationWarning)
+             click.Option(["Foo_Bar"])
++
++
++@pytest.mark.parametrize(
++    ("make_param", "expected"),
++    [
++        pytest.param(lambda: click.Option(["-t", "--times"]), "--times", id="option"),
++        pytest.param(
++            lambda: click.Argument(["filename"], metavar="SRC"), "SRC", id="argument"
++        ),
++    ],
++)
++def test_human_readable_name_access_warns_and_returns_spec(make_param, expected):
++    """Reading the old name warns once, names spec as the replacement, and returns
++    spec. The warning points at the caller's line.
++    """
++    param = make_param()
++
++    with pytest.warns(DeprecationWarning) as record:
++        value = param.human_readable_name
++
++    warns = [w for w in record if issubclass(w.category, DeprecationWarning)]
++    assert value == expected == param.spec
++    assert len(warns) == 1
++    assert str(warns[0].message) == (
++        "'human_readable_name' is deprecated and will be removed in Click 9.0."
++        " Use 'spec' instead."
++    )
++    assert warns[0].filename == __file__
++
++
++@pytest.mark.parametrize(
++    "base",
++    [
++        pytest.param(click.Parameter, id="parameter"),
++        pytest.param(click.Option, id="option"),
++        pytest.param(click.Argument, id="argument"),
++    ],
++)
++def test_subclass_defining_human_readable_name_warns_at_definition(base):
++    """Defining the old name in a subclass warns at the class statement, naming the
++    class and telling the author to override spec.
++    """
++    with pytest.warns(DeprecationWarning) as record:
++
++        class MyParam(base):
++            @property
++            def human_readable_name(self) -> str:
++                return "legacy"
++
++    warns = [w for w in record if issubclass(w.category, DeprecationWarning)]
++    assert len(warns) == 1
++    assert str(warns[0].message) == (
++        "MyParam defines 'human_readable_name', which is deprecated and will be"
++        " removed in Click 9.0. Override 'spec' instead."
++    )
++    assert warns[0].filename == __file__
++
++
++def test_human_readable_name_is_a_property_on_parameter():
++    """The old name stays a real attribute, so tools and super() can find it."""
++    assert hasattr(click.Parameter, "human_readable_name")
++    assert isinstance(click.Parameter.__dict__["human_readable_name"], property)
++
++
++def test_subclass_overriding_human_readable_name_calls_super():
++    """An override that calls super() keeps working: the definition warns once, and
++    the super() access warns and returns spec.
++    """
++    line = sys._getframe().f_lineno + 3
++    with pytest.warns(DeprecationWarning) as record:
++
++        class Prefixed(click.Option):
++            @property
++            def human_readable_name(self) -> str:
++                return "X-" + super().human_readable_name
++
++    definitions = [w for w in record if issubclass(w.category, DeprecationWarning)]
++    assert len(definitions) == 1
++    assert definitions[0].filename == __file__
++    assert definitions[0].lineno == line
++
++    option = Prefixed(["--times"])
++
++    with pytest.warns(DeprecationWarning, match="'human_readable_name'") as access:
++        value = option.human_readable_name
++
++    assert value == "X-" + option.spec == "X---times"
++    assert access[0].filename == __file__
++
++
++def test_subclass_with_own_metaclass_warns_at_its_class_statement():
++    class Meta(abc.ABCMeta):
++        pass
++
++    line = sys._getframe().f_lineno + 3
++    with pytest.warns(DeprecationWarning) as record:
++
++        class MetaParam(click.Option, metaclass=Meta):
++            @property
++            def human_readable_name(self) -> str:
++                return "legacy"
++
++    definitions = [w for w in record if issubclass(w.category, DeprecationWarning)]
++    assert len(definitions) == 1
++    assert definitions[0].filename == __file__
++    assert definitions[0].lineno == line
++
++
++def test_subclass_with_metaclass_defining_new_warns_at_its_class_statement():
++    class Meta(abc.ABCMeta):
++        def __new__(mcls, *args, **kwargs):
++            return super().__new__(mcls, *args, **kwargs)
++
++    line = sys._getframe().f_lineno + 3
++    with pytest.warns(DeprecationWarning) as record:
++
++        class MetaParam(click.Option, metaclass=Meta):
++            human_readable_name = property(lambda self: "x")
++
++    definitions = [w for w in record if issubclass(w.category, DeprecationWarning)]
++    assert len(definitions) == 1
++    assert definitions[0].filename == __file__
++    assert definitions[0].lineno == line
++
++
++def test_subclass_created_by_type_warns_at_the_type_call():
++    line = sys._getframe().f_lineno + 2
++    with pytest.warns(DeprecationWarning) as record:
++        type(
++            "Dynamic", (click.Option,), {"human_readable_name": property(lambda s: "x")}
++        )
++
++    definitions = [w for w in record if issubclass(w.category, DeprecationWarning)]
++    assert len(definitions) == 1
++    assert definitions[0].filename == __file__
++    assert definitions[0].lineno == line
++
++
++def test_subclass_of_a_defining_subclass_does_not_warn_again():
++    with pytest.warns(DeprecationWarning):
++
++        class Legacy(click.Option):
++            @property
++            def human_readable_name(self) -> str:
++                return "legacy"
++
++    with warnings.catch_warnings(record=True) as record:
++        warnings.simplefilter("always")
++
++        class Child(Legacy):
++            pass
++
++    assert [w for w in record if issubclass(w.category, DeprecationWarning)] == []
++
++
++def test_subclass_overriding_spec_is_silent_and_drives_messages(runner):
++    with warnings.catch_warnings(record=True) as record:
++        warnings.simplefilter("always")
++
++        class Custom(click.Option):
++            @property
++            def spec(self) -> str:
++                return "--custom"
++
++    assert [w for w in record if issubclass(w.category, DeprecationWarning)] == []
++
++    option = Custom(["--my-option"], is_flag=True, deprecated=True)
++    cli = click.Command("cli", params=[option], callback=lambda **kwargs: None)
++    result = runner.invoke(cli, ["--my-option"])
++    assert result.exit_code == 0
++    assert result.output == (
++        "DeprecationWarning: The option '--custom' is deprecated.\n"
++    )
++
++    with pytest.raises(ValueError, match="The option '--custom' is deprecated"):
++        Custom(["--my-option"], required=True, deprecated=True)
++
++
++def test_click_messages_ignore_a_subclass_human_readable_name(runner):
++    with pytest.warns(DeprecationWarning):
++
++        class Legacy(click.Option):
++            @property
++            def human_readable_name(self) -> str:
++                return "BOGUS"
++
++    option = Legacy(["--old"], is_flag=True, deprecated=True)
++    cli = click.Command("cli", params=[option], callback=lambda **kwargs: None)
++    result = runner.invoke(cli, ["--old"])
++    assert result.output == "DeprecationWarning: The option '--old' is deprecated.\n"
++
++
++def test_import_click_emits_no_warning():
++    result = subprocess.run(
++        [sys.executable, "-W", "error", "-c", "import click"],
++        capture_output=True,
++        text=True,
++        check=False,
++    )
++    assert result.returncode == 0, result.stderr
++
++
++@click.command("cli")
++@click.option("--count", type=click.INT)
++@click.option("--old", is_flag=True, deprecated=True)
++@click.option("-m", "--my-option", is_flag=True, deprecated=True)
++@click.argument("filename")
++@click.argument("legacy", required=False, deprecated=True)
++@click.argument("number", type=click.INT, required=False)
++def _every_message_cli(count, old, my_option, filename, legacy, number):
++    click.echo(filename)
++
++
++@pytest.mark.parametrize(
++    ("args", "exit_code", "expect"),
++    [
++        pytest.param(
++            ["--old", "a.txt"],
++            0,
++            "DeprecationWarning: The option '--old' is deprecated.\na.txt\n",
++            id="deprecated-option",
++        ),
++        pytest.param(
++            ["-m", "a.txt"],
++            0,
++            "DeprecationWarning: The option '--my-option' is deprecated.\na.txt\n",
++            id="deprecated-option-with-short",
++        ),
++        pytest.param(
++            ["a.txt", "1"],
++            0,
++            "DeprecationWarning: The argument 'LEGACY' is deprecated.\na.txt\n",
++            id="deprecated-argument",
++        ),
++        pytest.param(
++            [],
++            2,
++            "Error: Missing argument 'FILENAME'.\n",
++            id="missing-argument",
++        ),
++        pytest.param(
++            ["--count", "x", "a.txt"],
++            2,
++            "Error: Invalid value for '--count': 'x' is not a valid integer.\n",
++            id="bad-option-value",
++        ),
++        pytest.param(
++            ["a.txt", "1", "x"],
++            2,
++            "DeprecationWarning: The argument 'LEGACY' is deprecated.\n"
++            "Usage: cli [OPTIONS] FILENAME [LEGACY!] [NUMBER]\n"
++            "Try 'cli --help' for help.\n\n"
++            "Error: Invalid value for '[NUMBER]': 'x' is not a valid integer.\n",
++            id="bad-argument-value",
++        ),
++    ],
++)
++def test_click_messages_never_read_human_readable_name(runner, args, exit_code, expect):
++    """Every message path runs with DeprecationWarning as an error: any read of the
++    old name would raise instead of printing the message.
++    """
++    with warnings.catch_warnings():
++        warnings.simplefilter("error", DeprecationWarning)
++        result = runner.invoke(_every_message_cli, args)
++
++    assert result.exit_code == exit_code
++    assert result.output.endswith(expect)
++
++
++def test_click_help_and_completion_never_read_human_readable_name(runner):
++    ctx = click.Context(_every_message_cli)
++
++    with warnings.catch_warnings():
++        warnings.simplefilter("error", DeprecationWarning)
++        result = runner.invoke(_every_message_cli, ["--help"])
++        completions = [
++            item.value for item in _every_message_cli.shell_complete(ctx, "--")
++        ]
++
++    assert result.exit_code == 0
++    assert "  -m, --my-option  (DEPRECATED)" in result.output
++    assert "--my-option" in completions
++
++
++def test_required_deprecated_construction_raises_value_error_not_warning():
++    with warnings.catch_warnings():
++        warnings.simplefilter("error", DeprecationWarning)
++
++        with pytest.raises(ValueError, match="is deprecated and still required"):
++            click.Argument(["filename"], required=True, deprecated=True)
+diff --git a/tests/test_options.py b/tests/test_options.py
+index 472ec1c..b3fd4f3 100644
+--- a/tests/test_options.py
++++ b/tests/test_options.py
+@@ -114,7 +114,7 @@ def test_deprecated_warning(runner, deprecated):
+ 
+     result = runner.invoke(cli, ["--my-option", "hello"])
+     assert result.exit_code == 0, result.output
+-    assert "option 'my_option' is deprecated" in result.output
++    assert "option '--my-option' is deprecated" in result.output
+ 
+     if isinstance(deprecated, str):
+         assert deprecated in result.output
+@@ -3914,3 +3914,89 @@ def test_flag_value_on_option_with_zero_or_one_args(flag_type, args, expect_outp
+     result = runner.invoke(cmd, args)
+     assert result.exit_code == 0
+     assert result.output == expect_output
++
++
++@pytest.mark.parametrize(
++    ("param_decls", "kwargs", "expected"),
++    [
++        (["-t", "--times"], {}, "--times"),
++        (["--times", "-t"], {}, "--times"),
++        (["--color/--no-color"], {}, "--color"),
++        (["/debug;/no-debug"], {}, "/debug"),
++        (["-f", "--file", "--filename"], {}, "--file"),
++        (["+w/-w"], {}, "+w"),
++        (["-a", "-b"], {}, "-a"),
++        (["-w", "+w"], {}, "-w"),
++        (["source", " /x"], {}, "source"),
++    ],
++)
++def test_spec_is_longest_prefix_declaration(param_decls, kwargs, expected):
++    """The spec is the primary declaration with the longest prefix, the first
++    declared winning a tie. With no primary declaration it is the name.
++    """
++    assert click.Option(param_decls, **kwargs).spec == expected
++
++
++def test_spec_is_read_only():
++    opt = click.Option(["-t", "--times"])
++
++    with pytest.raises(AttributeError):
++        opt.spec = "-x"
++
++
++def test_option_help_spec_keeps_metavar_and_hidden_output():
++    ctx = click.Context(click.Command("cli"))
++    opt = click.Option(["-t", "--times"], type=int, hidden=True)
++
++    assert opt.get_help_spec(ctx) == "-t, --times INTEGER"
++    assert opt.get_help_record(ctx) is None
++
++
++class _BareParameter(click.Parameter):
++    """Just enough of a parameter to be built; it declares nothing."""
++
++    def _parse_decls(self, decls, expose_value):
++        return "x", [], []
++
++    def add_to_parser(self, parser, ctx):
++        pass
++
++
++def test_parameter_help_spec_and_error_hint_use_spec():
++    ctx = click.Context(click.Command("cli"))
++
++    assert _BareParameter(["x"]).get_help_spec(ctx) == "x"
++
++    class Custom(_BareParameter):
++        @property
++        def spec(self) -> str:
++            return "CUSTOM"
++
++    param = Custom([])
++
++    assert param.get_help_spec(ctx) == "CUSTOM"
++    assert param.get_error_hint(None) == "'CUSTOM'"
++
++
++def test_deprecated_option_message_names_its_spec(runner):
++    @click.command()
++    @click.option("-m", "--my-option", is_flag=True, deprecated=True)
++    def cli(my_option):
++        pass
++
++    result = runner.invoke(cli, ["--my-option"])
++    assert result.exit_code == 0
++    assert result.output == (
++        "DeprecationWarning: The option '--my-option' is deprecated.\n"
++    )
++
++
++def test_required_deprecated_option_error_names_its_spec():
++    with pytest.raises(
++        ValueError,
++        match=re.escape(
++            "The option '--my-option' is deprecated and still required. A deprecated"
++            " option cannot be required."
++        ),
++    ):
++        click.Option(["--my-option"], required=True, deprecated=True)

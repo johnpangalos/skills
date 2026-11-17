@@ -1,0 +1,55 @@
+| scenario | arm | runs | process | outcome | cost $ | opus share | main tool calls | spawns (role:model/effort) |
+|---|---|---|---|---|---|---|---|---|
+| click-duration | lite-candidate | 3 | 0.81 | 0.94 | 1.48 | 0.94 | 21.33 | investigator:haiku/fm, implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm, implementor:haiku/fm; investigator:haiku/fm, implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm, implementor:haiku/fm, implementor:haiku/fm; investigator:haiku/fm, implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm, implementor:haiku/fm |
+| click-param-spec | lite-candidate | 3 | 0.83 | 1.0 | 1.54 | 0.91 | 22.0 | investigator:haiku/fm, implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm, implementor:haiku/fm, reviewer:haiku/fm, implementor:haiku/fm; investigator:haiku/fm, implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm, implementor:haiku/fm, reviewer:haiku/fm, implementor:haiku/fm; investigator:haiku/fm, implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm, implementor:haiku/fm |
+| discount-codes | lite-candidate | 3 | 0.88 | 1.0 | 0.81 | 0.94 | 13.33 | investigator:haiku/fm, implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm, implementor:haiku/fm; investigator:haiku/fm, implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm, implementor:haiku/fm, reviewer:haiku/fm; investigator:haiku/fm, implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm |
+| reset-token-expiry | lite-candidate | 3 | 0.75 | 1.0 | 0.86 | 0.95 | 15.67 | investigator:haiku/fm, implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm, implementor:haiku/fm; investigator:haiku/fm, implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm, implementor:haiku/fm, reviewer:haiku/fm, implementor:haiku/fm; investigator:haiku/fm, implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm, implementor:haiku/fm, reviewer:haiku/fm |
+| risky-inventory | lite-candidate | 3 | 0.78 | 1.0 | 0.91 | 0.93 | 15.33 | investigator:haiku/fm, implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm, implementor:haiku/fm, reviewer:haiku/fm, implementor:haiku/fm; investigator:haiku/fm, implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm, implementor:haiku/fm, reviewer:haiku/fm; investigator:haiku/fm, implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm, implementor:haiku/fm, reviewer:haiku/fm |
+
+## Failed checks
+
+- click-duration / lite-candidate rep: [process] handoff prompts use the template — investigator missing GOAL; simplifier missing GOAL
+- click-duration / lite-candidate rep: [process] subagents return the result template — investigator returned 42 lines; implementor returned 42 lines
+- click-duration / lite-candidate rep: [process] main conversation leaves edits to subagents — main conversation edited ['/tmp/claude-0/-tmp-ff-eval--e8jw044-workspace/b852694f-5c1b-457b-b683-ba50ff926ff5/scratchpad/criteria.md']
+- click-duration / lite-candidate rep: [process] handoff prompts use the template — investigator missing GOAL; simplifier missing GOAL
+- click-duration / lite-candidate rep: [process] stages announced before the first spawn — stage words before first spawn: ['inves']
+- click-duration / lite-candidate rep: [process] handoff prompts use the template — investigator missing GOAL; simplifier missing GOAL
+- click-duration / lite-candidate rep: [process] stages announced before the first spawn — stage words before first spawn: ['inves']
+- click-duration / lite-candidate rep: [process] main conversation leaves edits to subagents — main conversation edited ['/tmp/claude-0/-tmp-ff-eval-udqxfbhl-workspace/b07c36c7-c433-4903-8c0c-3de5ca3e97c5/scratchpad/criteria.md', '/tmp/ff-eval-udqxfbhl/workspace/docs/parameter-types.md', '/tmp/ff-eval-udqxfbhl/workspace/src/click/types.py']
+- click-duration / lite-candidate rep: [outcome] changelog entry under 8.6.0 — no Duration entry under Version 8.6.0 (Unreleased)
+- click-param-spec / lite-candidate rep: [process] handoff prompts use the template — investigator missing GOAL; simplifier missing GOAL; reviewer missing GOAL; implementor missing GOAL; reviewer missing GOAL; implementor missing GOAL
+- click-param-spec / lite-candidate rep: [process] subagents return the result template — investigator returned 44 lines
+- click-param-spec / lite-candidate rep: [process] stages announced before the first spawn — stage words before first spawn: ['inves']
+- click-param-spec / lite-candidate rep: [process] handoff prompts use the template — investigator missing GOAL; simplifier missing GOAL; reviewer missing GOAL; reviewer missing GOAL
+- click-param-spec / lite-candidate rep: [process] stages announced before the first spawn — stage words before first spawn: ['inves']
+- click-param-spec / lite-candidate rep: [process] handoff prompts use the template — investigator missing GOAL; simplifier missing GOAL
+- click-param-spec / lite-candidate rep: [process] stages announced before the first spawn — stage words before first spawn: none
+- discount-codes / lite-candidate rep: [process] handoff prompts use the template — investigator missing GOAL; simplifier missing GOAL
+- discount-codes / lite-candidate rep: [process] stages announced before the first spawn — stage words before first spawn: none
+- discount-codes / lite-candidate rep: [process] handoff prompts use the template — investigator missing GOAL; simplifier missing GOAL; reviewer missing GOAL
+- discount-codes / lite-candidate rep: [process] stages announced before the first spawn — stage words before first spawn: none
+- discount-codes / lite-candidate rep: [process] handoff prompts use the template — investigator missing GOAL; simplifier missing GOAL; reviewer missing GOAL
+- discount-codes / lite-candidate rep: [process] stages announced before the first spawn — stage words before first spawn: none
+- reset-token-expiry / lite-candidate rep: [process] handoff prompts use the template — investigator missing GOAL; simplifier missing GOAL
+- reset-token-expiry / lite-candidate rep: [process] stages announced before the first spawn — stage words before first spawn: none
+- reset-token-expiry / lite-candidate rep: [process] main conversation leaves edits to subagents — main conversation edited ['/tmp/claude-0/-tmp-ff-eval-ebma2hha-workspace/a26b487b-a2cf-405a-a2fa-0ff00d0ef2d5/scratchpad/criteria.md']
+- reset-token-expiry / lite-candidate rep: [process] reviewer runs on opus — reviewer models: ['haiku']
+- reset-token-expiry / lite-candidate rep: [process] security reviewer ran — 0 security spawns
+- reset-token-expiry / lite-candidate rep: [process] handoff prompts use the template — investigator missing GOAL; simplifier missing GOAL; reviewer missing GOAL
+- reset-token-expiry / lite-candidate rep: [process] stages announced before the first spawn — stage words before first spawn: none
+- reset-token-expiry / lite-candidate rep: [process] reviewer runs on opus — reviewer models: ['haiku', 'haiku']
+- reset-token-expiry / lite-candidate rep: [process] security reviewer ran — 0 security spawns
+- reset-token-expiry / lite-candidate rep: [process] handoff prompts use the template — investigator missing GOAL; simplifier missing GOAL; reviewer missing GOAL
+- reset-token-expiry / lite-candidate rep: [process] stages announced before the first spawn — stage words before first spawn: none
+- reset-token-expiry / lite-candidate rep: [process] reviewer runs on opus — reviewer models: ['haiku', 'haiku']
+- reset-token-expiry / lite-candidate rep: [process] security reviewer ran — 0 security spawns
+- risky-inventory / lite-candidate rep: [process] handoff prompts use the template — investigator missing GOAL; simplifier missing GOAL; reviewer missing GOAL; reviewer missing GOAL
+- risky-inventory / lite-candidate rep: [process] stages announced before the first spawn — stage words before first spawn: none
+- risky-inventory / lite-candidate rep: [process] reviewer models (for the record) — reviewer models: ['haiku', 'haiku']
+- risky-inventory / lite-candidate rep: [process] handoff prompts use the template — investigator missing GOAL; simplifier missing GOAL; reviewer missing GOAL
+- risky-inventory / lite-candidate rep: [process] stages announced before the first spawn — stage words before first spawn: none
+- risky-inventory / lite-candidate rep: [process] reviewer models (for the record) — reviewer models: ['haiku', 'haiku']
+- risky-inventory / lite-candidate rep: [process] handoff prompts use the template — investigator missing GOAL; simplifier missing GOAL; implementor missing GOAL; reviewer missing GOAL
+- risky-inventory / lite-candidate rep: [process] stages announced before the first spawn — stage words before first spawn: none
+- risky-inventory / lite-candidate rep: [process] main conversation leaves edits to subagents — main conversation edited ['/tmp/claude-0/-tmp-ff-eval-m4g85ip7-workspace/9f14d235-28d9-44bf-b6f5-a48c35f37039/scratchpad/criteria.md']
+- risky-inventory / lite-candidate rep: [process] reviewer models (for the record) — reviewer models: ['haiku', 'haiku']
