@@ -11,7 +11,7 @@ import collections, glob, json, os, sys
 
 suite, jdir = sys.argv[1], sys.argv[2]
 pss = sys.argv[3] if len(sys.argv) > 3 else "final"
-glob_pat, remap_pre = ("round2-*.json", "remap2-") if pss == "round2" else ("final-*.json", "remap-")
+glob_pat, remap_pre = {"round2": ("round2-*.json", "remap2-"), "round3": ("round3-*.json", "remap3-")}.get(pss, ("final-*.json", "remap-"))
 q = lambda v: "NULL" if v is None else (repr(v) if isinstance(v, (int, float)) else "'" + str(v).replace("'", "''") + "'")
 rows, means = [], collections.defaultdict(list)
 for f in sorted(glob.glob(f"{jdir}/{glob_pat}")):
