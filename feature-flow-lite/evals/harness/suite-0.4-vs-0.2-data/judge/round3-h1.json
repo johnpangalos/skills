@@ -1,0 +1,1719 @@
+[
+ {
+  "id": "chi-etag",
+  "reports": [
+   {
+    "letter": "A",
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 7,
+     "tests": 8,
+     "docs": 8,
+     "product": 7
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "A HEAD response whose handler writes no body (e.g. it only sets Content-Length) gets no ETag, while the GET for the same resource does. RFC 9110 says HEAD should carry the same header fields as GET. The choice is documented and avoids hashing an empty body, but HEAD and GET differ.",
+      "evidence": "Throwaway probe: a HEAD handler that only sets Content-Length: 5 returned 200 with headers map[Content-Length:[5]] and no ETag (etag.go:165 `r.Method == http.MethodGet || w.body.Len() > 0`)."
+     },
+     {
+      "severity": "minor",
+      "what": "`If-None-Match: *` on a HEAD response that has no ETag (empty body) still returns 304. This is defensible, since the representation exists, but it gives a 304 with no validator.",
+      "evidence": "etag.go:230-233 returns true for `*` regardless of etag; covered by the build's own test 'star on empty body gives 304 without ETag' (etag_test.go:376)."
+     },
+     {
+      "severity": "minor",
+      "what": "A malformed leading member stops parsing for the whole line, so a valid tag that follows it is ignored. This matches net/http's checkIfNoneMatch, so it is not a spec violation, but it is lenient in only one direction.",
+      "evidence": "Probe: If-None-Match `garbage, \"<tag>\"` -> 200; `\"<tag>\", garbage` -> 304; `\"a\" junk, \"<tag>\"` -> 200 (etag.go:236-243)."
+     },
+     {
+      "severity": "minor",
+      "what": "The wrapper does not implement io.ReaderFrom, so io.Copy falls back to Write, and pass-through (non-200) responses lose the sendfile fast path.",
+      "evidence": "Probe handler: `_, isRF := w.(io.ReaderFrom)` logged `is ReaderFrom: false`. The io.Copy body was still hashed correctly."
+     },
+     {
+      "severity": "minor",
+      "what": "The implementation and tests are heavy for a chi middleware: 255 non-blank source lines (trailer copying, 1xx forwarding, Push, hijack-commit logic) and a 1026-line test file with idiosyncratic names such as TestETagApprovedDifferencesInEveryCallOrder. That is much larger than sibling middleware tests and could deter a maintainer.",
+      "evidence": "`grep -c . middleware/etag.go middleware/etag_test.go` -> 255 / 1026"
+     }
+    ],
+    "strengths": [
+     "All spec behaviours verified by probes. GET/HEAD 200 gets a strong SHA-256 ETag. POST, 404 and 201 pass through unchanged. A handler-set W/\"v1\" is kept and matched by both \"v1\" and W/\"v1\". Comma lists and `*` give 304 with Content-Type and Content-Length stripped.",
+     "Works with http.ServeContent: plain GET gets an ETag, a matching INM gets 304, and a Range request's 206 passes through untouched.",
+     "Careful wrapper semantics: Flush is a no-op while buffering and forwarded after a non-200; Hijack commits buffered output first; Unwrap, Push and FlushError are supported; trailers are preserved; 1xx responses are forwarded; non-canonical ETag header keys are detected.",
+     "go build, go test ./..., go vet ./... all pass; gofmt -l clean; the ETag tests run in about 0.03s.",
+     "README table row and link reference added in alphabetical order, matching the existing format.",
+     "Differential tests compare wrapped and unwrapped handlers across many call orders, plus real-server probes."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 1283,
+     "test_cases": 177
+    },
+    "summary": "Build A adds middleware/etag.go, middleware/etag_test.go and a README row. It meets the spec, including weak comparison, lists, `*` and handler-set ETags, and it handles Flush, Hijack, ServeContent and trailers correctly. Build, test, vet and gofmt are all clean. I found no blockers or major bugs. The remaining issues are minor: HEAD responses with no body get no ETag (deliberate), `*` gives a 304 with no validator, a malformed leading INM member ends parsing of that line, and there is no ReaderFrom. The main drawback is size: the implementation and especially the 1000-line test file are much heavier than chi's other middleware, which a maintainer might ask to trim."
+   },
+   {
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 8,
+     "tests": 9,
+     "docs": 8,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "A HEAD response that writes no body gets no ETag, so GET and HEAD on the same resource carry different headers. http.ServeContent writes no body for HEAD, so HEAD gets no ETag while GET does, and a HEAD with If-None-Match set to the GET's tag gets 200 instead of 304. This choice is explained only in an inline comment and is missing from the exported doc comment.",
+      "evidence": "Probe test against ServeContent: GET -> 200 etag=\"6aed04...\" cl=12; HEAD -> 200 etag=\"\" cl=12 (also over a real httptest.Server: 'real HEAD: 200 etag=\"\" cl=12'). middleware/etag.go:104-105 `if len(h.Values(\"ETag\")) == 0 && (!head || ew.buf.Len() > 0)`"
+     },
+     {
+      "severity": "minor",
+      "what": "The wrapper always exposes Flusher, Hijacker and Pusher whatever the underlying writer supports, and it does not expose io.ReaderFrom. Once a Flush switches it to streaming mode, io.Copy loses the sendfile fast path. Other chi wrappers (WrapResponseWriter) choose interfaces based on what the underlying writer supports.",
+      "evidence": "In the probe, a handler checking `w.(io.ReaderFrom)` got false. middleware/etag.go:194-219 defines Flush/Hijack/Push unconditionally."
+     },
+     {
+      "severity": "minor",
+      "what": "Write errors from the underlying writer are ignored when flushing the buffered body. Write calls made while buffering always report success, so the handler never sees a client disconnect.",
+      "evidence": "middleware/etag.go:90 and :119 `ew.ResponseWriter.Write(ew.buf.Bytes())` ignore the returned error"
+     }
+    ],
+    "strengths": [
+     "go build, go test ./..., and go vet ./... all pass, and gofmt -l prints nothing",
+     "The If-None-Match parser follows RFC 9110 correctly: weak comparison, lists spread over several header lines, commas inside quoted tags, '*', and garbage members that are skipped without losing a later match. In probes, `garbage, TAG` -> 304, `**` -> 200, `W/*` -> 200, `,,TAG,,` -> 304",
+     "On a 304 it strips Content-Length and Content-Type and keeps Cache-Control, Vary and Set-Cookie",
+     "Careful handling of the response writer: it forwards 1xx immediately and treats 101 as final, ignores a second WriteHeader, streams on Flush, sends the buffered body before Hijack, and sends nothing when Hijack happens before any write. It also has Unwrap",
+     "Works behind http.ServeContent: GET gets an ETag and a matching If-None-Match gets 304, Range requests (206) pass through, and real-server Content-Length is preserved",
+     "The tests are thorough and table-driven, with 27 test functions (59 runs including subtests), among them real TCP tests of hijack ordering and 101",
+     "The README row and link are added in alphabetical order with matching column alignment. The doc comment notes the memory cost and the ordering issue with NoCache"
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 730,
+     "test_cases": 59
+    },
+    "summary": "This is a solid ETag middleware that meets the spec. The build is clean, tests pass, vet and gofmt are clean, the RFC 9110 If-None-Match parsing is correct, and the writer handles Flush, Hijack and 1xx correctly. The tests are extensive and meaningful. I found no blocker or major defects, only three minor ones. A HEAD request with no body (including http.ServeContent's HEAD path) gets no ETag, so its headers don't match GET's. The wrapper always exposes Flusher, Hijacker and Pusher and does not expose ReaderFrom. Write errors are ignored when the buffered body is sent. A maintainer would likely merge it with small edits.",
+    "letter": "B"
+   },
+   {
+    "letter": "C",
+    "overall": 7,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 6,
+     "tests": 7,
+     "docs": 8,
+     "product": 6
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "The wrapper always advertises http.Flusher, http.Hijacker and http.Pusher, even when the writer it wraps has none of them. Code that type-asserts to pick a feature is misled: it finds Pusher on HTTP/1, and finds Flusher on GET 200 responses, where Flush does nothing.",
+      "evidence": "Throwaway test: inside ETag, `_, p := w.(http.Pusher)` printed `Flusher true Hijacker true Pusher true`. On an httptest HTTP/1 server, calling Push printed `push err: chi/middleware: http.Pusher is unavailable on the writer` (etag.go:99-137)."
+     },
+     {
+      "severity": "minor",
+      "what": "Flush on a GET/HEAD 200 does nothing, and the whole body is buffered without a size limit. Server-sent events or other streamed 200 responses behind ETag never reach the client until the handler returns. The doc comment states this, but nothing opts these responses out (for example by Content-Type or size).",
+      "evidence": "etag.go:107-109 `if !ew.streaming { return }`. The doc comment at etag.go:19-22 says so."
+     },
+     {
+      "severity": "minor",
+      "what": "One malformed If-None-Match member that contains a stray quote can hide a valid member after it. cutListMember toggles its in-quote state on every '\"', so the comma after it is swallowed. The behaviour is deliberate and tested, but a more lenient parser would still match the later tag.",
+      "evidence": "Throwaway test: If-None-Match `\"a,b\", junk\"x, <correct tag>` returned 200 with the body. The test case 'quote runs to next quote' at etag_test.go:~313 locks this in. Parser: etag.go:301-314."
+     },
+     {
+      "severity": "minor",
+      "what": "HEAD through http.ServeContent gets no ETag, because ServeContent writes no body on HEAD. GET gets one, so HEAD and GET differ, and If-None-Match on HEAD never yields 304.",
+      "evidence": "httptest server with ETag(ServeContent): `GET 200 ... Etag:[\"2cf24d...\"]`, `HEAD 200` with no Etag, and `HEAD INM 200`. etag.go:158 tags only when the method is GET or the body is non-empty."
+     },
+     {
+      "severity": "minor",
+      "what": "The wrapper does not implement io.ReaderFrom, so a non-200 response streamed through it loses the sendfile/ReadFrom fast path. A buffered 200 is unaffected.",
+      "evidence": "Throwaway test printed `ReaderFrom? false`."
+     },
+     {
+      "severity": "minor",
+      "what": "The code and tests are far larger than chi's usual middleware: 303 source lines covering trailers, 1xx responses, header snapshots and hijacking after buffering, plus a 1079-line test file with property, differential and over-the-wire tests. That is heavy to maintain, and a maintainer would probably ask for it to be trimmed.",
+      "evidence": "`grep -cv '^\\s*$'`: etag.go 303, etag_test.go 1079. For comparison, compress_test.go has 251 lines and get_head_test.go has 66. etag_test.go:1124 contains an odd process comment: `// Approved: a buffered 200 is not flushed early...`"
+     }
+    ],
+    "strengths": [
+     "Every spec requirement checked passed in throwaway tests. GET/HEAD 200 responses get a strong SHA-256 ETag, POST and non-200 responses pass through unchanged, and a handler-set ETag (including a weak one) is kept and matched. Weak comparison, lists, `*`, multiple If-None-Match lines and garbage members all behave correctly.",
+     "A 304 drops Content-Type, Content-Length and Content-Encoding but keeps ETag, Last-Modified and other headers. http.ServeContent works behind the middleware, including 304 and 206 Range responses.",
+     "Header handling is careful: header snapshots are taken at commit time, 1xx responses are forwarded, trailers are kept, a hijack on a buffered 200 is handled, a HEAD with no body gets no tag, and a Flush without a Flusher is safe.",
+     "The doc comment explains the buffering trade-off and the order to use relative to Compress. The README table row and its link are added in alphabetical order.",
+     "`go build`, `go test ./...` and `go vet` all pass, and the code is gofmt-clean. The tests include a differential test against an unwrapped writer and over-the-wire checks."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 1384,
+     "test_cases": 38
+    },
+    "summary": "Build C is functionally solid. It meets every spec requirement in my probes: GET, HEAD and POST, 200 and non-200, handler-set ETags, weak tags, lists, `*`, garbage members, http.ServeContent, Flush and Hijack. `go build`, `go test`, `go vet` and gofmt are all clean, and the README row and its link are present. The remaining problems are all minor: the wrapper always claims to support Flusher, Hijacker and Pusher; Flush does nothing on a buffered 200 (documented); one stray quote in If-None-Match can hide a later valid tag; HEAD through ServeContent gets no ETag; and ReaderFrom is not implemented. The main drawback is size. At 303 source lines plus a 1079-line test file with property and differential tests, it is far more machinery than chi's middleware usually carries, and a maintainer would likely ask for it to be trimmed before merging."
+   },
+   {
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "A HEAD request whose handler writes no body (e.g. http.ServeContent, which skips the body on HEAD) gets no ETag, so a conditional HEAD using the GET's ETag returns 200 rather than 304. The doc comment explains this choice and it avoids sending a wrong ETag, but it means conditional HEAD does not work behind ServeContent.",
+      "evidence": "Throwaway probe in middleware/: ServeContent HEAD -> '200 etag=\"\" CL=\"8\"'; HEAD with If-None-Match set to the GET's ETag -> 200. Source: middleware/etag.go:117-120."
+     },
+     {
+      "severity": "minor",
+      "what": "Write errors from the underlying writer are dropped in startStreaming and finish, so a client disconnect is not visible to the handler. This happens after the handler returns in finish, so the impact is small.",
+      "evidence": "middleware/etag.go:73 and :128 (w.ResponseWriter.Write(...) return values ignored)"
+     },
+     {
+      "severity": "minor",
+      "what": "The whole body is buffered with no size cap. The doc comment states this, and there is no escape hatch for large GET responses other than Flush.",
+      "evidence": "middleware/etag.go:18-19, 37"
+     }
+    ],
+    "overall": 8.5,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8.5,
+     "code_quality": 8.5,
+     "tests": 9,
+     "docs": 8.5,
+     "product": 8.5
+    },
+    "strengths": [
+     "Tolerant RFC 9110 If-None-Match parser: weak comparison, multiple header lines, OWS, empty list members, commas inside quoted tags, and invalid members skipped while later valid tags still match ('garbage, \"tag\"' -> 304, 'garbage' -> 200, '\"a\", *' -> 200)",
+     "Handler-set ETag (including a weak one) is kept and used for matching; on a 304, Content-Length is removed and Cache-Control/Vary are kept",
+     "Non-200 responses and other methods stream straight through; the first status wins; 1xx informational responses are forwarded; Flush switches to streaming; Hijack, Push and Unwrap are handled (ResponseController.Flush works)",
+     "Works behind http.ServeContent for GET (200 with computed ETag; 304 on match; Range gives 206 with no ETag added)",
+     "Thorough table-driven tests over a real httptest server, covering parser edge cases, panic, hijack, 1xx and concurrency",
+     "go build, test (also with -race), vet and gofmt are clean; README row and pkg.go.dev link added in the existing style"
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 606,
+     "test_cases": 54
+    },
+    "summary": "Build D is a well-built ETag middleware. In /tmp/inspect-chi-etag-D, `go build ./...`, `go test ./...` (also with -race), `go vet ./...` and `gofmt -l` are all clean. Probe tests confirmed: GET gets a strong SHA-256 ETag; POST passes through; non-200 passes through even with `*`; a handler's own (weak) ETag is kept and matched; weak tags, lists, `*` and garbage members behave as RFC 9110 describes; io.Copy works (ReadFrom is not exposed, but writes go to the buffer); Flush, Hijack and ResponseController.Flush work; ServeContent GET and Range work. One deliberate design choice has a cost: a HEAD whose handler writes no body gets no computed ETag, so a conditional HEAD behind ServeContent returns 200 instead of 304. The doc comment explains it. Code is compact and idiomatic, tests are extensive and meaningful, and the README row and link are present. The CHANGELOG only holds per-release compare links, so no entry was expected.",
+    "letter": "D"
+   },
+   {
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 8,
+     "tests": 9,
+     "docs": 8,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "HEAD responses whose handler writes no body (e.g. http.ServeContent on HEAD) get no ETag, so HEAD and GET for the same resource disagree, and If-None-Match on HEAD never yields 304 for computed tags. This is documented as deliberate, but it is a behavioral gap.",
+      "evidence": "Probe test: ServeContent GET -> 200 etag=\"2cf24d...\"; ServeContent HEAD -> 200 etag=\"\" cl=5; HEAD with If-None-Match=<GET etag> -> 200 (no 304). Code at middleware/etag.go setETag: `if w.req.Method == http.MethodHead && w.body.Len() == 0 { return }`"
+     },
+     {
+      "severity": "minor",
+      "what": "The wrapped writer does not implement io.ReaderFrom, so io.Copy/sendfile optimizations are lost for GET/HEAD. Because everything is buffered anyway, this has little practical effect.",
+      "evidence": "Probe: `_, ok := w.(io.ReaderFrom)` inside an ETag-wrapped handler -> false"
+     },
+     {
+      "severity": "minor",
+      "what": "How a malformed If-None-Match list is handled depends on where the malformed member sits: a garbage member before a matching tag gives 200, but the same garbage after it gives 304, because scanning stops at the first malformed member.",
+      "evidence": "Probe: If-None-Match `garbage, \"<etag>\"` -> 200; `\"<etag>\", garbage` -> 304 (listMatches in middleware/etag.go)"
+     },
+     {
+      "severity": "minor",
+      "what": "HEAD from a handler that writes no body and sets no ETag still answers If-None-Match: * with 304, and that 304 carries no ETag.",
+      "evidence": "Probe: HEAD, empty handler, If-None-Match `*` -> 304 ETag=\"\""
+     }
+    ],
+    "strengths": [
+     "go build, go test, go vet and go test -race all pass, and gofmt -l reports nothing",
+     "The If-None-Match parser follows RFC 9110 closely: weak comparison, quoted tags that contain commas, empty list elements, OWS, * and multiple header lines",
+     "A handler-set ETag is kept and still used for 304s; non-200 responses and other methods pass through untouched (non-GET methods get the original writer)",
+     "The 304 response strips Content-Type, Content-Length and Content-Encoding the way ServeContent does, and keeps Cache-Control, Vary and ETag",
+     "Flush and Hijack switch the writer to streaming correctly. 1xx responses are forwarded, Push and Unwrap are supported, and writes after Hijack return ErrHijacked",
+     "The tests are thorough and meaningful: a table-driven If-None-Match matrix, real-server streaming, 103 Early Hints, and Hijack log checks",
+     "The README row is in alphabetical order and has its pkg.go.dev link, and the doc comment explains the edge-case behavior"
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 817,
+     "test_cases": 26
+    },
+    "summary": "This is a solid, spec-compliant ETag middleware. The checks I ran (build, test, vet, race, gofmt) are all clean. My probes confirmed the computed strong ETag and the 304s for weak tags, lists, * and handler-set tags. POST and non-200 responses pass through, Flush and Hijack switch to streaming, and http.ServeContent works on GET. The remaining issues are small edge cases. HEAD responses with no body get no ETag, so HEAD and GET disagree for ServeContent. The wrapper does not expose ReaderFrom. Whether a garbage list member blocks a match depends on its position. The tests are extensive, perhaps more than a maintainer needs, but they test meaningful behavior. The README row fits the repo's conventions; the changelog is only updated at release time, so no entry is needed.",
+    "letter": "E"
+   },
+   {
+    "letter": "F",
+    "overall": 7.5,
+    "scores": {
+     "correctness": 8,
+     "robustness": 8,
+     "code_quality": 7,
+     "tests": 8,
+     "docs": 7,
+     "product": 7
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "If-None-Match parsing stops at the first malformed member, so a garbage member placed before a matching tag stops the match. This copies net/http's checkIfNoneMatch, but it is stricter than ignoring bad list members.",
+      "evidence": "Throwaway test: `If-None-Match: garbage, \"<tag>\"` -> 200 body=\"hello\"; `\"x\" junk, \"<tag>\"` -> 200. The code is middleware/etag.go:218-221 (`if tag == \"\" { return false }`)."
+     },
+     {
+      "severity": "minor",
+      "what": "A HEAD handler that writes no body, such as http.ServeContent or a handler that only sets Content-Length, gets no ETag, while the same resource on GET does. HEAD then returns a different validator from GET. A HEAD request whose If-None-Match carries the GET tag gets 200, not 304. This is deliberate and commented, but it differs from GET.",
+      "evidence": "Probe: ServeContent GET -> ETag \"6aed04...\"; ServeContent HEAD -> 200 with an empty ETag. Code is middleware/etag.go:158-162."
+     },
+     {
+      "severity": "minor",
+      "what": "The wrapper always implements http.Hijacker and http.Pusher and returns an error at call time when the underlying writer lacks them. Type assertions therefore always succeed, so feature detection by callers breaks. It also does not implement io.ReaderFrom (io.Copy falls back to Write, which is harmless).",
+      "evidence": "Probe handler printed `flusher true hijacker true readerfrom false`. See middleware/etag.go:111-146."
+     },
+     {
+      "severity": "minor",
+      "what": "The Hijack path (sendForHijack, with flushed/flushedLen bookkeeping) and the forwarding of 1xx statuses add complexity well beyond what the spec asks. The test file is 852 lines, out of scale with the repo's other middleware tests.",
+      "evidence": "middleware/etag.go:36-50 and 109-139; `wc -l middleware/etag_test.go` -> 852."
+     },
+     {
+      "severity": "minor",
+      "what": "CHANGELOG.md is not updated. The repo has one, though chi maintainers usually write it at release time.",
+      "evidence": "`git status --short` shows only README.md, middleware/etag.go and middleware/etag_test.go."
+     }
+    ],
+    "strengths": [
+     "All spec behaviour works when probed: GET and HEAD get a strong SHA-256 ETag, POST passes through, non-200 passes through (a 404 with `*` stays 404), a handler's own ETag is kept and used for matching, and weak comparison, comma lists, combined header lines and `*` all match.",
+     "The 304 response clears headers the same way net/http's ServeContent does: Content-Type, Content-Length and Content-Encoding are removed, and Last-Modified is removed when an ETag is present. ServeContent's own Range and 304 paths keep working behind the middleware.",
+     "The entity-tag scanner follows the etagc grammar, including quoted commas, and rejects unterminated tags.",
+     "The wrapper is careful: the first final status wins, 1xx statuses are forwarded, a panic leaves nothing written, Hijack replays the flushed prefix, and Unwrap is provided.",
+     "The tests are thorough and meaningful. They include a differential test against the unwrapped handler for GET/HEAD/POST and tests over a real httptest.Server.",
+     "go build, go test, go vet and gofmt -l are all clean. The README row and its pkg.go.dev link are placed alphabetically and aligned."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 1037,
+     "test_cases": 19
+    },
+    "summary": "Build F meets the whole spec. go build, test and vet pass and the code is gofmt-clean. In throwaway probes, GET and HEAD got a strong ETag, POST and non-200 responses passed through, handler-set ETags were kept and matched, weak comparison, lists and `*` gave 304 with no body, and ServeContent worked behind the middleware. Hijack and Flush behaved sensibly. Two things a reviewer might question: the If-None-Match scan stops at the first garbage member (copying net/http), and HEAD responses with no body get no ETag, so they disagree with GET. The writer wrapper (Hijack replay, 1xx forwarding) and the 852-line test file are heavier than the repo usually is, and Hijacker and Pusher are always advertised even when the underlying writer lacks them. A maintainer would likely merge it after asking for some trimming."
+   },
+   {
+    "letter": "G",
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 9,
+     "code_quality": 7,
+     "tests": 8,
+     "docs": 8,
+     "product": 7
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "A HEAD response whose handler writes no body (for example http.ServeContent, which skips the body on HEAD) gets no ETag, while GET gets one. A HEAD sent with the GET's tag in If-None-Match therefore gets 200, not 304. This is deliberate (etag.go:125 `w.method == http.MethodGet || w.buf.Len() > 0`) and covered by a test, but the doc comment does not mention it.",
+      "evidence": "A throwaway test with ETag(ServeContent(\"hello world\")) logged: `GET -> 200 etag=\"b94d27...\" cl=11` and `HEAD -> 200 body=\"\" etag=\"\" cl=11`. A handler that sets Content-Length: 5 and writes the body only on GET gave the same result: GET has an etag, HEAD has etag=\"\"."
+     },
+     {
+      "severity": "minor",
+      "what": "If-None-Match parsing stops at the first malformed member, so a valid matching tag after a garbage member is ignored. This matches net/http's checkIfNoneMatch and is tested, but it is stricter than lenient parsers.",
+      "evidence": "A throwaway test logged `GET inm=\"junk, \\\"b94d...\\\"\" -> 200`. `W/\"b94d...\", junk` gives 304. See etag.go:202-205."
+     },
+     {
+      "severity": "minor",
+      "what": "The trailer bookkeeping (snapshotTrailers/etagHoldTrailers, held map, about 40 lines) is a lot of machinery for a small middleware. The test file is about 4x the size of the code (856 vs 220 non-blank lines) and has a differential wire harness that is heavy for chi's usual test style.",
+      "evidence": "middleware/etag.go:149-176; `grep -cv '^\\s*$'` gives etag.go:220 and etag_test.go:856."
+     },
+     {
+      "severity": "minor",
+      "what": "Test comments leak process jargon that means nothing to a maintainer: '(AC10)' and the test name 'ApprovedDifferences'.",
+      "evidence": "middleware/etag_test.go:630 \"...the wrapper always does (AC10)\"; etag_test.go:437 TestETagApprovedDifferences; etag_test.go:655 \"Only the approved differences may appear\"."
+     },
+     {
+      "severity": "minor",
+      "what": "A Flush on a buffered 200 is silently a no-op (it only records the status). The doc comment warns against streamed responses but does not say that Flush is swallowed.",
+      "evidence": "etag.go:78-88. TestETagApprovedDifferences asserts rec.Flushed == false after the handler calls Flush."
+     }
+    ],
+    "strengths": [
+     "Every spec requirement holds in my probes. GET 200 gets a strong sha256 ETag. A handler-set ETag is kept and still triggers 304. Weak comparison, comma lists, multiple header lines and * all work. POST, other methods and non-200 statuses pass through unchanged, and the handler receives the unwrapped writer for non-GET/HEAD requests.",
+     "Careful writer semantics. 1xx informational responses are forwarded, a non-200 switches to streaming passthrough (Write and Flush forwarded), Hijack writes any buffered 200 before handing over the connection, and Push and Unwrap are provided. ReadFrom is deliberately not implemented, so io.Copy goes through the buffer (verified).",
+     "The 304 response drops Content-Type, Content-Length, Content-Encoding and Last-Modified and keeps Cache-Control, Vary, Expires and Set-Cookie. If-None-Match is copied before the inner handlers run, so NoCache cannot hide it.",
+     "Works with Compress in both orders. With ETag outside, the tag covers the gzip bytes and differs from the identity tag (I checked both orders, and 304 works in each). The doc comment explains the recommended order.",
+     "The test suite is very thorough: table-driven If-None-Match cases, wire-level differential tests over real connections, seeded property tests, and panic, concurrency, trailer and Compress interaction.",
+     "The README row and link are added in alphabetical order and column-aligned. Build, test and vet pass, and gofmt is clean."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 1078,
+     "test_cases": 28
+    },
+    "summary": "Build G meets the spec. The go build, go test, go vet and gofmt -l checks pass. My throwaway probes covered ServeContent, Range, Compress in both orders, weak tags, lists, *, garbage members and Flush on POST, and every result was correct. The main behavioural limitation is minor: a HEAD with no body (for example from ServeContent) gets no ETag and cannot return 304. The rest is quality: the trailer handling is heavier than the task needs, the 900-line test file is far larger than chi's usual tests and much bigger than the code, and test comments leak process jargon ('AC10', 'approved differences'). A maintainer would probably merge it after trimming the tests and comments."
+   },
+   {
+    "overall": 8,
+    "scores": {
+     "correctness": 8,
+     "robustness": 8,
+     "code_quality": 8,
+     "tests": 8,
+     "docs": 8,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "A HEAD handler that writes no body and sets no Content-Length gets the SHA-256-of-empty ETag. That tag differs from what GET returns for the same resource, so If-None-Match with the GET tag on HEAD gets 200 instead of 304. The declaresUnwrittenBody guard only covers the case where Content-Length is set.",
+      "evidence": "Throwaway probe test: a handler that only sets Content-Type, called with HEAD, gave code=200 etag=\"e3b0c44298fc1c149afbf4c8996fb924\" body=\"\". The guard is in middleware/etag.go, in declaresUnwrittenBody (it requires length != \"\")."
+     },
+     {
+      "severity": "minor",
+      "what": "http.ServeContent behind ETag on HEAD gets no ETag and never 304s, while GET gets a computed ETag. ServeContent sets Content-Length and writes nothing on HEAD, so GET and HEAD validators are inconsistent. This is conservative, not wrong.",
+      "evidence": "Probe: 'servecontent HEAD' gave code=200 etag=\"\", and 'servecontent HEAD INM' with the GET tag gave code=200. The GET with the same tag gave 304."
+     },
+     {
+      "severity": "minor",
+      "what": "The wrapper always advertises http.Hijacker, http.Pusher and http.Flusher, even when the underlying writer does not support them. It returns errors or no-ops at runtime, so type assertions on the writer stop being a reliable capability check. The wrapper has no io.ReaderFrom, which is harmless because the body is buffered anyway.",
+      "evidence": "middleware/etag.go: Hijack and Push are unconditional methods on etagResponseWriter. Probe printed 'ReaderFrom implemented: false'. io.Copy still works through Write."
+     },
+     {
+      "severity": "minor",
+      "what": "The test file is heavy for the feature: 484 non-blank lines, against 194 for the implementation. It includes raw-TCP hijack exchange tests with log capture, which add maintenance cost beyond chi's usual middleware test style.",
+      "evidence": "middleware/etag_test.go, etagRawExchange and the two TestETagHijack* tests."
+     }
+    ],
+    "strengths": [
+     "Spec requirements all verified. GET/HEAD 200 responses get a strong body-derived ETag ('\"<32 hex>\"'), a handler-set ETag is kept and used for matching, POST/PUT and the other methods pass through with the unwrapped writer, and non-200 responses are committed straight away and pass through unchanged.",
+     "If-None-Match matching follows RFC 9110. It uses weak comparison, handles comma-separated lists (respecting quotes) and multiple header lines, and treats '*' as standalone. Malformed members are ignored without blocking a valid member, and etagc characters are validated.",
+     "A 304 response drops Content-Type, Content-Length and Content-Encoding, keeps Cache-Control, Vary and Expires, and sends no body.",
+     "Flush and Hijack switch the writer to streaming and commit the headers already written. 1xx informational responses are forwarded without setting the final status. The writer supports Unwrap, so http.ResponseController works.",
+     "go build, go test ./..., go vet ./... all pass, and gofmt -l prints nothing. The README row and link are in alphabetical order. The doc comment describes the memory cost and how Flush and Hijack behave.",
+     "Thorough table-driven tests for etagMatches, plus real-server tests for HEAD, 1xx and hijack."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 680,
+     "test_cases": 21
+    },
+    "summary": "Build H is a careful, correct ETag middleware that matches the spec. It buffers GET/HEAD 200 responses, adds a truncated SHA-256 strong tag unless the handler set one, and answers RFC 9110 weak and list matches and '*' with a clean 304. Non-200 responses and other methods pass through untouched, and Flush, Hijack and 1xx are handled thoughtfully. Build, test, vet and gofmt are all clean, and the README row is in place. Only minor issues remain. HEAD responses without a body or Content-Length get an empty-body tag that disagrees with GET. ServeContent HEAD responses get no ETag. The wrapper always advertises the optional interfaces. The test file is somewhat oversized. A maintainer would likely merge it with small edits.",
+    "letter": "H"
+   },
+   {
+    "overall": 8,
+    "scores": {
+     "correctness": 8,
+     "robustness": 8,
+     "code_quality": 8,
+     "tests": 9,
+     "docs": 8,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "A HEAD response with no body bytes gets no ETag, and a HEAD whose If-None-Match holds the GET tag gets 200 rather than 304. This covers http.ServeContent and other handlers that skip the body on HEAD. The spec says HEAD responses get a body-derived ETag and a 304 on match. The deviation is deliberate and documented (it avoids sending the empty-body hash), but it means conditional HEADs through ServeContent never return 304.",
+      "evidence": "Throwaway test in middleware/: HEAD to http.ServeContent(\"hello\") printed `SC HEAD 200 etag=\"\" cl=\"5\"`. The same HEAD with If-None-Match set to the GET tag printed `SC HEAD INM 200`. GET returned the hash and a 304 on match. The code is at middleware/etag.go:129 (`r.Method == http.MethodGet || len(body) > 0`)."
+     },
+     {
+      "severity": "minor",
+      "what": "The wrapped writer does not implement io.ReaderFrom, so io.Copy into it uses the generic copy loop. Results are still correct because everything is buffered anyway.",
+      "evidence": "Probe printed `ReaderFrom=false`. io.Copy still produced the correct ETag."
+     },
+     {
+      "severity": "minor",
+      "what": "The wrapper always exposes Flush, Hijack and Push, even when the underlying writer lacks them. Hijack and Push return errors in that case. Flush still drops the ETag even when the underlying writer cannot flush. This matches what other chi wrappers do but is worth noting.",
+      "evidence": "middleware/etag.go:85-113"
+     }
+    ],
+    "strengths": [
+     "go build, go test ./..., and go vet ./... all pass, and gofmt -l prints nothing.",
+     "If-None-Match parsing is thorough and matches RFC 9110: weak comparison, lists spread over several header lines, commas inside quoted tags, *, junk members skipped, and the handler's malformed tags never match. Probes for all of these gave the expected 304 or 200.",
+     "Handler-set ETags (including weak ones) are respected and 304s are computed from them. A 304 keeps headers such as Cache-Control, Vary and Set-Cookie and drops the body headers, the same way ServeContent does.",
+     "Non-200 responses (404, and the 206 from a Range request) pass through without an ETag. POST and other methods get the raw writer with nothing wrapped.",
+     "Flush switches to streaming correctly, and a real server returned chunked \"ab\" with no ETag. After Hijack nothing is written to the connection. 1xx informational responses are forwarded right away, while 101 is treated as final. Unwrap is provided for http.ResponseController.",
+     "The doc comment is clear. It covers the memory cost of buffering, puts ETag before Compress in the chain, and warns against combining it with NoCache.",
+     "README row and link are added in alphabetical order, matching the table's format.",
+     "The 22 tests cover the behavior well, including a table-driven If-None-Match test with 27 cases and a real-server hijack test."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 664,
+     "test_cases": 22
+    },
+    "summary": "Build I is a careful, well-documented ETag middleware. Build, test, vet and gofmt are all clean. The throwaway probes found GET, conditional GET, weak tags, lists, *, garbage members, handler-set ETags, pass-through for non-200 and other methods, Flush, Hijack, Push, io.Copy and ServeContent on GET all correct. The only real gap is a deliberate, documented one: a HEAD whose handler writes no body (including http.ServeContent) gets no ETag and never gets a 304, which falls short of the letter of the spec for HEAD. The wrapper also lacks ReaderFrom, which costs nothing in correctness. The code is somewhat heavier than strictly needed in the list parser but clear and well-commented. The tests are thorough and meaningful. A maintainer would likely merge it with small edits.",
+    "letter": "I"
+   },
+   {
+    "letter": "J",
+    "overall": 7,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 7,
+     "tests": 6,
+     "docs": 8,
+     "product": 6
+    },
+    "defects": [
+     {
+      "severity": "major",
+      "what": "The test file is out of proportion to the change: 1227 lines (1128 non-blank) for a 260-line middleware. It includes meta-tests that parse etag.go's doc comment for keywords and check where the README row sits. It also has a 2000-iteration property test and a combinatorial differential harness that generates about 2,400 subtests. That is a large maintenance burden for chi's lightweight test style, and it makes doc and README wording changes break tests. A reviewer would ask for it to be trimmed.",
+      "evidence": "middleware/etag_test.go:119 TestETagDocComment uses go/parser on etag.go and requires the words \"GET\",\"HEAD\",\"memory\",\"Compress\",\"If-None-Match\"; :862 TestETagReadmeRow reads ../README.md and checks the row comes between CleanPath and GetHead; :885 TestETagPropertyRandomized; :1123 TestETagDifferential builds every op sequence up to length 3 from 9 ops, run for GET/HEAD/POST. `grep -c . middleware/etag_test.go` -> 1128"
+     },
+     {
+      "severity": "minor",
+      "what": "A HEAD response with an empty body gets no ETag, even when the matching GET does. This includes http.ServeContent, which writes no body for HEAD. As a result, HEAD with an If-None-Match taken from the GET response returns 200 instead of 304, and HEAD and GET headers differ. This is documented in the doc comment, but it is inconsistent with RFC 9110's expectation that HEAD headers mirror GET.",
+      "evidence": "Throwaway probe (middleware/zz_probe_test.go) with http.ServeContent behind ETag: GET -> 200 etag=\"6aed04...\" cl=12; HEAD -> 200 etag=\"\" cl=12; HEAD If-None-Match:\"6aed04...\" -> 200 (GET with the same header -> 304)"
+     },
+     {
+      "severity": "minor",
+      "what": "The wrapper re-implements net/http's Content-Length enforcement: it tracks contentLength, written and lengthHeader, and returns ErrContentLength when the handler writes past the declared length. This adds state and branches that most ETag middlewares don't need. It is correct, but harder to read.",
+      "evidence": "middleware/etag.go:43-60 (struct fields), :85-99 (Write length check), :101-109 declaredLength, :172-181 restoreLength"
+     },
+     {
+      "severity": "minor",
+      "what": "The wrapped writer does not implement io.ReaderFrom, so io.Copy falls back to Write. The result is still correct, but there is no fast path in passthrough mode.",
+      "evidence": "Probe: `_, ok := any(&etagResponseWriter{}).(io.ReaderFrom)` -> false; io.Copy body \"copied\" still produced 200 with correct ETag"
+     }
+    ],
+    "strengths": [
+     "Every spec behavior I probed is correct. GET and HEAD get a strong SHA-256 ETag. A matching If-None-Match returns 304 with no body and no Content-Length. Weak comparison works (W/ prefix in either the request or the handler tag). Lists work, malformed members (`garbage`, `\"x\" junk`) are skipped without blocking later matches, and a standalone `*` matches.",
+     "A handler-set ETag is kept and used for matching, including weak tags and non-canonical header keys. POST and non-200 responses (404 with If-None-Match: *, and a 206 range from ServeContent) pass through unchanged.",
+     "Careful writer semantics: 1xx responses are forwarded, the first status wins, and Flush is a no-op while the response is buffered but works in passthrough. Hijack sends the held response and then hands over the connection. Push and Unwrap are supported, so http.NewResponseController works.",
+     "A clear doc comment that warns about buffering and about ordering relative to Compress. The README table row and link are added in alphabetical order.",
+     "go build, go test, go vet all pass; gofmt -l clean; ETag tests run in ~0.3s."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 1390,
+     "test_cases": 47
+    },
+    "summary": "Build J meets the spec, and every edge case I probed was handled correctly (run in /tmp/inspect-chi-etag-J with throwaway tests in middleware/zz_probe_test.go). The tag is a strong SHA-256 of the body. 304 answers follow RFC 9110 weak comparison, handle lists, skip malformed members and accept a standalone `*`. Handler-set tags are respected, and POST and non-200 responses pass through untouched. Flush, Hijack, Push and Unwrap are handled carefully, and the doc comment and README row are good. The main concern is size: the 1227-line test file includes meta-tests on the doc comment and README layout, plus property and differential harnesses, which most chi maintainers would ask to cut. The writer also re-implements Content-Length enforcement, which adds complexity. A smaller behavioral gap: HEAD responses with no body (e.g. from http.ServeContent) get no ETag and never return 304, unlike GET. This is a solid, correct implementation that would need its tests slimmed before merge."
+   }
+  ],
+  "judge": {
+   "ranking": [
+    {
+     "letter": "D",
+     "score": 8.5,
+     "confirmed_defects": [
+      "A HEAD with no body, such as http.ServeContent on HEAD, gets no ETag, so a conditional HEAD returns 200. This is deliberate and documented; my probe got head ETag=\"\".",
+      "The 304 keeps Content-Type (only Content-Length is removed). This is cosmetic.",
+      "Write errors are ignored when the buffer is flushed."
+     ],
+     "refuted_defects": [],
+     "rationale": "Every core probe passed, including the lenient garbage-member parse, a quoted comma, a handler-set weak tag, 404/201/POST passthrough, ServeContent Range, a real server and a 100KB body. It has the smallest, clearest implementation (182 lines) and a proportionate test file (424 lines), and vet, test and gofmt are clean. A maintainer would merge it as is."
+    },
+    {
+     "letter": "B",
+     "score": 8.5,
+     "confirmed_defects": [
+      "A HEAD with no body (ServeContent HEAD) gets no ETag. My probe confirmed it.",
+      "Flusher, Hijacker and Pusher are always exposed, and ReaderFrom is not."
+     ],
+     "refuted_defects": [],
+     "rationale": "All probes passed, including lenient malformed-member skipping, and the 304 strips the body headers. The code is compact (197 lines) and the tests are thorough but proportionate (531 lines). It is clean and very close to D."
+    },
+    {
+     "letter": "I",
+     "score": 8,
+     "confirmed_defects": [
+      "HEAD through ServeContent gets no ETag and never returns 304. My probe confirmed it.",
+      "The optional interfaces are always exposed."
+     ],
+     "refuted_defects": [],
+     "rationale": "All probes passed with lenient parsing. It has an excellent doc comment that covers Compress order, NoCache, Flush and Hijack, and it is compact (213 lines code, 449 tests). It buffers non-200 responses until the handler returns rather than streaming them, but the output is identical."
+    },
+    {
+     "letter": "E",
+     "score": 8,
+     "confirmed_defects": [
+      "A garbage list member before a matching tag gives 200. This is the same as net/http's checkIfNoneMatch, so it is not a spec violation. Probe: 200.",
+      "A HEAD with no body gets no ETag."
+     ],
+     "refuted_defects": [],
+     "rationale": "Functionally correct on all spec points and reasonably sized (208/607 lines). It is slightly stricter on malformed lists than B, D, H and I."
+    },
+    {
+     "letter": "H",
+     "score": 7.5,
+     "confirmed_defects": [
+      "A HEAD handler that writes nothing and sets no Content-Length gets the SHA-256-of-empty tag (\"e3b0c442...\"). That is a wrong validator that disagrees with GET, and it is the only build that does this.",
+      "ServeContent HEAD gets no ETag."
+     ],
+     "refuted_defects": [],
+     "rationale": "It is compact and correct elsewhere, with lenient parsing and a truncated 128-bit tag. It loses a point for the only build-specific behavioral flaw I found: a misleading ETag on bodyless HEAD responses."
+    },
+    {
+     "letter": "F",
+     "score": 7.5,
+     "confirmed_defects": [
+      "A garbage-first member blocks the match (probe: 200), mirroring net/http.",
+      "A HEAD with no body gets no ETag.",
+      "The Hijack replay bookkeeping and an 801-line test file are heavier than the task needs."
+     ],
+     "refuted_defects": [],
+     "rationale": "All spec probes passed, but it carries more machinery than needed and is stricter on list parsing."
+    },
+    {
+     "letter": "G",
+     "score": 7.5,
+     "confirmed_defects": [
+      "Test comments and names leak process jargon (\"AC10\", TestETagApprovedDifferences).",
+      "Garbage-first member blocks the match (probe: 200).",
+      "Trailer machinery and an 856-line test file are disproportionate."
+     ],
+     "refuted_defects": [],
+     "rationale": "It is functionally correct and robust, but a maintainer would ask for the tests to be trimmed and the jargon cleaned up."
+    },
+    {
+     "letter": "A",
+     "score": 7.5,
+     "confirmed_defects": [
+      "TestETagApprovedDifferencesInEveryCallOrder is a jargon test name, and the 1026-line test file is far heavier than sibling tests.",
+      "Garbage-first member blocks the match (probe: 200).",
+      "A HEAD with no body gets no ETag."
+     ],
+     "refuted_defects": [],
+     "rationale": "Correct on every spec probe, but the 255-line implementation and 1026-line test file are oversized for chi."
+    },
+    {
+     "letter": "C",
+     "score": 7,
+     "confirmed_defects": [
+      "\"Approved:\" process comment in the tests; 303-line code and 1079-line test file.",
+      "A HEAD with no body gets no ETag.",
+      "The optional interfaces are always advertised."
+     ],
+     "refuted_defects": [],
+     "rationale": "It passed every probe, but it is the heaviest implementation, with header snapshots, trailers and property/differential harnesses. That is a maintenance burden with no user benefit."
+    },
+    {
+     "letter": "J",
+     "score": 6.5,
+     "confirmed_defects": [
+      "Major (a quality problem, not a behavioral one): TestETagDocComment parses etag.go with go/parser and requires keywords in the doc comment, and TestETagReadmeRow checks where the row sits in README.md. Doc and README edits would break tests. The differential harness produces about 2,500 subtests in a 1128-line test file. Confirmed by reading etag_test.go:119 and :862 and counting the PASS lines.",
+      "It re-implements Content-Length enforcement, which adds complexity.",
+      "The 304 keeps Content-Type, and a HEAD with no body gets no ETag."
+     ],
+     "refuted_defects": [],
+     "rationale": "The behavior is correct on all probes. The test suite contains meta-tests on docs and README layout, which a maintainer would reject, so it needs substantial trimming before merge."
+    }
+   ],
+   "verdict": "All ten builds pass go test, go vet and gofmt. They also behave almost the same on a shared probe suite: strong tags, weak/list/* matching, handler-set tags, POST/404/201 passthrough, ServeContent GET and Range, and real-server 304s. All share the deliberate gap that a bodyless HEAD (for example ServeContent) gets no ETag. H alone emits a wrong empty-body tag on HEAD. A, E, F and G stop at the first malformed If-None-Match member, which mirrors net/http. The ranking therefore comes down to proportion and maintainability. D, B and I are compact, clear and merge-ready. A, C, G and J add heavy machinery and oversized tests, and G, A and C also leak process jargon. J's meta-tests that parse the doc comment and the README layout are the one confirmed major issue."
+  },
+  "judges": [
+   {
+    "ranking": [
+     {
+      "letter": "D",
+      "score": 8.5,
+      "confirmed_defects": [
+       "A HEAD with no body, such as http.ServeContent on HEAD, gets no ETag, so a conditional HEAD returns 200. This is deliberate and documented; my probe got head ETag=\"\".",
+       "The 304 keeps Content-Type (only Content-Length is removed). This is cosmetic.",
+       "Write errors are ignored when the buffer is flushed."
+      ],
+      "refuted_defects": [],
+      "rationale": "Every core probe passed, including the lenient garbage-member parse, a quoted comma, a handler-set weak tag, 404/201/POST passthrough, ServeContent Range, a real server and a 100KB body. It has the smallest, clearest implementation (182 lines) and a proportionate test file (424 lines), and vet, test and gofmt are clean. A maintainer would merge it as is."
+     },
+     {
+      "letter": "B",
+      "score": 8.5,
+      "confirmed_defects": [
+       "A HEAD with no body (ServeContent HEAD) gets no ETag. My probe confirmed it.",
+       "Flusher, Hijacker and Pusher are always exposed, and ReaderFrom is not."
+      ],
+      "refuted_defects": [],
+      "rationale": "All probes passed, including lenient malformed-member skipping, and the 304 strips the body headers. The code is compact (197 lines) and the tests are thorough but proportionate (531 lines). It is clean and very close to D."
+     },
+     {
+      "letter": "I",
+      "score": 8,
+      "confirmed_defects": [
+       "HEAD through ServeContent gets no ETag and never returns 304. My probe confirmed it.",
+       "The optional interfaces are always exposed."
+      ],
+      "refuted_defects": [],
+      "rationale": "All probes passed with lenient parsing. It has an excellent doc comment that covers Compress order, NoCache, Flush and Hijack, and it is compact (213 lines code, 449 tests). It buffers non-200 responses until the handler returns rather than streaming them, but the output is identical."
+     },
+     {
+      "letter": "E",
+      "score": 8,
+      "confirmed_defects": [
+       "A garbage list member before a matching tag gives 200. This is the same as net/http's checkIfNoneMatch, so it is not a spec violation. Probe: 200.",
+       "A HEAD with no body gets no ETag."
+      ],
+      "refuted_defects": [],
+      "rationale": "Functionally correct on all spec points and reasonably sized (208/607 lines). It is slightly stricter on malformed lists than B, D, H and I."
+     },
+     {
+      "letter": "H",
+      "score": 7.5,
+      "confirmed_defects": [
+       "A HEAD handler that writes nothing and sets no Content-Length gets the SHA-256-of-empty tag (\"e3b0c442...\"). That is a wrong validator that disagrees with GET, and it is the only build that does this.",
+       "ServeContent HEAD gets no ETag."
+      ],
+      "refuted_defects": [],
+      "rationale": "It is compact and correct elsewhere, with lenient parsing and a truncated 128-bit tag. It loses a point for the only build-specific behavioral flaw I found: a misleading ETag on bodyless HEAD responses."
+     },
+     {
+      "letter": "F",
+      "score": 7.5,
+      "confirmed_defects": [
+       "A garbage-first member blocks the match (probe: 200), mirroring net/http.",
+       "A HEAD with no body gets no ETag.",
+       "The Hijack replay bookkeeping and an 801-line test file are heavier than the task needs."
+      ],
+      "refuted_defects": [],
+      "rationale": "All spec probes passed, but it carries more machinery than needed and is stricter on list parsing."
+     },
+     {
+      "letter": "G",
+      "score": 7.5,
+      "confirmed_defects": [
+       "Test comments and names leak process jargon (\"AC10\", TestETagApprovedDifferences).",
+       "Garbage-first member blocks the match (probe: 200).",
+       "Trailer machinery and an 856-line test file are disproportionate."
+      ],
+      "refuted_defects": [],
+      "rationale": "It is functionally correct and robust, but a maintainer would ask for the tests to be trimmed and the jargon cleaned up."
+     },
+     {
+      "letter": "A",
+      "score": 7.5,
+      "confirmed_defects": [
+       "TestETagApprovedDifferencesInEveryCallOrder is a jargon test name, and the 1026-line test file is far heavier than sibling tests.",
+       "Garbage-first member blocks the match (probe: 200).",
+       "A HEAD with no body gets no ETag."
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct on every spec probe, but the 255-line implementation and 1026-line test file are oversized for chi."
+     },
+     {
+      "letter": "C",
+      "score": 7,
+      "confirmed_defects": [
+       "\"Approved:\" process comment in the tests; 303-line code and 1079-line test file.",
+       "A HEAD with no body gets no ETag.",
+       "The optional interfaces are always advertised."
+      ],
+      "refuted_defects": [],
+      "rationale": "It passed every probe, but it is the heaviest implementation, with header snapshots, trailers and property/differential harnesses. That is a maintenance burden with no user benefit."
+     },
+     {
+      "letter": "J",
+      "score": 6.5,
+      "confirmed_defects": [
+       "Major (a quality problem, not a behavioral one): TestETagDocComment parses etag.go with go/parser and requires keywords in the doc comment, and TestETagReadmeRow checks where the row sits in README.md. Doc and README edits would break tests. The differential harness produces about 2,500 subtests in a 1128-line test file. Confirmed by reading etag_test.go:119 and :862 and counting the PASS lines.",
+       "It re-implements Content-Length enforcement, which adds complexity.",
+       "The 304 keeps Content-Type, and a HEAD with no body gets no ETag."
+      ],
+      "refuted_defects": [],
+      "rationale": "The behavior is correct on all probes. The test suite contains meta-tests on docs and README layout, which a maintainer would reject, so it needs substantial trimming before merge."
+     }
+    ],
+    "verdict": "All ten builds pass go test, go vet and gofmt. They also behave almost the same on a shared probe suite: strong tags, weak/list/* matching, handler-set tags, POST/404/201 passthrough, ServeContent GET and Range, and real-server 304s. All share the deliberate gap that a bodyless HEAD (for example ServeContent) gets no ETag. H alone emits a wrong empty-body tag on HEAD. A, E, F and G stop at the first malformed If-None-Match member, which mirrors net/http. The ranking therefore comes down to proportion and maintainability. D, B and I are compact, clear and merge-ready. A, C, G and J add heavy machinery and oversized tests, and G, A and C also leak process jargon. J's meta-tests that parse the doc comment and the README layout are the one confirmed major issue."
+   },
+   {
+    "ranking": [
+     {
+      "letter": "D",
+      "score": 8.5,
+      "confirmed_defects": [
+       "HEAD with no body (http.ServeContent) gets no ETag and never returns 304 (probe: schead=200 etag=\"\")",
+       "Not caught by its inspector: a 304 keeps Content-Type. Only Content-Length is deleted (etag.go:124). net/http's ServeContent strips Content-Type on a 304 and RFC 9110 discourages sending it, so this is minor"
+      ],
+      "refuted_defects": [],
+      "rationale": "Smallest implementation (182 lines) and a focused 424-line test file. Its tolerant parser matches a valid tag after a garbage member. All spec probes pass, and vet, gofmt, tests and -race are clean. The only slip is the extra Content-Type header on a 304.",
+      "score_note": ""
+     },
+     {
+      "letter": "B",
+      "score": 8.5,
+      "confirmed_defects": [
+       "HEAD through ServeContent gets no ETag (probe confirmed)",
+       "Flusher, Hijacker and Pusher are advertised whether or not the underlying writer has them; there is no ReaderFrom"
+      ],
+      "refuted_defects": [],
+      "rationale": "Its parser is tolerant: garbage first still gives 304. A 304 strips Content-Type and Content-Length, the body is suppressed on HEAD, and Flush switches to streaming. The tests are meaningful and of reasonable size. Very close to D.",
+      "score_note": ""
+     },
+     {
+      "letter": "I",
+      "score": 8.5,
+      "confirmed_defects": [
+       "HEAD with no body gets no ETag (probe confirmed)",
+       "No ReaderFrom; the optional interfaces are always exposed"
+      ],
+      "refuted_defects": [],
+      "rationale": "Clean and well documented. The parser is tolerant, a 304 strips headers correctly, Flush switches to streaming, and the 449-line test file is focused. It is essentially tied with B and D.",
+      "score_note": ""
+     },
+     {
+      "letter": "E",
+      "score": 8,
+      "confirmed_defects": [
+       "A garbage member before a matching tag gives 200 (probe garbfirst=200)",
+       "HEAD with no body gets no ETag"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct and of moderate size, with sound streaming and Hijack handling and good tests. Its parser stops at the first malformed member, which is slightly stricter than the tolerant builds but matches net/http.",
+      "score_note": ""
+     },
+     {
+      "letter": "H",
+      "score": 8,
+      "confirmed_defects": [
+       "An empty HEAD with no Content-Length gets the empty-body hash tag (probe emptyhead etag=e3b0...), which differs from GET",
+       "ServeContent HEAD gets no ETag"
+      ],
+      "refuted_defects": [],
+      "rationale": "Compact and correct. Its tolerant parser checks etagc characters, and it uses a truncated 128-bit SHA-256 tag. The empty-HEAD tag mismatch is a small behavioural wart that the other builds avoid.",
+      "score_note": ""
+     },
+     {
+      "letter": "G",
+      "score": 7.5,
+      "confirmed_defects": [
+       "Garbage-first If-None-Match gives 200",
+       "Test file leaks process jargon: TestETagApprovedDifferences and AC10",
+       "Flush on a buffered 200 is silently a no-op",
+       "Trailer machinery and an 856-line test file are heavy"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct and robust in every probe, but heavier than needed, and the tests contain workflow artifacts a maintainer would ask to remove.",
+      "score_note": ""
+     },
+     {
+      "letter": "A",
+      "score": 7.5,
+      "confirmed_defects": [
+       "Garbage-first If-None-Match gives 200",
+       "HEAD with no body gets no ETag",
+       "Test file of 1026 lines and 255 source lines, with idiosyncratic test names, out of scale for chi"
+      ],
+      "refuted_defects": [],
+      "rationale": "Functionally correct, but the size and the test naming would need trimming before merge.",
+      "score_note": ""
+     },
+     {
+      "letter": "F",
+      "score": 7.5,
+      "confirmed_defects": [
+       "Garbage-first If-None-Match gives 200",
+       "HEAD with no body gets no ETag",
+       "The Hijack replay bookkeeping and the 852-line test file are heavy"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct. A 304 clears headers the way ServeContent does, including Last-Modified. The complexity goes beyond the spec. (The first copy of F was incomplete because of a concurrent copy glitch; a fresh copy built and tested clean.)",
+      "score_note": ""
+     },
+     {
+      "letter": "C",
+      "score": 7,
+      "confirmed_defects": [
+       "The optional interfaces are always advertised and Flush is a no-op on a buffered 200",
+       "At 303 source lines with a 1079-line test file, it is the heaviest implementation",
+       "HEAD with no body gets no ETag"
+      ],
+      "refuted_defects": [],
+      "rationale": "Behaviour is fully correct, including the tolerant parser, but the machinery and test volume are well beyond chi's norms.",
+      "score_note": ""
+     },
+     {
+      "letter": "J",
+      "score": 6.5,
+      "confirmed_defects": [
+       "Major, confirmed: the 1128-line test file includes TestETagDocComment, which parses etag.go with go/parser and checks for keywords, and TestETagReadmeRow, which checks where the README row sits, plus property and differential harnesses. Doc and README wording changes would break the tests",
+       "A 304 keeps Content-Type; only Content-Length is deleted (etag.go:173), and its inspector missed this",
+       "Re-implements Content-Length enforcement, adding complexity",
+       "HEAD with no body gets no ETag"
+      ],
+      "refuted_defects": [],
+      "rationale": "Every behaviour probe is correct and the parser is tolerant, but the brittle meta-tests and the oversized suite would block a clean merge.",
+      "score_note": ""
+     }
+    ],
+    "verdict": "All ten builds pass build, vet, gofmt, the tests and -race, and they behave the same on the core spec: a strong SHA-256 ETag on GET/HEAD 200, 304 for weak, list and * matches, handler-set tags respected, and POST and non-200 responses passed through. Nearly all of them share the same deliberate gap: a HEAD with no body, as from ServeContent, gets no ETag. The builds differ mainly in proportion and polish. D, B and I are compact, with tolerant If-None-Match parsing and focused tests. A, C, F, G and J carry much heavier wrappers and test suites. J's tests that parse the doc comment and check the README row are the one confirmed major issue. Smaller differentiators are whether a garbage member blocks a later match (A, E, F, G), whether Content-Type stays on a 304 (D, J), and H's empty-body tag on HEAD."
+   }
+  ]
+ },
+ {
+  "id": "rac-shadow-hide",
+  "reports": [
+   {
+    "overall": 5,
+    "scores": {
+     "correctness": 6,
+     "robustness": 6,
+     "code_quality": 8,
+     "tests": 8,
+     "docs": 7,
+     "product": 4
+    },
+    "defects": [
+     {
+      "severity": "blocker",
+      "what": "The diff deletes the repo's custom ESLint rule files bin/imports.js, bin/pure-render.js and bin/useLayoutEffectRule.js. These files are tracked in the base repo and eslint.config.mjs loads them through eslint-plugin-rulesdir, so `yarn eslint` crashes on every file and the spec's lint requirement fails.",
+      "evidence": "After `git apply D.diff`, `git status` shows ` D bin/imports.js`, ` D bin/pure-render.js` and ` D bin/useLayoutEffectRule.js`. Then `yarn eslint packages/@react-aria/overlays/src/ariaHideOutside.ts` prints `Error: ENOENT: no such file or directory, scandir './bin'` at eslint-plugin-rulesdir/index.js:34. After `git checkout bin`, lint on the touched files exits 0."
+     },
+     {
+      "severity": "blocker",
+      "what": "Content inside a target gets hidden when another target sits in a shadow root nested inside that first target. getTargetShadowRoots collects the inner shadow root, and walk(shadowRoot) hides the second target's siblings even though they are descendants of a visible target.",
+      "evidence": "Throwaway test packages/@react-aria/overlays/test/zzProbe.test.js. Target A is a light-DOM div. A shadow host inside A has a shadow root containing `<span id=sib>` and target `<button id=B>`. Calling ariaHideOutside([A, B]) leaves `#sib` with aria-hidden=\"true\": the assertion at line 27 `expect(sr.querySelector('#sib')).not.toHaveAttribute('aria-hidden')` fails. The cause is ariaHideOutside.ts getTargetShadowRoots plus `for (let shadowRoot of shadowRoots) walk(shadowRoot)`, which never checks whether the shadow root's host is inside a visible node."
+     },
+     {
+      "severity": "major",
+      "what": "With slotted light-DOM content as the target, the shadow root that renders it through a <slot> is never walked. Shadow-tree siblings of the slot, such as a header inside the web component, stay exposed to screen readers even though they enclose the target in the flat tree.",
+      "evidence": "Probe test 'slotted light content as target': the host's shadow root holds `<header id=hdr>` and `<slot>`, and the target is a light child of the host. After ariaHideOutside([t]), `expect(sr.querySelector('#hdr')).toHaveAttribute('aria-hidden','true')` fails at line 38. getTargetShadowRoots only follows target.getRootNode(), which is the document here."
+     },
+     {
+      "severity": "minor",
+      "what": "The yarn.lock and package.json dependency on @react-stately/flags is correct. However, the changeset also includes unrelated tooling deletions, which a maintainer would reject on sight.",
+      "evidence": "`grep '^diff --git' D.diff` lists bin/*.js deletions next to the overlays changes."
+     }
+    ],
+    "strengths": [
+     "Small, focused core change: one helper collects the shadow roots on the path from each target up to the root, then walk() and the MutationObserver are reused for each root. The nested observerStack resume path works because `observe` now covers all roots.",
+     "Shadow roots whose host is outside the `root` option are deliberately excluded, and a test covers this.",
+     "Behaviour with the flag off is unchanged, since shadowRoots is [] when shadowDOM() is false, and a test covers this.",
+     "Thorough tests that follow the existing style: nested roots three levels deep, content added later in target and enclosing roots, live announcers and top-layer elements, targets spread across sibling shadow roots and the light DOM, restore and stop observing, nested calls reverted in order and out of order.",
+     "All 193 overlays tests pass, `yarn check-types` passes, and lint is clean on the touched files once bin/ is restored.",
+     "The JSDoc on ariaHideOutside is updated, and the comment on the helper is clear."
+    ],
+    "stats": {
+     "files": 7,
+     "source_lines": 335,
+     "test_cases": 10
+    },
+    "summary": "The core approach is small and idiomatic. It walks and observes each shadow root between a target and the root, and most of the spec works in jest probes: siblings at every nesting level, the hosts on the path, content and new shadow roots added later, live announcers and top-layer elements, targets in sibling shadow roots, revert, and flag-off behaviour. Overlays tests (193) and the type check pass.\n\nTwo problems block merging. First, the diff deletes the repo's custom ESLint rules (bin/imports.js, pure-render.js, useLayoutEffectRule.js), so `yarn eslint` crashes with ENOENT on './bin'. Second, when a target sits in a shadow root nested inside another target, content inside the outer target gets aria-hidden, which my probe reproduces.\n\nAlso, a shadow root that renders a slotted light-DOM target is never walked, so the web component's own shadow content stays exposed. The tests are good and follow the repo's style. The extra deletions alone would stop a maintainer from merging this as is.",
+    "letter": "A"
+   },
+   {
+    "letter": "B",
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 8,
+     "tests": 9,
+     "docs": 7,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "Closed shadow roots are silently skipped. `walk` only reaches `node.shadowRoot`, so siblings of a target inside a closed root are never hidden, and the host is not hidden either. This is largely inherent to the platform, but it is neither documented nor covered by a test.",
+      "evidence": "Throwaway test: host.attachShadow({mode:'closed'}) with a target and a sibling span, then ariaHideOutside([target]) logged 'closed sib hidden: null host hidden: null' (ariaHideOutside.ts:112-113 relies on node.shadowRoot)"
+     },
+     {
+      "severity": "minor",
+      "what": "`flatContains` duplicates most of `nodeContains` from @react-aria/utils (shadowdom/DOMFunctions.ts) and only adds the assignedSlot step. It is a local helper instead of a fix in the shared utility, and `shadowDOM()` is called again for every node and target inside the TreeWalker filter's hot loop.",
+      "evidence": "packages/@react-aria/overlays/src/ariaHideOutside.ts:35-47 and 111-113"
+     },
+     {
+      "severity": "minor",
+      "what": "On resume after a nested call is restored, `observe()` walks the shadow roots again to catch elements added while paused, but it does not do the same for the light-DOM root. Resume behaviour now differs between shadow and light DOM.",
+      "evidence": "ariaHideOutside.ts:231-239"
+     },
+     {
+      "severity": "minor",
+      "what": "The new shadow DOM describe block works around observers that earlier tests leave connected: it mounts its fixtures on document.documentElement and passes them as the root. The leaked-observer state is papered over rather than fixed, and the tests never use the default document.body root that `useModalOverlay` and `usePopover` actually pass.",
+      "evidence": "packages/@react-aria/overlays/test/ariaHideOutside.test.js:541-557 (comment explains the workaround)"
+     }
+    ],
+    "strengths": [
+     "Small, targeted change. The shadow-root walking is gated behind shadowDOM(), so behaviour with the flag off is unchanged, and an explicit test checks this.",
+     "Covers each spec point: siblings are hidden at every enclosing shadow level while hosts stay visible, slotted targets keep their slot visible, targets can sit in different shadow roots, and later additions to the observed shadow roots are hidden while live announcers and top-layer elements stay visible.",
+     "Restore works fully. A single observer.disconnect() stops observing every shadow root, and the ref-counted unhide restores all attributes. My throwaway snapshot test compared every element before the call and after undo, including during nested and out-of-order calls, and they matched.",
+     "The test suite is thorough: 21 new cases, including nested dialogs, out-of-order restore, keepVisible, and a seeded fast-check property test over random shadow trees with 1000 runs.",
+     "All 203 tests in the overlays package pass, eslint is clean, check-types (tsgo) passes, lint-packages passes, and the package.json dependency and yarn.lock entry were added correctly.",
+     "The JSDoc was updated to describe the shadow DOM behaviour and to fix the stale @param for options."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 485,
+     "test_cases": 21
+    },
+    "summary": "I rebuilt the full tree in /tmp/inspect-rac-shadow-hide-B by copying rac-base and applying B.diff with bin/ excluded. `yarn jest packages/@react-aria/overlays` passes 203 of 203 tests. eslint on the touched files and `yarn check-types` both exit 0. I also wrote 10 throwaway probe tests and all of them passed. They covered: targets in two separate shadow roots (input plus popover), with siblings hidden and later additions hidden; a slotted light-DOM target; a target nested in a shadow root inside another target, where nothing inside it is hidden; a new shadow host added to an enclosing root after the call, which is hidden; live-announcer and top-layer elements added at shadow depth, which stay visible; nested and out-of-order calls, with a full before/after snapshot restored exactly; inert mode; and undo stopping observation. The implementation is compact. It adds a slot-aware `flatContains`, walks the shadow root of any host that contains a target, records those roots, and observes them on the same MutationObserver. Everything is gated by `shadowDOM()`. The defects are all minor: closed shadow roots are silently ignored, `flatContains` partly duplicates the shared `nodeContains` helper, re-walking on resume happens for shadow roots but not for the light DOM, and the tests use a fixture-root workaround for observers leaked by earlier tests. A maintainer would likely merge this with small edits."
+   },
+   {
+    "overall": 7,
+    "scores": {
+     "correctness": 8,
+     "robustness": 7,
+     "code_quality": 7,
+     "tests": 8,
+     "docs": 6,
+     "product": 6
+    },
+    "defects": [
+     {
+      "severity": "major",
+      "what": "The diff deletes the repo's three custom ESLint rule files (bin/imports.js, bin/pure-render.js, bin/useLayoutEffectRule.js), none of which relate to the task. Applied as given, `yarn eslint` crashes, so the spec's 'lint must pass' requirement fails until those files are restored. This looks like a packaging accident, but it is part of the change as submitted.",
+      "evidence": "grep '^diff --git' A.diff lists 'deleted file' for bin/imports.js, bin/pure-render.js and bin/useLayoutEffectRule.js. After `git apply`, running `yarn eslint packages/@react-aria/overlays/src/ariaHideOutside.ts` prints 'Error: ENOENT: no such file or directory, scandir './bin'' from eslint-plugin-rulesdir/index.js:34. After `git checkout bin`, lint passes with 0 errors."
+     },
+     {
+      "severity": "minor",
+      "what": "An existing live announcer inside a shadow root that holds no target gets hidden. The initial querySelectorAll for '[data-live-announcer]' only searches the light root and the shadow roots on a target's path, so the host of such a root receives aria-hidden. In the light DOM, ancestors of an announcer stay visible.",
+      "evidence": "Throwaway test zzProbe.test.js, 'live announcer inside unrelated shadow root (existing)': host(document.body, '<div data-live-announcer=\"true\">...') plus a target in a second shadow root, then ariaHideOutside([target]). The test fails: la.closest('[aria-hidden=true]') is the host, not null."
+     },
+     {
+      "severity": "minor",
+      "what": "The containment check in acceptNode runs nodeContains, which is already shadow-aware, and then a second walk up the tree (flatTreeContains) for every node and every visible node. The two helpers overlap in what they do, which makes the cost O(nodes x targets x depth) with redundant work. The slot handling could have been a single helper.",
+      "evidence": "packages/@react-aria/overlays/src/ariaHideOutside.ts:121, `if (nodeContains(node, target) || (shadowDOM() && flatTreeContains(node, target)))`. flatTreeContains is defined at lines 33-47."
+     },
+     {
+      "severity": "minor",
+      "what": "The public JSDoc for ariaHideOutside was not updated to mention shadow DOM behaviour when the flag is on. The new behaviour is documented only in inline comments.",
+      "evidence": "ariaHideOutside.ts, lines ~49-56 of the doc comment, are unchanged by the diff."
+     }
+    ],
+    "strengths": [
+     "Small, targeted change. It reuses the existing walk and acceptNode logic, recursing into shadow roots on a target's path, and the MutationObserver now observes those roots too, re-observing when new roots are found.",
+     "Handles closed shadow roots by mapping each host to its root through target.getRootNode(). Slotted light-DOM targets work through a flat-tree contains check that follows assignedSlot.",
+     "The observer stack's observe() was updated to re-observe shadow roots, so nested calls restore observation correctly. This is verified both by a builder test and by a probe.",
+     "All behaviour is gated on shadowDOM(), and the existing light-DOM tests still pass unchanged.",
+     "The 15 new tests sit next to the existing ariaHideOutside tests. They cover nested roots, multiple roots, slots, closed roots, mutations, live announcers and top-layer elements, ref counting, and revert.",
+     "The @react-stately/flags dependency was added to package.json and yarn.lock at the correct version. With bin/ restored, `yarn jest packages/@react-aria/overlays` passes (197/197), check-types exits 0 and eslint reports 0 errors.",
+     "In my throwaway tests, 11 of 12 edge cases passed: a target nested in a shadow root inside another target, hosts added later, named slots, inert mode, a custom root inside a shadow root, three separate roots, and nested-call re-observation."
+    ],
+    "stats": {
+     "files": 4,
+     "source_lines": 440,
+     "test_cases": 15
+    },
+    "summary": "Build C extends ariaHideOutside so that, when the shadow DOM flag is on, it walks and observes the shadow roots enclosing each target, including closed roots and slotted content. The implementation is compact and the tests are thorough. The functional behaviour meets the spec: the overlays suite passes 197/197, check-types passes, and 11 of 12 throwaway edge-case probes passed. The one failing probe was an existing live announcer inside a shadow root that holds no target, which gets hidden. The main problem is that the diff also deletes the repo's bin/ ESLint rule files. As applied, `yarn eslint` crashes with ENOENT on ./bin; after restoring those files, lint is clean. Other gaps are small: the containment check repeats work already done by nodeContains, and the public JSDoc doesn't mention shadow DOM. Probe tests are at /tmp/inspect-rac-shadow-hide-C/packages/@react-aria/overlays/test/zzProbe.test.js.",
+    "letter": "C"
+   },
+   {
+    "overall": 5.5,
+    "scores": {
+     "correctness": 5,
+     "robustness": 6,
+     "code_quality": 8,
+     "tests": 7,
+     "docs": 6,
+     "product": 5
+    },
+    "defects": [
+     {
+      "severity": "blocker",
+      "what": "Content inside a target is hidden when another target is nested in that target's shadow root. getShadowRoots adds the outer target's own shadow root, and walk() on it hides every sibling of the inner target, even though the whole shadow root is inside a target that must stay visible.",
+      "evidence": "Throwaway jest test: outer=div in body with shadow '<span id=a>A content</span><div id=b>B</div>'; ariaHideOutside([outer, b]) -> printed 'nested: a= true other= true outer= null'; expect(a aria-hidden).toBeNull() failed with Received \"true\". Cause: src/ariaHideOutside.ts getShadowRoots (lines ~35-45) only stops at `root` and never checks whether a shadow root's host is (inside) a target."
+     },
+     {
+      "severity": "major",
+      "what": "Applying the diff deletes bin/imports.js, bin/pure-render.js and bin/useLayoutEffectRule.js, the custom ESLint rules that eslint.config.mjs loads through rulesdir. After the diff, `yarn eslint` crashes.",
+      "evidence": "After `git apply C.diff`, `yarn eslint packages/@react-aria/overlays/src/ariaHideOutside.ts` printed 'Oops! Something went wrong! ... Error: ENOENT: no such file or directory, scandir './bin'' from eslint-plugin-rulesdir. After `git checkout bin`, lint passes with 0 errors."
+     },
+     {
+      "severity": "major",
+      "what": "Light-DOM content slotted into a dialog that lives in a shadow root gets aria-hidden. The light-DOM walk sees the slotted child as outside the target (nodeContains does not follow assignedSlot from the light side), so content that renders inside the dialog is hidden from screen readers.",
+      "evidence": "Throwaway test: host with light child <span>slotted</span>, shadow '<div role=dialog><slot></slot></div><p>sib</p>'; ariaHideOutside([dialog]) printed 'slotted: slotted= true p= true'."
+     },
+     {
+      "severity": "minor",
+      "what": "When the target is light-DOM content slotted into a host, the host's own shadow content beside the slot (shadow siblings of the slot) stays visible, because only shadow roots that enclose a target are walked.",
+      "evidence": "Throwaway test: host light children [button target, span sib], shadow '<p>shadow chrome</p><slot></slot>'; printed 'slotted target: sib= true p= null'."
+     },
+     {
+      "severity": "minor",
+      "what": "Shadow roots attached later to an existing element, or nested shadow roots created inside a target's enclosing root after the call, are not observed. Only the shadow roots computed at call time are observed. Newly added hosts are hidden as a whole, which covers the common case.",
+      "evidence": "src/ariaHideOutside.ts `observe` only iterates the `shadowRoots` array computed once before walk()."
+     }
+    ],
+    "strengths": [
+     "Small, focused change: a getShadowRoots helper, walk() accepts a ShadowRoot, and each relevant shadow root is observed. Observing is folded into the existing observerStack observe/disconnect flow, so nested calls resume observing shadow roots correctly.",
+     "Gated behind shadowDOM(), so behavior with the flag off is unchanged; there is a test for the flag-off path, ordered before enableShadowDOM().",
+     "Correctly respects the `root` option and does not walk shadow roots enclosing root.",
+     "Good test coverage: several shadow levels, targets in different roots, added content, live announcer and top-layer elements, cleanup stopping observation, nested calls, and attributes the page set beforehand. My extra probes for three-level nesting, later-added content at each level, revert, and different roots all passed.",
+     "Adds the @react-stately/flags dependency to package.json and yarn.lock correctly; jest (195 tests) and check-types pass."
+    ],
+    "stats": {
+     "files": 4,
+     "source_lines": 283,
+     "test_cases": 13
+    },
+    "summary": "Build D makes ariaHideOutside work with shadow DOM in a clean, minimal way. It collects the shadow roots that enclose each target, up to root, then walks and observes each one, all behind the shadowDOM() flag. The overlays suite passes (195 tests), and so do check-types and lint once bin/ is restored. My probes confirmed that multi-level nesting, targets in separate roots, content added at each level, live and top-layer elements, and revert all work. One spec requirement fails: when a target sits in the shadow root of another target, the outer target's shadow content is hidden (reproduced: the sibling span inside the outer target got aria-hidden=\"true\"). Light content slotted into a dialog inside a shadow root is also hidden. Applying the diff deletes the repo's bin/ ESLint rule files, so `yarn eslint` crashes with ENOENT unless they are restored. There is no changelog; the repo has no .changeset directory, so none is expected. The new tests are solid and follow the repo's style, but they miss the nested-target and slotted cases.",
+    "letter": "D"
+   },
+   {
+    "letter": "E",
+    "overall": 7,
+    "scores": {
+     "correctness": 7,
+     "robustness": 7,
+     "code_quality": 7,
+     "tests": 9,
+     "docs": 6,
+     "product": 7
+    },
+    "defects": [
+     {
+      "severity": "major",
+      "what": "Light-DOM children of a shadow host that are slotted into a target inside its shadow root get aria-hidden. walk(document.body) treats the host's light children as outside the target because nodeContains does not follow slot assignment, so dialog content passed through a <slot> is hidden from screen readers.",
+      "evidence": "Throwaway test: host.attachShadow; sr > dialog > <slot>; light child `content` appended to host; ariaHideOutside([dialog]) -> console.log printed `slotted content hidden? true`. The walk is at src/ariaHideOutside.ts:168-169 and acceptNode uses only nodeContains."
+     },
+     {
+      "severity": "minor",
+      "what": "Live announcers and top-layer elements are only found with root.querySelectorAll per walked root (line 96), so one inside a shadow root that does not enclose a target is not found during the initial walk, and its host gets hidden.",
+      "evidence": "Throwaway test: data-live-announcer element in an unrelated host's shadow root, target in the light DOM -> printed `host of unrelated shadow live announcer hidden? true`."
+     },
+     {
+      "severity": "minor",
+      "what": "An unrelated behavior change: a double-restore guard that only applies when shadow DOM is on (lines 235-241). This leaves two code paths that behave differently for the same misuse.",
+      "evidence": "src/ariaHideOutside.ts:238 `if (restored && shadowDOM()) { return; }`"
+     },
+     {
+      "severity": "minor",
+      "what": "The mutation callback scans every visible node of every stacked call for each added node (O(stack x visible)) through spread arrays. It works but it is heavy and hard to follow, and the comment explaining why is long.",
+      "evidence": "src/ariaHideOutside.ts:194"
+     },
+     {
+      "severity": "minor",
+      "what": "The doc comment on ariaHideOutside does not mention the shadow DOM behavior, and the change adds no docs or changelog note.",
+      "evidence": "The diff only adds a doc comment on getShadowRoots. The JSDoc on the public function is unchanged."
+     }
+    ],
+    "strengths": [
+     "Small and focused source change: it collects the shadow roots that enclose targets, walks and observes each one, and skips roots inside other targets. All of it sits behind shadowDOM(), so behavior with the flag off does not change.",
+     "Supports targets in different shadow roots, targets nested in another target's shadow root, and stacked calls (earlier calls' shadow roots are re-observed). My throwaway tests confirmed that additions, nested hosts, live regions and top-layer elements in enclosing roots work, and that restore removes everything and stops observing.",
+     "Very thorough tests: 34 shadow DOM cases, including light-DOM parity scenarios, random restore orders and keepVisible, plus a separate test file for the flag-off case.",
+     "yarn jest packages/@react-aria/overlays: 217 passed. eslint exited 0 and check-types exited 0. The @react-stately/flags dependency was added to package.json and yarn.lock."
+    ],
+    "stats": {
+     "files": 5,
+     "source_lines": 900,
+     "test_cases": 35
+    },
+    "summary": "Build E meets the main spec. Siblings in the target's shadow root and in every enclosing shadow root are hidden, the hosts on the path stay visible, later additions in those roots are observed and hidden, targets in different roots work, and restore cleans up fully. Behavior with the flag off is unchanged. Tests (217 pass), eslint and check-types all pass, and the new tests are extensive. The main gap is slot handling: light-DOM content slotted into a dialog that lives in a shadow root gets aria-hidden, which would hide real dialog content in common web-component setups. Smaller issues: live announcers in shadow roots that don't enclose a target are not kept visible, a double-restore guard runs only when shadow DOM is on, and the mutation callback has a dense, costly check."
+   },
+   {
+    "letter": "F",
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 7,
+     "tests": 9,
+     "docs": 7,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "Performance: with shadow DOM on, acceptNode now runs `[...visibleNodes].some((target) => isInside(target, node))` for every walked node. That allocates an array and walks up the JS ancestor chain each time, on top of the existing per-target isInside loop. The MutationObserver callback also swaps native nodeContains for a JS ancestor walk over every visible and hidden node. Large pages pay O(N * V * depth).",
+      "evidence": "packages/@react-aria/overlays/src/ariaHideOutside.ts lines 138-151 (acceptNode) and line ~217 (observer callback using isInside)"
+     },
+     {
+      "severity": "minor",
+      "what": "The acceptNode comment block and conditions are dense. The walker workarounds are stacked into one if: a shadowHost check, a visibleNodes containment check, and a root exemption. They exist because ShadowTreeWalker enters rejected hosts, and they are hard to follow. A helper or a fix in the walker would be clearer.",
+      "evidence": "ariaHideOutside.ts acceptNode: 4 added comment lines plus 2 new OR clauses"
+     },
+     {
+      "severity": "minor",
+      "what": "The test file calls enableShadowDOM() in beforeAll and never turns it back off. Nothing breaks today because the shadow DOM describe comes last and jest isolates modules per file, but any test appended later to the file inherits the flag.",
+      "evidence": "packages/@react-aria/overlays/test/ariaHideOutside.test.js: `beforeAll(function () { enableShadowDOM(); });` with no afterAll reset"
+     }
+    ],
+    "strengths": [
+     "All 202 tests in yarn jest packages/@react-aria/overlays pass. yarn eslint on the touched files and yarn check-types both exit 0.",
+     "Gaps are handled properly: getEnclosingShadowRoots follows assignedSlot, so slotted targets keep their slot and the containers on their flat-tree path visible, and the shadow roots they are assigned to are observed.",
+     "Every new path is gated on shadowDOM(). createShadowTreeWalker falls back to document.createTreeWalker, so behavior with the flag off is unchanged, and new tests pin this down.",
+     "Nested ariaHideOutside calls work across shadow roots: observeRoots is reused for the observer-stack resume, and ref counts restore correctly whichever call is undone first.",
+     "Live-announcer and top-layer detection reaches into nested shadow roots, both for existing elements (querySelectorAllDeep) and for subtrees added later.",
+     "Thorough tests (19 new cases) cover sibling hiding at each level, different roots, slots through two hosts, the root option, keepVisible, undo, and stopping observation.",
+     "My throwaway tests all passed (after fixing a mistake in one of my own assertions): three levels of nesting with additions at each level, a nested target inside a target's shadow in one call, announcers inside added subtrees, slotted targets with later light and shadow additions, inert mode, and restore on undo.",
+     "The @react-stately/flags dependency is added to package.json and yarn.lock at the version the sibling packages use (^3.1.2)."
+    ],
+    "stats": {
+     "files": 4,
+     "source_lines": 520,
+     "test_cases": 19
+    },
+    "summary": "Build F meets every point of the spec. With shadow DOM support on, it hides siblings in the target's shadow root and in every enclosing one, and keeps the hosts on the path visible. It follows slot assignment, observes the enclosing shadow roots for content added later, keeps live announcers and top-layer elements visible even inside nested shadow roots, and handles targets in separate roots. Undo restores everything and stops observing. With the flag off, nothing changes. The repo's tests, lint and type check all pass, and 8 extra throwaway edge-case tests passed. I found no blocker or major issue. What remains is minor: extra per-node work in acceptNode, a dense conditional that works around the shadow tree walker, and a test flag that is never reset. A maintainer would likely merge it with small edits."
+   },
+   {
+    "overall": 7,
+    "scores": {
+     "correctness": 8,
+     "robustness": 7,
+     "code_quality": 8,
+     "tests": 8,
+     "docs": 7,
+     "product": 6
+    },
+    "defects": [
+     {
+      "severity": "major",
+      "what": "A new workspace dependency on @react-stately/flags was added to @react-aria/overlays/package.json, but yarn.lock was not updated. The repo's CI runs `yarn --immutable`, which fails on this change.",
+      "evidence": "cd /tmp/inspect-rac-shadow-hide-G && yarn install --immutable --mode=skip-build -> 'YN0028: The lockfile would have been modified by this install, which is explicitly forbidden.' .circleci/config.yml:122 runs `yarn --immutable`."
+     },
+     {
+      "severity": "minor",
+      "what": "A top-layer element or live announcer that already sits in a shadow root with no target in it gets hidden, because its host is hidden as a whole. In the light DOM these elements stay visible wherever they are.",
+      "evidence": "Throwaway test zzQ.test.js 'live announcer in unrelated shadow root': an element with data-react-aria-top-layer inside an unrelated shadow host, then ariaHideOutside([targetInOtherShadow]) -> printed 'unrelated-shadow top layer: host hidden? true'."
+     },
+     {
+      "severity": "minor",
+      "what": "For a slotted light-DOM target, content inside the host's own shadow root next to the <slot> (for example a header) is not hidden. The design leaves that shadow root out because the target is not in it, so the shadow chrome around a slotted dialog stays exposed.",
+      "evidence": "Throwaway test: shadowRoot.innerHTML='<header id=hd>..</header><div><slot></slot></div>', target is a light child of the host -> printed 'slotted: header hidden? false light sib hidden? true host false'."
+     },
+     {
+      "severity": "minor",
+      "what": "The new test suite calls enableShadowDOM() in beforeAll and never resets the module-level flag. This only works because the describe block is the last one in the file.",
+      "evidence": "packages/@react-aria/overlays/test/ariaHideOutside.test.js new describe 'ariaHideOutside with shadow DOM' beforeAll(() => enableShadowDOM())"
+     }
+    ],
+    "strengths": [
+     "Small, focused change. getTargetShadowRoots collects only the shadow roots on a target's path that sit inside `root`, so nothing above root is walked or observed.",
+     "The shadow-root walk reuses the existing walk and acceptNode logic: when a host contains a target, its shadow root is walked from acceptNode. Live-announcer and top-layer handling and ref counting carry over unchanged.",
+     "observe() is now shared by the initial call and the observerStack wrapper, so a nested call's revert re-observes the outer call's shadow roots. A test covers this.",
+     "With the flag off, shadowRoots is empty and the behavior is identical. A throwaway test confirmed the flag-off path is unchanged.",
+     "12 meaningful new tests: direct and nested shadow roots, content added later, hosts added later, live announcers and top layer, targets in multiple roots, revert stopping observation, nested calls, slotted targets, and a root option inside a shadow root.",
+     "All 194 overlays tests pass, eslint is clean and yarn check-types exits 0. My extra throwaway tests passed: a target nested inside another target, slotted targets in enclosing shadow roots, multi-root targets at different depths, deep additions, and a full restore on undo."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 300,
+     "test_cases": 12
+    },
+    "summary": "Build G meets the spec's core requirements. When the shadow DOM flag is on, it hides siblings in the targets' shadow roots and in every enclosing shadow root, and keeps the hosts on the path to each target visible. It also observes those roots for content added later, handles targets in different shadow roots, and restores everything and stops observing on undo. With the flag off, behavior is unchanged. The code is concise and idiomatic, and it reuses the existing walk and observer machinery.\n\nChecks run: yarn jest packages/@react-aria/overlays passed (194/194), eslint was clean, and yarn check-types exited 0. My throwaway shadow-DOM tests all passed.\n\nThe main problem is that yarn.lock was not updated for the new @react-stately/flags dependency, so the repo's CI step `yarn --immutable` fails. There are two smaller edge-case gaps:\n- A top-layer element or live announcer inside an unrelated shadow root gets hidden along with its host.\n- Content inside the shadow root of a slotted target's host, next to the slot, stays exposed.\n\nA maintainer would merge this after the lockfile is fixed.",
+    "letter": "G"
+   },
+   {
+    "letter": "H",
+    "overall": 8,
+    "scores": {
+     "correctness": 8,
+     "robustness": 8,
+     "code_quality": 8,
+     "tests": 9,
+     "docs": 6,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "major",
+      "what": "When a target is light-DOM content slotted into a shadow host, the host's shadow root is never walked. Other content in that shadow root (for example a button next to the <slot>) stays exposed to screen readers. walkShadowRoot is only entered when nodeContains(shadowRoot, target) is true, and that is false for a slotted target because nodeContains walks parentNode from the target and never passes through the shadow root.",
+      "evidence": "Throwaway jest test with enableShadowDOM(): host.attachShadow({mode:'open'}); sr.append(shadowSib, slot); host.append(target, lightSib); ariaHideOutside([target]) printed 'slotted: shadowSib null lightSib true host null slot null'. The shadow sibling is not aria-hidden. src/ariaHideOutside.ts:95-96 and :107."
+     },
+     {
+      "severity": "minor",
+      "what": "The JSDoc on ariaHideOutside is unchanged and does not say that shadow roots are traversed when enableShadowDOM() is on. Comments elsewhere are clear.",
+      "evidence": "packages/@react-aria/overlays/src/ariaHideOutside.ts:33-40"
+     },
+     {
+      "severity": "minor",
+      "what": "Shadow roots attached later to an already-visible host on the path, or to a target's ancestor, are never observed. Only shadow roots found during a walk are added to the observer.",
+      "evidence": "src/ariaHideOutside.ts:111-112 is the only place a shadow root is observed. Nothing handles attachShadow after the call."
+     }
+    ],
+    "strengths": [
+     "Small, targeted change: a TreeWalker filter that enters a shadow root on a host on the path to a target. It reuses acceptNode and the hide/refcount logic, so nested shadow roots and multiple roots work through recursion.",
+     "Walked shadow roots are observed, and observe() re-observes them when an outer ariaHideOutside resumes. Nested calls and calls restored out of order work, and each case is tested.",
+     "All shadow behavior is gated on shadowDOM(), so light DOM behavior is unchanged with the flag off (there is also a test for flag off).",
+     "Adds the @react-stately/flags dependency to package.json and yarn.lock correctly.",
+     "22 meaningful tests: nested roots, targets in different roots, later additions, live regions and top-layer elements, inert, root option inside a shadow root, closed roots, slotted siblings, and undo stopping observation.",
+     "yarn jest packages/@react-aria/overlays: 204 passed. eslint on the touched files is clean. yarn check-types (tsgo) rc=0.",
+     "My extra probes passed: three levels of nesting across two separate host trees hide and fully restore, later additions in every observed root are hidden, and additions after revert are not hidden."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 474,
+     "test_cases": 22
+    },
+    "summary": "Build H adds shadow DOM support to ariaHideOutside. While walking, the TreeWalker filter descends into the open shadow root of any host that contains a target, hides the siblings there, keeps live and top-layer elements visible, and registers that root with the MutationObserver, including on re-observe after nested calls. The tests, lint and type check pass. My throwaway tests confirmed it works for nested roots, targets in several roots, later additions, live and top-layer elements, inert, and full restore on undo. The main gap: when a target is light DOM slotted into a host, the rest of that host's shadow root (content next to the <slot>) stays exposed. Smaller points: shadow roots attached after the call are not observed, and the public JSDoc doesn't mention the new behavior. The code is clean, idiomatic and well tested. A maintainer would likely merge it with small edits."
+   },
+   {
+    "overall": 6,
+    "scores": {
+     "correctness": 5,
+     "robustness": 6,
+     "code_quality": 7,
+     "tests": 8,
+     "docs": 6,
+     "product": 6
+    },
+    "defects": [
+     {
+      "severity": "blocker",
+      "what": "When a target is itself a shadow host (for example a dialog web component), its own shadow content gets hidden. addShadowPath starts at the target, and since `element.shadowRoot && nodeContains(root, element)` is true, it adds target.shadowRoot. walk() then hides every child of that root: acceptNode does not check whether a node is inside a target, and top-level shadow children have no parentElement.",
+      "evidence": "src/ariaHideOutside.ts:56-58 (addShadowPath adds the target's own shadowRoot) and :176-184. Probe: target=div on body, target.attachShadow, inner button in it; ariaHideOutside([target]) -> inner gets aria-hidden=\"true\". In yarn jest it failed with 'Expected: null Received: \"true\"'."
+     },
+     {
+      "severity": "blocker",
+      "what": "Content inside a target is hidden when another target is nested in a shadow root inside it. For targets [A, B], where B sits in the shadow root of a host H that is a descendant of A, H.shadowRoot is walked and B's siblings are hidden even though they are inside target A.",
+      "evidence": "Probe: a=div on body, host=div in a, sr=host.attachShadow, b=button and insideA=span in sr; ariaHideOutside([a, b]) -> insideA has aria-hidden=\"true\" ('Expected: null Received: \"true\"')."
+     },
+     {
+      "severity": "major",
+      "what": "A new dependency on @react-stately/flags was added to package.json, but yarn.lock was not updated. With yarn berry, `yarn install --immutable` in CI would fail because the lockfile entry for the workspace changes.",
+      "evidence": "In yarn.lock, the '@react-aria/overlays@workspace' entry lists no @react-stately/flags (checked with grep -A25), while the diff adds it at packages/@react-aria/overlays/package.json:35."
+     },
+     {
+      "severity": "minor",
+      "what": "On every childList mutation batch, the MutationObserver re-runs addShadowPath for every target, and walk/acceptNode loops over the slots set for each node. This adds work on every DOM change while the flag is on, but since the paths are short it is acceptable.",
+      "evidence": "src/ariaHideOutside.ts:188-201"
+     },
+     {
+      "severity": "minor",
+      "what": "The change has no changeset or doc note, and the docstring of ariaHideOutside does not mention shadow DOM behaviour.",
+      "evidence": "git diff --stat touches only package.json, src/ariaHideOutside.ts and the test file."
+     }
+    ],
+    "strengths": [
+     "Small, targeted change that follows the existing flag pattern (shadowDOM() from @react-stately/flags) and is a no-op when the flag is off, which a test covers.",
+     "Handles slots well: the slots a target is projected through stay visible, unrelated slots are hidden, and slots added later on the path are recomputed.",
+     "Observes enclosing shadow roots, and the observerStack observe() wrapper re-observes them after a nested call is reverted.",
+     "A thorough test suite (15 new cases): multiple roots, slotted targets, content added later, live announcers and top layer, the root option, nested calls, and revert.",
+     "yarn jest packages/@react-aria/overlays: 197 tests passed. Lint and check-types (exit 0) are clean."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 440,
+     "test_cases": 15
+    },
+    "summary": "Build I adds shadow DOM support to ariaHideOutside by collecting the shadow roots and slots on each target's composed path, walking and observing those roots, and recomputing them on mutations. Existing tests, lint and type check all pass. My probes confirmed that several targets across shadow roots, content and shadow roots added later, live announcers and top layer, nested calls and undo all work. However, it walks the target's own shadow root, so a target that is a shadow host has its internal content hidden. It also walks shadow roots inside other targets, so content inside a target can be hidden when another target is nested in a shadow root within it; this was one of the asked-for scenarios. yarn.lock was not updated for the new dependency. The tests and docs are good, but these two correctness gaps keep it from being mergeable as is.",
+    "letter": "I"
+   },
+   {
+    "letter": "J",
+    "overall": 8,
+    "scores": {
+     "correctness": 8,
+     "robustness": 7,
+     "code_quality": 7,
+     "tests": 9,
+     "docs": 7,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "Live announcers and top-layer elements that sit inside a shadow root off the target path are not kept visible. walk() only runs querySelectorAll on the light root and on the shadow roots along the path, so the host that holds such an announcer gets hidden. In the light DOM the same layout keeps the announcer visible.",
+      "evidence": "Throwaway jest test with enableShadowDOM(). A host's shadow root holds the target <input>; then `document.body.appendChild(nh)`, where nh's open shadow root contains <div data-live-announcer=\"true\">. After a flush it logged `new host w/ announcer hidden: true`. The light-DOM analog (announcer as a light child of a new div) logged `light analog hidden: null`. A pre-existing sibling host whose shadow root holds an announcer also logged `sibling-host-announcer host hidden: true`."
+     },
+     {
+      "severity": "minor",
+      "what": "walk() recurses into a host's shadow root (and registers a MutationObserver) as a side effect inside the TreeWalker acceptNode filter. Every visited node also allocates `[...visibleNodes]` and walks a composed ancestor chain twice (once for the reject check, once for the skip check). This works, but it is surprising control flow and adds per-node overhead on large pages.",
+      "evidence": "packages/@react-aria/overlays/src/ariaHideOutside.ts, acceptNode: `if (shadowDOM() && [...visibleNodes].some(target => composedContains(target, node)))` and `if (shadowDOM() && node.shadowRoot) { observeRoot(node.shadowRoot); walk(node.shadowRoot); }`"
+     },
+     {
+      "severity": "minor",
+      "what": "The new flatParent/composedContains helpers duplicate @react-aria/utils' nodeContains with slightly different slot semantics. The MutationObserver callback still uses nodeContains, so two containment notions are mixed in one file.",
+      "evidence": "ariaHideOutside.ts: composedContains/flatParent added at the top of the file. The observer callback still calls `nodeContains(node, change.target)`. Compare packages/@react-aria/utils/src/shadowdom/DOMFunctions.ts:11-43."
+     },
+     {
+      "severity": "minor",
+      "what": "The test file grew by about 700 lines with many near-duplicate setup blocks. It is thorough but verbose.",
+      "evidence": "git diff --stat: test/ariaHideOutside.test.js | 712 ++++"
+     }
+    ],
+    "strengths": [
+     "Every spec point works in testing: siblings in the target's own and enclosing shadow roots get hidden while the hosts on the path stay visible; targets in different shadow roots work; nodes added later are hidden; announcers and top-layer elements added later in a shadow root stay visible; undo restores everything and stops observing; with the flag off, behavior is unchanged.",
+     "Every shadow root it walks is observed, and when a nested call is undone, observe() re-attaches the outer call's shadow-root observers, so stacked (nested) calls keep working.",
+     "Composed-tree containment handles slotted light-DOM content correctly: the slot chain stays visible, unslotted light children are hidden, and content slotted into a target stays visible.",
+     "38 new tests that are meaningful and well named, covering flag off, nesting, slots, closed roots, keepVisible, ref counting and out-of-order restore. All 217 overlays tests pass.",
+     "yarn eslint, yarn check-types (tsgo), lint-packages and yarn constraints all pass. The @react-stately/flags dependency was added to package.json and yarn.lock correctly. The repo uses no changesets, so none is missing."
+    ],
+    "stats": {
+     "files": 4,
+     "source_lines": 760,
+     "test_cases": 38
+    },
+    "summary": "Build J changes ariaHideOutside in about 50 source lines. A composed-tree containment helper decides what counts as inside a target, the walk recurses into the shadow root of every host on a target's path, and each walked shadow root is observed and re-observed through the observer stack. The tree built from base plus the diff (bin/ excluded) passes all 217 overlays tests, eslint, check-types, lint-packages and constraints. Throwaway probes confirmed: targets in one or several shadow roots, a target in a shadow root inside another target, slotted content, elements and shadow hosts added later, live and top-layer elements added later, the root option, and full restore with observing stopped afterwards. The one gap found: an announcer that already exists, or is added later, inside a shadow root off the target path (for example inside a newly added shadow host) gets hidden, whereas the light DOM keeps it visible. The code also puts recursion and observer setup inside the TreeWalker filter, which works but is a bit opaque. The tests are thorough but verbose. A maintainer would likely merge it with small edits."
+   }
+  ],
+  "judge": {
+   "ranking": [
+    {
+     "letter": "F",
+     "score": 8,
+     "confirmed_defects": [
+      "Minor: acceptNode runs an extra [...visibleNodes].some(isInside) per node, and querySelectorAllDeep runs querySelectorAll('*') on every walk, so large pages pay more",
+      "Minor: siblings in a closed shadow root are not hidden (sib=null). The platform mostly prevents reaching closed roots, so this is largely inherent"
+     ],
+     "refuted_defects": [
+      "Test flag never reset: @react-stately/flags has no disable function and jest isolates modules per file, so this is not actionable"
+     ],
+     "rationale": "Passed all 18 of my shadow-DOM probes. The only gap was the closed root, which is inherent. It is one of only two builds that keep light content slotted into a shadow-root dialog visible. It also hides the shadow chrome next to a slotted target, and it is the only build that keeps an announcer in an unrelated shadow root visible. Suite: 202/202. eslint, tsgo, lint-packages and yarn --immutable all pass. Its cost is per-node overhead and a dense acceptNode."
+    },
+    {
+     "letter": "J",
+     "score": 8,
+     "confirmed_defects": [
+      "Minor: a live announcer inside an unrelated shadow root gets its host hidden (uHost=true)",
+      "Minor: the recursion and the observer registration happen inside the TreeWalker filter, which is opaque. It also adds per-node composedContains overhead"
+     ],
+     "refuted_defects": [],
+     "rationale": "Passed every probe except the unrelated-shadow announcer. Light content slotted into a dialog stays visible, the slotted-target chrome is hidden, nested targets and a target that is a shadow host work, and nested or out-of-order calls restore fully. Suite: 217/217, and all lint, type and lockfile checks are clean. The tests are thorough but verbose."
+    },
+    {
+     "letter": "B",
+     "score": 7,
+     "confirmed_defects": [
+      "Light content slotted into a dialog that lives in a shadow root gets aria-hidden (missed by its inspector). Content slotted into the dialog is hidden from screen readers",
+      "Minor: closed shadow roots are skipped",
+      "Minor: on resume it re-walks the shadow roots but not the light root"
+     ],
+     "refuted_defects": [],
+     "rationale": "Core spec met in every probe: nested targets, a target that is a shadow host, multi-root targets, additions, live and top-layer elements, nested calls, and flag off. The slotted-target chrome is hidden. Suite: 203/203, and all checks are clean, lockfile included. It falls short of F and J only on slotted content inside a target."
+    },
+    {
+     "letter": "C",
+     "score": 7,
+     "confirmed_defects": [
+      "Light content slotted into a shadow-root dialog gets hidden",
+      "Minor: an existing announcer in an unrelated shadow root has its host hidden",
+      "Minor: containment is checked twice (nodeContains plus flatTreeContains), and the JSDoc is not updated"
+     ],
+     "refuted_defects": [
+      "bin/ ESLint rule deletion as a build-specific blocker: all 10 diffs carry the identical bin/ deletion, so it is a packaging artifact and not a differentiator. eslint on the overlays files passes"
+     ],
+     "rationale": "Behaves like B. It also reaches closed roots through getRootNode, re-observes newly found roots, and hides the slotted-target chrome. Suite: 197/197, and all checks pass. Its one real gap is slotted content inside a target."
+    },
+    {
+     "letter": "H",
+     "score": 7,
+     "confirmed_defects": [
+      "Shadow content next to the <slot> of a slotted target's host stays exposed (chrome=null)",
+      "Light content slotted into a shadow-root dialog gets hidden",
+      "Minor: the public JSDoc is not updated"
+     ],
+     "refuted_defects": [],
+     "rationale": "Clean, small design that walks a shadow root only when it contains a target. Nested targets, a target that is a shadow host, multi-root targets, additions and nested calls all pass. Suite: 204/204, and all checks pass. It has both slot gaps, so it ranks just below B and C."
+    },
+    {
+     "letter": "E",
+     "score": 6.5,
+     "confirmed_defects": [
+      "Light content slotted into a shadow-root dialog gets hidden",
+      "Minor: an announcer in an unrelated shadow root has its host hidden",
+      "Minor: a double-restore guard runs only when shadow DOM is on, and the observer re-checks every stacked call's visible nodes, which is heavy"
+     ],
+     "refuted_defects": [],
+     "rationale": "Spec core is correct, including the nested-target case. 35 tests, suite 217/217, and all checks pass. It has the same slot gap as the mid-pack builds, plus extra behaviour changes and complexity that do not improve results."
+    },
+    {
+     "letter": "G",
+     "score": 6,
+     "confirmed_defects": [
+      "Major: yarn.lock is not updated for the new @react-stately/flags dependency. `yarn install --immutable` fails with YN0028",
+      "Light content slotted into a shadow-root dialog gets hidden, and the slotted-target chrome stays exposed",
+      "Minor: an announcer in an unrelated shadow root has its host hidden"
+     ],
+     "refuted_defects": [
+      "Test flag never reset: no reset API exists, and modules are isolated per file"
+     ],
+     "rationale": "Concise and correct on the spec core, including nested targets (walks are entered only from acceptNode). Suite: 194/194. CI would fail at the immutable install, and it has both slot gaps."
+    },
+    {
+     "letter": "A",
+     "score": 5.5,
+     "confirmed_defects": [
+      "Major: content inside target A is hidden when target B sits in a shadow root nested within A (insideA=true)",
+      "Light content slotted into a shadow-root dialog gets hidden, and the slotted-target chrome stays exposed"
+     ],
+     "refuted_defects": [
+      "bin/ deletion as a blocker specific to A: the same deletion is in all 10 diffs, and eslint on the touched files passes"
+     ],
+     "rationale": "Minimal approach: walk and observe every shadow root on the target's path. The spec core works, and suite, lint, types and lockfile all pass. Walking roots without checking whether they lie inside a target breaks the nested-target case."
+    },
+    {
+     "letter": "D",
+     "score": 5.5,
+     "confirmed_defects": [
+      "Major: nested target inside a target hides content inside the outer target (insideA=true)",
+      "Light content slotted into a shadow-root dialog gets hidden"
+     ],
+     "refuted_defects": [
+      "bin/ ESLint deletion as build-specific: present identically in all 10 diffs",
+      "Slotted-target chrome left visible is real but minor"
+     ],
+     "rationale": "Essentially the same algorithm as A, with the same nested-target bug. Suite 195/195 and all checks pass."
+    },
+    {
+     "letter": "I",
+     "score": 4.5,
+     "confirmed_defects": [
+      "Major: when a target is itself a shadow host, its own shadow content is hidden (inner=true)",
+      "Major: a nested target inside a target hides content inside the outer target (insideA=true)",
+      "Major: yarn.lock is not updated, so `yarn install --immutable` fails (YN0028)",
+      "Light content slotted into a shadow-root dialog gets hidden"
+     ],
+     "refuted_defects": [],
+     "rationale": "Tracking slot paths gets the slotted-target case right. However, addShadowPath starts at the target itself, so a target's own shadow content gets hidden, and roots inside other targets get walked. With the CI lockfile failure on top, it has the most correctness regressions of any build."
+    }
+   ],
+   "verdict": "All 10 builds meet the core spec in my 18 probes (sibling hiding across nested and multiple shadow roots, hosts left visible, observing later additions, live and top-layer elements, full restore, flag off). All pass their suites, eslint and tsgo. The identical bin/ deletion appears in every diff, so it does not separate them. F and J are the only builds that also keep light content slotted into a shadow-root dialog visible and hide the slotted-target chrome; F additionally keeps announcers in unrelated shadow roots visible. A, D and I hide content inside a target when another target is nested in a shadow root within it. I also hides a shadow-host target's own content and, like G, fails `yarn install --immutable` because yarn.lock was not updated."
+  },
+  "judges": [
+   {
+    "ranking": [
+     {
+      "letter": "F",
+      "score": 8,
+      "confirmed_defects": [
+       "Minor: acceptNode runs an extra [...visibleNodes].some(isInside) per node, and querySelectorAllDeep runs querySelectorAll('*') on every walk, so large pages pay more",
+       "Minor: siblings in a closed shadow root are not hidden (sib=null). The platform mostly prevents reaching closed roots, so this is largely inherent"
+      ],
+      "refuted_defects": [
+       "Test flag never reset: @react-stately/flags has no disable function and jest isolates modules per file, so this is not actionable"
+      ],
+      "rationale": "Passed all 18 of my shadow-DOM probes. The only gap was the closed root, which is inherent. It is one of only two builds that keep light content slotted into a shadow-root dialog visible. It also hides the shadow chrome next to a slotted target, and it is the only build that keeps an announcer in an unrelated shadow root visible. Suite: 202/202. eslint, tsgo, lint-packages and yarn --immutable all pass. Its cost is per-node overhead and a dense acceptNode."
+     },
+     {
+      "letter": "J",
+      "score": 8,
+      "confirmed_defects": [
+       "Minor: a live announcer inside an unrelated shadow root gets its host hidden (uHost=true)",
+       "Minor: the recursion and the observer registration happen inside the TreeWalker filter, which is opaque. It also adds per-node composedContains overhead"
+      ],
+      "refuted_defects": [],
+      "rationale": "Passed every probe except the unrelated-shadow announcer. Light content slotted into a dialog stays visible, the slotted-target chrome is hidden, nested targets and a target that is a shadow host work, and nested or out-of-order calls restore fully. Suite: 217/217, and all lint, type and lockfile checks are clean. The tests are thorough but verbose."
+     },
+     {
+      "letter": "B",
+      "score": 7,
+      "confirmed_defects": [
+       "Light content slotted into a dialog that lives in a shadow root gets aria-hidden (missed by its inspector). Content slotted into the dialog is hidden from screen readers",
+       "Minor: closed shadow roots are skipped",
+       "Minor: on resume it re-walks the shadow roots but not the light root"
+      ],
+      "refuted_defects": [],
+      "rationale": "Core spec met in every probe: nested targets, a target that is a shadow host, multi-root targets, additions, live and top-layer elements, nested calls, and flag off. The slotted-target chrome is hidden. Suite: 203/203, and all checks are clean, lockfile included. It falls short of F and J only on slotted content inside a target."
+     },
+     {
+      "letter": "C",
+      "score": 7,
+      "confirmed_defects": [
+       "Light content slotted into a shadow-root dialog gets hidden",
+       "Minor: an existing announcer in an unrelated shadow root has its host hidden",
+       "Minor: containment is checked twice (nodeContains plus flatTreeContains), and the JSDoc is not updated"
+      ],
+      "refuted_defects": [
+       "bin/ ESLint rule deletion as a build-specific blocker: all 10 diffs carry the identical bin/ deletion, so it is a packaging artifact and not a differentiator. eslint on the overlays files passes"
+      ],
+      "rationale": "Behaves like B. It also reaches closed roots through getRootNode, re-observes newly found roots, and hides the slotted-target chrome. Suite: 197/197, and all checks pass. Its one real gap is slotted content inside a target."
+     },
+     {
+      "letter": "H",
+      "score": 7,
+      "confirmed_defects": [
+       "Shadow content next to the <slot> of a slotted target's host stays exposed (chrome=null)",
+       "Light content slotted into a shadow-root dialog gets hidden",
+       "Minor: the public JSDoc is not updated"
+      ],
+      "refuted_defects": [],
+      "rationale": "Clean, small design that walks a shadow root only when it contains a target. Nested targets, a target that is a shadow host, multi-root targets, additions and nested calls all pass. Suite: 204/204, and all checks pass. It has both slot gaps, so it ranks just below B and C."
+     },
+     {
+      "letter": "E",
+      "score": 6.5,
+      "confirmed_defects": [
+       "Light content slotted into a shadow-root dialog gets hidden",
+       "Minor: an announcer in an unrelated shadow root has its host hidden",
+       "Minor: a double-restore guard runs only when shadow DOM is on, and the observer re-checks every stacked call's visible nodes, which is heavy"
+      ],
+      "refuted_defects": [],
+      "rationale": "Spec core is correct, including the nested-target case. 35 tests, suite 217/217, and all checks pass. It has the same slot gap as the mid-pack builds, plus extra behaviour changes and complexity that do not improve results."
+     },
+     {
+      "letter": "G",
+      "score": 6,
+      "confirmed_defects": [
+       "Major: yarn.lock is not updated for the new @react-stately/flags dependency. `yarn install --immutable` fails with YN0028",
+       "Light content slotted into a shadow-root dialog gets hidden, and the slotted-target chrome stays exposed",
+       "Minor: an announcer in an unrelated shadow root has its host hidden"
+      ],
+      "refuted_defects": [
+       "Test flag never reset: no reset API exists, and modules are isolated per file"
+      ],
+      "rationale": "Concise and correct on the spec core, including nested targets (walks are entered only from acceptNode). Suite: 194/194. CI would fail at the immutable install, and it has both slot gaps."
+     },
+     {
+      "letter": "A",
+      "score": 5.5,
+      "confirmed_defects": [
+       "Major: content inside target A is hidden when target B sits in a shadow root nested within A (insideA=true)",
+       "Light content slotted into a shadow-root dialog gets hidden, and the slotted-target chrome stays exposed"
+      ],
+      "refuted_defects": [
+       "bin/ deletion as a blocker specific to A: the same deletion is in all 10 diffs, and eslint on the touched files passes"
+      ],
+      "rationale": "Minimal approach: walk and observe every shadow root on the target's path. The spec core works, and suite, lint, types and lockfile all pass. Walking roots without checking whether they lie inside a target breaks the nested-target case."
+     },
+     {
+      "letter": "D",
+      "score": 5.5,
+      "confirmed_defects": [
+       "Major: nested target inside a target hides content inside the outer target (insideA=true)",
+       "Light content slotted into a shadow-root dialog gets hidden"
+      ],
+      "refuted_defects": [
+       "bin/ ESLint deletion as build-specific: present identically in all 10 diffs",
+       "Slotted-target chrome left visible is real but minor"
+      ],
+      "rationale": "Essentially the same algorithm as A, with the same nested-target bug. Suite 195/195 and all checks pass."
+     },
+     {
+      "letter": "I",
+      "score": 4.5,
+      "confirmed_defects": [
+       "Major: when a target is itself a shadow host, its own shadow content is hidden (inner=true)",
+       "Major: a nested target inside a target hides content inside the outer target (insideA=true)",
+       "Major: yarn.lock is not updated, so `yarn install --immutable` fails (YN0028)",
+       "Light content slotted into a shadow-root dialog gets hidden"
+      ],
+      "refuted_defects": [],
+      "rationale": "Tracking slot paths gets the slotted-target case right. However, addShadowPath starts at the target itself, so a target's own shadow content gets hidden, and roots inside other targets get walked. With the CI lockfile failure on top, it has the most correctness regressions of any build."
+     }
+    ],
+    "verdict": "All 10 builds meet the core spec in my 18 probes (sibling hiding across nested and multiple shadow roots, hosts left visible, observing later additions, live and top-layer elements, full restore, flag off). All pass their suites, eslint and tsgo. The identical bin/ deletion appears in every diff, so it does not separate them. F and J are the only builds that also keep light content slotted into a shadow-root dialog visible and hide the slotted-target chrome; F additionally keeps announcers in unrelated shadow roots visible. A, D and I hide content inside a target when another target is nested in a shadow root within it. I also hides a shadow-host target's own content and, like G, fails `yarn install --immutable` because yarn.lock was not updated."
+   },
+   {
+    "ranking": [
+     {
+      "letter": "F",
+      "score": 8.5,
+      "confirmed_defects": [
+       "minor: acceptNode does extra per-node work ([...visibleNodes].some(isInside) plus querySelectorAllDeep on every walk), and the conditional is dense",
+       "minor: enableShadowDOM() is set in beforeAll and never reset",
+       "missed by inspector, minor: a target inside a CLOSED shadow root leaves its siblings unhidden (my probe T12). createShadowTreeWalker only enters open roots."
+      ],
+      "refuted_defects": [],
+      "rationale": "Passed every probe except the closed-root one: 3-level nesting, additions at every level, live announcers and top layer, targets in separate roots and mixed light/shadow, nested and out-of-order calls, a nested target inside a target, a target that is or contains a host, slotted content inside a dialog, shadow chrome around a slotted target, an existing announcer in an unrelated shadow root, the root option inside a shadow root, inert, and flag off identical to base. A real RAC Modal in a shadow root works. Overlays suite 202/202, eslint and check-types pass, and yarn.lock is updated. It reuses the repo's createShadowTreeWalker. Most complete and correct."
+     },
+     {
+      "letter": "J",
+      "score": 8,
+      "confirmed_defects": [
+       "minor: an existing live announcer or top-layer element inside an unrelated shadow root gets its host hidden (my probe T10)",
+       "minor: recursion and observer setup happen inside the TreeWalker filter, with per-node [...visibleNodes] allocation",
+       "minor: composedContains duplicates nodeContains, and the observer callback still uses nodeContains",
+       "missed by inspector, minor: siblings in a closed shadow root are not hidden (T12)"
+      ],
+      "refuted_defects": [],
+      "rationale": "Passed every probe except T10 and the closed root, including slotted content in a dialog, slotted targets, nested targets, a target that is a host, nested and out-of-order calls, and flag off identical to base. 217/217 tests, lint and types pass, and the lockfile is updated. The change is small (~50 source lines). The test file is verbose but meaningful."
+     },
+     {
+      "letter": "C",
+      "score": 7,
+      "confirmed_defects": [
+       "minor: an existing live announcer in an unrelated shadow root gets its host hidden (T10)",
+       "minor: the containment check runs nodeContains plus flatTreeContains",
+       "minor: the public JSDoc does not mention shadow DOM",
+       "missed by inspector, major: light-DOM content slotted into a dialog that lives in a shadow root gets aria-hidden (T8), even though the inspector said slots work"
+      ],
+      "refuted_defects": [
+       "major: bin/ ESLint rule deletion. The identical bin hunk appears in all 10 diffs and the build dirs don't contain bin, so it is a harness/export artifact and not a build-specific defect. Lint passes with bin present."
+      ],
+      "rationale": "The core spec works everywhere, including closed shadow roots (the only top build that handles them), nested targets, and targets that are hosts. It fails the slotted-content-in-dialog case, which hides real dialog content. 197/197 tests, lint and types pass, and the lockfile is updated."
+     },
+     {
+      "letter": "B",
+      "score": 7,
+      "confirmed_defects": [
+       "minor: closed shadow roots are not handled (T12)",
+       "minor: flatContains duplicates nodeContains",
+       "minor: an existing announcer in an unrelated shadow root gets its host hidden (T10)",
+       "missed by inspector, major: light content slotted into a target dialog in a shadow root gets aria-hidden (T8: slotted=true)"
+      ],
+      "refuted_defects": [],
+      "rationale": "Clean and compact, with a good JSDoc update and 21 tests including a property test. The core spec, nested targets, slotted targets (chrome hidden) and nested calls all pass. However, the inspector's claim of full slot correctness is wrong: content projected into a dialog is hidden. 203/203 tests, lint and types pass, and the lockfile is updated."
+     },
+     {
+      "letter": "H",
+      "score": 6.5,
+      "confirmed_defects": [
+       "major->moderate: for a slotted target, the host's shadow chrome beside the slot stays exposed (T9)",
+       "minor: JSDoc not updated",
+       "minor: closed roots not handled (T12)",
+       "missed by inspector, major: slotted content inside a dialog in a shadow root is hidden (T8)",
+       "minor: existing announcer in an unrelated shadow root hidden (T10)"
+      ],
+      "refuted_defects": [],
+      "rationale": "The core spec, nested targets, a target that is a host, and nested calls all work, and tests, lint and types pass with the lockfile updated. It fails both slot directions (over-hides projected content and under-hides chrome) and refactors acceptNode with more churn than needed."
+     },
+     {
+      "letter": "E",
+      "score": 6.5,
+      "confirmed_defects": [
+       "major: slotted content in a target dialog gets hidden (T8)",
+       "minor: existing announcer in an unrelated shadow root hidden (T10)",
+       "minor: a double-restore guard that only runs with the flag on",
+       "minor: the observer callback logic is heavy and dense",
+       "minor: chrome around a slotted target stays exposed (T9)"
+      ],
+      "refuted_defects": [],
+      "rationale": "The core spec, nested targets, closed roots and nested calls work, and 217 tests, lint and types pass. However, the source change is more invasive (it changes hidden-node checks and adds the restore guard), it fails both slot cases, and the tests are split into new files rather than added next to the existing ones."
+     },
+     {
+      "letter": "G",
+      "score": 6,
+      "confirmed_defects": [
+       "major: yarn.lock not updated for the new @react-stately/flags dependency. I reproduced `yarn install --immutable` failing with YN0028.",
+       "minor: existing top-layer element or announcer in an unrelated shadow root hidden (T10)",
+       "minor: chrome around a slotted target exposed (T9)",
+       "minor: enableShadowDOM never reset",
+       "missed by inspector, major: slotted content in a target dialog hidden (T8)",
+       "minor: closed roots not handled"
+      ],
+      "refuted_defects": [],
+      "rationale": "Concise, and the core spec works (nested targets, a target that is a host, nested calls). It fails both slot cases, and CI's immutable install breaks because the lockfile was not updated."
+     },
+     {
+      "letter": "A",
+      "score": 5,
+      "confirmed_defects": [
+       "blocker->major: content inside target A is hidden when target B sits in a shadow root nested inside A (T6: insideA aria-hidden)",
+       "major->moderate: the shadow root rendering a slotted target is not walked, so chrome stays exposed (T9)",
+       "missed: slotted content in a target dialog hidden (T8)",
+       "minor: existing announcer in an unrelated shadow root hidden (T10)"
+      ],
+      "refuted_defects": [
+       "blocker: bin/ ESLint rule deletion. The hunk is identical in all 10 diffs, so it is a harness artifact. eslint passes on the touched files."
+      ],
+      "rationale": "The core spec, closed roots and nested calls work, and tests, lint, types and the lockfile are fine. It also has a JSDoc update. But it walks shadow roots that lie inside another target, which hides content inside a visible target, and it fails both slot cases."
+     },
+     {
+      "letter": "D",
+      "score": 5,
+      "confirmed_defects": [
+       "blocker->major: content inside a target hidden when another target is nested in its shadow root (T6)",
+       "major: slotted content in a target dialog hidden (T8)",
+       "minor: chrome around a slotted target exposed (T9)",
+       "minor: shadow roots attached later are not observed",
+       "minor: existing announcer in an unrelated shadow root hidden (T10)"
+      ],
+      "refuted_defects": [
+       "major: bin/ ESLint rule deletion. The hunk is identical in all 10 diffs and is a harness artifact."
+      ],
+      "rationale": "Nearly identical to A, minus the JSDoc update. It has the same failures (nested target over-hiding and both slot cases). Tests, lint, types and the lockfile pass."
+     },
+     {
+      "letter": "I",
+      "score": 4,
+      "confirmed_defects": [
+       "blocker: when a target is itself a shadow host, its own shadow content is hidden (T7c: inner aria-hidden)",
+       "blocker: content inside a target hidden when another target is nested in a shadow root inside it (T6)",
+       "major: yarn.lock not updated, so the immutable install fails",
+       "minor: slotted content in a target dialog hidden (T8)",
+       "minor: existing announcer in an unrelated shadow root hidden (T10)",
+       "minor: closed roots not handled"
+      ],
+      "refuted_defects": [],
+      "rationale": "Slot-aware path collection gives it the slotted-target chrome case. However, it walks the target's own shadow root, so a dialog implemented as a custom element has its contents hidden from screen readers. It also over-hides inside nested targets and breaks CI's lockfile check."
+     }
+    ],
+    "verdict": "All ten builds fix the main case: a real react-aria-components Modal rendered into a shadow root now hides its shadow siblings, and flag-off behaviour matches the base exactly. Tests, eslint and check-types pass for every build. The bin/ deletion is identical in all ten diffs, so it is not counted against anyone. What separates the builds is composed-tree correctness at the edges. F follows slot assignment both ways, keeps nested-target content and target-host content visible, and finds announcers inside shadow roots that hold no target. J matches F except for that last case. B, C, H, E and G hide light content slotted into a dialog. A and D (and I) hide content inside a visible target when another target is nested in its shadow root, and I also hides a target-host's own shadow content. G and I additionally skip the yarn.lock update, so CI's immutable install fails."
+   }
+  ]
+ }
+]
