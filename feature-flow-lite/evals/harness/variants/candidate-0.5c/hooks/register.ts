@@ -270,7 +270,9 @@ export const register: Register = on => {
     }
 
     if (role === 'implementor' && blocking.length > 0) {
-      if (!/^REVIEWER'S BLOCKING FINDINGS:/m.test(prompt)) {
+      // Any findings section the orchestrator wrote itself (REVIEWER'S BLOCKING FINDINGS:,
+      // FINDINGS TO FIX:, BLOCKING FINDINGS:) means they were carried.
+      if (!/^\s*[A-Z][A-Z' ]*FINDINGS[A-Z ]*:/m.test(prompt)) {
         prompt = `${prompt.trimEnd()}\n\nREVIEWER'S BLOCKING FINDINGS: (the reviewer's own words; fix each one)\n${blocking.map(line => `- ${line.replace(/^[-*]\s*/, '')}`).join('\n')}`
         $.ui.log(`${$.plugin.name}: added the reviewer's ${blocking.length} blocking finding(s) to the implementor handoff.`)
       }

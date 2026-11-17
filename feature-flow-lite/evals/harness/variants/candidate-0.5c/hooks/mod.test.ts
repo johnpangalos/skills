@@ -768,3 +768,14 @@ test('notes: each delivered note is also logged, so a trace shows it', async ($,
 
   expect(w.logs.some(line => /delivered a note with the Agent result: .*second fix round/.test(line))).toBe(true)
 })
+
+test('findings: a handoff with the orchestrator\'s own FINDINGS TO FIX section gets no second copy', async ($, on) => {
+  const w = world(on)
+  w.agent.result = reviewed(REVIEW)
+  await $.skill.prompt({ skill: 'feature-flow-lite', text: '' })
+  await ran($, REVIEWER)
+  const own = `GOAL: fix\n${BLOCK}\nFINDINGS TO FIX:\n1. [blocking] refund() races.`
+  await $.agent.spawn({ prompt: own, subagentType: IMPLEMENTOR })
+
+  expect(w.spawned[0]).toBe(own)
+})
