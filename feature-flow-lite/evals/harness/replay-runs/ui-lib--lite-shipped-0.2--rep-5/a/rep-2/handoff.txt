@@ -1,0 +1,48 @@
+GOAL: Red-team the new Tabs, Dialog and Combobox components in /tmp/claude-0/-home-user-skills/0fc1097f-4e24-5c23-8608-e10aa16a6c85/scratchpad/ff-replay/ui-lib--lite-shipped-0.2--rep-5/workspace (uncommitted; `git status`). Write probe tests in a scratch file like src/__probe__.test.tsx, run them with `pnpm vitest run src/__probe__.test.tsx`, and DELETE the probe file before you finish. Only reproduced failures are blocking.
+FILES: src/Tabs.tsx, src/Dialog.tsx, src/Combobox.tsx, tests alongside, src/index.ts, README.md, FEATURE_FLOW.md.
+CONSTRAINTS: Don't modify source files. Remove your probe files at the end.
+Extra probes I want: Combobox inside a Dialog — Escape while the listbox is open must close only the listbox, not the dialog; Enter in an open Combobox inside a <form> must not submit; two Tabs instances with identical values get distinct ids; Tabs with values containing spaces/special chars produce valid unique ids that aria-controls/aria-labelledby resolve; Dialog with nested focusable in a hidden/display:none subtree; Dialog open->close->open cycle returns focus each time; Tabs where the selected tab becomes disabled or is removed; Combobox options prop changing while open.
+ACCEPTANCE CRITERIA:
+General
+- G1. `src/index.ts` exports Tabs, TabList, Tab, TabPanel, Dialog, Combobox and their props types (TabsProps, TabListProps, TabProps, TabPanelProps, DialogProps, ComboboxProps, ComboboxOption). Files: src/Tabs.tsx, src/Dialog.tsx, src/Combobox.tsx; tests src/Tabs.test.tsx, src/Dialog.test.tsx, src/Combobox.test.tsx.
+- G2. No new dependencies, no CSS. All ids from React.useId(); two instances of a component on the same page get distinct ids. Components accept `className` and forward remaining native props to their main element where sensible.
+- G3. `pnpm test` and `pnpm typecheck` pass. Tests use @testing-library/react + user-event and assert on roles/aria, not implementation details.
+- G4. README.md documents each component: a props table (name, type, default, description) and a keyboard table, plus a short usage example. README claims match the code.
+
+Tabs (WAI-ARIA APG tabs, automatic activation)
+- T1. TabList renders role="tablist" with the given aria-label (aria-label is a required prop). Each Tab renders a <button type="button" role="tab"> with id, aria-selected="true|false", aria-controls = its panel's id. Each TabPanel renders role="tabpanel", id, aria-labelledby = its tab's id, tabIndex=0; non-selected panels are `hidden` (still in DOM so aria-controls resolves).
+- T2. Uncontrolled: `defaultValue` selects initially; if omitted, the first non-disabled tab is selected. Controlled: `value` wins; clicking/arrowing calls `onValueChange(newValue)` and the selection changes only when the parent updates `value`. onValueChange is also called in uncontrolled mode. onValueChange is not called when re-selecting the already-selected tab.
+  Hostile: defaultValue naming a disabled tab or a value not present -> fall back so that exactly one tab is still tabbable (first non-disabled tab gets tabIndex=0); controlled parent ignoring onValueChange -> visually selected tab (aria-selected) unchanged (focus may move but aria-selected doesn't).
+- T3. Roving tabindex: only the selected tab has tabIndex=0, all others tabIndex=-1. Tab key from the tablist goes to the selected panel.
+- T4. ArrowRight/ArrowLeft move focus to next/previous enabled tab, wrapping at both ends, skipping disabled tabs; Home/End move to first/last enabled tab. Selection follows focus (moving focus calls onValueChange / selects). Keys call preventDefault. Other keys do nothing.
+  Hostile: all tabs but one disabled (arrows stay on it, no crash); disabled tab at the first/last position with Home/End; tabs rendered conditionally/reordered (order comes from DOM order, not registration order); a single tab.
+- T5. Disabled tabs: aria-disabled="true" (or disabled), not selectable by click or keyboard.
+- T6. Using Tab/TabList/TabPanel outside <Tabs> throws a clear error.
+
+Dialog (WAI-ARIA APG modal dialog)
+- D1. When `open` is false nothing is rendered. When true, renders via createPortal into document.body: a backdrop element and an element with role="dialog", aria-modal="true", aria-labelledby -> the rendered title element (an h2), aria-describedby -> the rendered description element only when `description` is given (absent otherwise).
+- D2. On open, focus moves to the first focusable element inside the dialog; if none, to the dialog container itself (tabIndex=-1).
+- D3. Focus trap: Tab from the last focusable wraps to the first, Shift+Tab from the first wraps to the last; with zero focusable children Tab keeps focus on the dialog. Disabled controls and elements with tabindex="-1" are not counted as focusable.
+- D4. Escape calls onOpenChange(false). Mousedown+click on the backdrop calls onOpenChange(false); clicks inside the dialog content do not (including a drag that starts inside and ends on the backdrop). Dialog never closes itself; it only calls onOpenChange(false) (controlled).
+- D5. When the dialog closes (open -> false, or unmount while open), focus returns to the element that was focused before opening, if it is still in the document.
+  Hostile: dialog mounted with open=true initially (focus still moves in and returns on close); Escape pressed in a nested input inside the dialog; opener removed from DOM before close (no throw); only Escape closes, other keys don't.
+- D6. While open, background content is not reachable by Tab (trap) — body scroll locking is optional and not required.
+
+Combobox (WAI-ARIA APG combobox with listbox popup, list autocomplete)
+- C1. Renders a <label> associated with an <input role="combobox"> having aria-expanded, aria-controls -> listbox id, aria-autocomplete="list", and aria-activedescendant set only while an option is active (attribute removed otherwise). The popup is role="listbox" (labelled by the label) with role="option" children each having a unique id, aria-selected (true for the currently selected value), aria-disabled="true" for disabled ones. `placeholder` is forwarded to the input.
+- C2. Typing opens the listbox and filters options whose label contains the input text, case-insensitively (substring). Clearing the input shows all options. Input text shows the selected option's label when not editing; when `value` changes from the parent, the input text updates to that option's label (or empty for null).
+  Hostile: regex special chars in the query ("(", ".*", "[") must be treated literally; leading/trailing whitespace; an option label that is empty; value that matches no option -> input empty, no crash.
+- C3. ArrowDown opens the listbox if closed; when open, ArrowDown/ArrowUp move the active option to the next/previous enabled visible option, skipping disabled ones (wrap at the ends is acceptable; document whichever you choose). Focus stays on the input (DOM focus never moves into the listbox). The active option is indicated by aria-activedescendant (you may also add data-active); aria-selected must not be used to mean active.
+  Hostile: all filtered options disabled -> no active option, Enter does nothing; filter changes so active option disappears -> active resets; list of one option.
+- C4. Enter with an active enabled option calls onChange(option.value), closes the listbox, sets the input text to its label. Clicking an enabled option does the same (use mousedown preventDefault so the input does not blur first). Clicking a disabled option does nothing. Enter with no active option does not call onChange; when the listbox is open Enter must not submit a surrounding form; when closed Enter behaves natively.
+- C5. Escape closes the listbox without calling onChange and restores the input text to the current value's label. (Escape on a closed listbox clearing is optional; document what you do.)
+- C6. When the filter matches nothing, the popup shows a "No results" message (not a role="option"), and aria-activedescendant is absent.
+- C7. Blur (focus leaving the input) closes the listbox and restores input text to the selected label without calling onChange. Controlled: if the parent ignores onChange, the input text shows the parent's value label after closing.
+- C8. Clearing the text does not call onChange(null) automatically unless documented; if you choose to support clearing to null (e.g. emptying the input and pressing Enter / blurring), document it. onChange is typed `(value: string | null) => void`, `value: string | null`.
+CHECKS: Run it: render in Vitest with @testing-library/react + user-event. Full: `pnpm test`, `pnpm typecheck` (run at end after deleting probes).
+PROJECT CHECKLIST:
+- Roles and aria-* attributes match the APG pattern; ids referenced by aria-* exist in the DOM.
+- Keyboard behavior: every key in the README table does what it says, including edge cases (all disabled, single item, wrap-around).
+- Focus management: where focus goes on open, close and after selection.
+- Controlled mode: the component doesn't move on its own when the parent ignores the change callback.
+- README props and keyboard tables match the code.

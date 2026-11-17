@@ -1,0 +1,29 @@
+| scenario | arm | runs | process | outcome | cost $ | opus share | main tool calls | spawns (role:model/effort) |
+|---|---|---|---|---|---|---|---|---|
+| chi-mount-routes | lite-candidate | 3 | 0.83 | 1.0 | 1.29 | 0.86 | 21.0 | investigator:haiku/fm, implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm, implementor:haiku/fm, reviewer:haiku/fm, implementor:haiku/fm; investigator:haiku/fm, implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm; investigator:haiku/fm, implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm |
+| fd-count | lite-candidate | 3 | 0.86 | 0.9 | 1.11 | 0.89 | 18.33 | investigator:haiku/fm, implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm, implementor:haiku/fm; investigator:haiku/fm, implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm, implementor:haiku/fm, reviewer:haiku/fm, implementor:haiku/fm; investigator:haiku/fm, implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm |
+| tailwind-anchor | lite-candidate | 3 | 0.86 | 1.0 | 0.81 | 0.95 | 15.0 | investigator:haiku/fm, implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm; investigator:haiku/fm, implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm; investigator:haiku/fm, implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm |
+
+## Failed checks
+
+- chi-mount-routes / lite-candidate rep: [process] handoff prompts use the template — investigator missing GOAL; simplifier missing GOAL; reviewer missing GOAL; implementor missing GOAL
+- chi-mount-routes / lite-candidate rep: [process] stages announced before the first spawn — stage words before first spawn: ['inves']
+- chi-mount-routes / lite-candidate rep: [process] handoff prompts use the template — investigator missing GOAL; simplifier missing GOAL; reviewer missing GOAL
+- chi-mount-routes / lite-candidate rep: [process] stages announced before the first spawn — stage words before first spawn: none
+- chi-mount-routes / lite-candidate rep: [process] handoff prompts use the template — investigator missing GOAL; simplifier missing GOAL
+- chi-mount-routes / lite-candidate rep: [process] stages announced before the first spawn — stage words before first spawn: ['inves']
+- chi-mount-routes / lite-candidate rep: [process] main conversation leaves edits to subagents — main conversation edited ['/tmp/ff-eval-vjqpv5_u/workspace/tree.go']
+- tailwind-anchor / lite-candidate rep: [process] handoff prompts use the template — investigator missing GOAL; simplifier missing GOAL
+- tailwind-anchor / lite-candidate rep: [process] stages announced before the first spawn — stage words before first spawn: ['inves']
+- tailwind-anchor / lite-candidate rep: [process] handoff prompts use the template — investigator missing GOAL; simplifier missing GOAL
+- tailwind-anchor / lite-candidate rep: [process] stages announced before the first spawn — stage words before first spawn: none
+- tailwind-anchor / lite-candidate rep: [process] handoff prompts use the template — investigator missing GOAL; simplifier missing GOAL
+- tailwind-anchor / lite-candidate rep: [process] stages announced before the first spawn — stage words before first spawn: ['inves']
+- fd-count / lite-candidate rep: [process] handoff prompts use the template — investigator missing GOAL; simplifier missing GOAL
+- fd-count / lite-candidate rep: [process] stages announced before the first spawn — stage words before first spawn: ['inves']
+- fd-count / lite-candidate rep: [outcome] hidden --count tests pass — ok   --max-results caps a large count |  | 2 failed
+- fd-count / lite-candidate rep: [process] handoff prompts use the template — investigator missing GOAL; simplifier missing GOAL
+- fd-count / lite-candidate rep: [process] stages announced before the first spawn — stage words before first spawn: none
+- fd-count / lite-candidate rep: [outcome] hidden --count tests pass — ok   --max-results caps a large count |  | 2 failed
+- fd-count / lite-candidate rep: [process] handoff prompts use the template — investigator missing GOAL; simplifier missing GOAL
+- fd-count / lite-candidate rep: [process] stages announced before the first spawn — stage words before first spawn: ['inves']

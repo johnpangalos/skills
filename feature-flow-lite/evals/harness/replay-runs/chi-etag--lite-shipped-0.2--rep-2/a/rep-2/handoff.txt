@@ -1,0 +1,27 @@
+Repo /tmp/claude-0/-home-user-skills/0fc1097f-4e24-5c23-8608-e10aa16a6c85/scratchpad/ff-replay/chi-etag--lite-shipped-0.2--rep-2/workspace. Uncommitted change: new middleware/etag.go, middleware/etag_test.go, two README.md lines (`git diff README.md`; the new files are untracked). Sibling for comparison: middleware/compress.go `compressResponseWriter` (forwards Flush/Hijack/Push/Unwrap with "chi/middleware: ... is unavailable on the writer" errors). Red-team it: write probe `_test.go` files in middleware/ (package middleware) using httptest (both NewRecorder and a real httptest.NewServer with chi.NewRouter), run them, report only reproduced failures as [blocking]. Delete your probe files when done. Don't edit etag.go/etag_test.go/README.
+
+Run it: `go test -race -count=1 -run <Probe> ./middleware`.
+
+ACCEPTANCE CRITERIA:
+1. `func ETag(next http.Handler) http.Handler` exists in middleware/etag.go with a doc comment.
+2. GET/HEAD, handler responds 200 (explicit WriteHeader(200) or implicit via first Write) with no ETag header: response has a strong ETag `"<token>"` (double-quoted, no `W/`, only etagc characters) derived from the body; identical bodies give identical ETags, different bodies give different ETags. Body and status reach the client unchanged.
+   Hostile: empty body (still gets a valid ETag on GET); body written in many small Write calls (same ETag as one Write of the same bytes); handler that writes the body and never calls WriteHeader.
+3. Handler-set ETag (strong or weak, e.g. `W/"v1"`) is kept as-is, never overwritten.
+4. If-None-Match matches the response's ETag (computed or handler-set) on a GET/HEAD 200 → status 304, empty body, ETag header kept, other headers like Cache-Control/Vary/Expires kept, and Content-Type, Content-Length, Content-Encoding removed (as net/http's writeNotModified does). No match → normal 200 with body and ETag.
+5. Matching per RFC 9110 §13.1.2 with weak comparison: `W/"x"` matches `"x"` and vice versa in either header; comma-separated list with optional whitespace (`"a", W/"b" ,"c"`); empty list members (`"a",,"b"`) tolerated; multiple If-None-Match header lines are all considered; `*` alone matches any 200 response.
+   Hostile: unquoted `abc` must not match ETag `"abc"`; unterminated `"abc` must not match and must not panic; empty header value → no 304; `W/` without a quoted tag → no match, no panic; an ETag value containing a comma inside quotes is compared as one tag (`"a,b"`).
+6. HEAD: if the handler writes the body (Go discards it), the ETag equals GET's. If a HEAD handler writes no body but set a non-zero Content-Length, do NOT emit a computed ETag (can't be right) — but a handler-set ETag still drives 304 matching.
+7. Other methods (POST, PUT, DELETE, PATCH, OPTIONS…) are not buffered at all: `next` is called with the original ResponseWriter (no ETag, no 304 even if If-None-Match matches).
+8. Non-200 responses on GET/HEAD (201, 204, 206, 301, 304 from the handler, 404, 500…) pass through unchanged: same status, headers, body; no ETag added; no 304 substitution even if If-None-Match matches a handler-set ETag.
+9. Wrapper forwards optional interfaces like compress.go: `Unwrap()` returns the original writer (so http.NewResponseController works); `Hijack` and `Push` forward or return the chi/middleware error; on Flush the wrapper commits buffered status/headers/body WITHOUT a computed ETag, flushes the underlying writer, and passes later writes straight through. A test covers streaming via Flush.
+10. WriteHeader called twice: the first status wins; 1xx informational codes are passed straight through and don't fix the final status.
+11. Tests in middleware/etag_test.go cover every criterion and hostile input above.
+12. README "Core middlewares" table has an ETag row and the `[ETag]:` pkg.go.dev link.
+13. Standing: `go test -race ./...`, `go vet ./...` pass and `gofmt -l .` prints nothing; no new dependencies.
+
+Extra probes worth trying: ETag composed with middleware.Compress in both orders; http.NewResponseController(w).Flush() and SetWriteDeadline through the wrapper; handler using io.Copy / http.ServeContent / http.FileServer inside ETag (ServeContent does its own If-None-Match handling — check nothing double-handles or breaks); handler panicking under Recoverer; If-None-Match `*, "a"`; tags with obs-text bytes.
+
+PROJECT CHECKLIST:
+- The change follows the patterns around it (naming, doc comments, README row and link).
+- Anything the sibling named in FILES does that the new code should and doesn't is a finding.
+- Response-writer wrappers: Flush, Hijack, Push, Unwrap, implicit 200 on first Write, WriteHeader called twice.

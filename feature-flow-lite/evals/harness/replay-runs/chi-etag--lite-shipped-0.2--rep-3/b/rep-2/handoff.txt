@@ -1,0 +1,79 @@
+Red-team the uncommitted change in /tmp/claude-0/-home-user-skills/0fc1097f-4e24-5c23-8608-e10aa16a6c85/scratchpad/ff-replay/chi-etag--lite-shipped-0.2--rep-3/workspace (go-chi/chi): new middleware/etag.go, middleware/etag_test.go, plus two README.md lines (`git diff README.md`). Sibling for comparison: middleware/compress.go (compressResponseWriter). Write probes as throwaway `_test.go` files in middleware/ named `zz_probe_*_test.go`, run with `go test -race -run Probe ./middleware`, and DELETE them before you finish. Use real `httptest.NewServer` for anything about wire behavior (304 headers, Content-Length, HEAD, Flush, Hijack, 1xx). Only reproduced failures count as [blocking].
+
+Run it: httptest probes as above. Full checks: `go test -race ./...`, `go vet ./...`, `gofmt -l .`.
+
+ACCEPTANCE CRITERIA:
+1. `middleware.ETag` exists in `middleware/etag.go` with signature `func ETag(next http.Handler) http.Handler` and a doc comment describing behavior (buffers GET/HEAD responses; strong ETag on 200; 304 on If-None-Match match; note that it buffers the whole body in memory).
+2. Methods other than GET and HEAD: `next` is called with the original `http.ResponseWriter` unchanged (no wrapping); status, headers and body are untouched; If-None-Match is ignored.
+   Hostile: POST/PUT with a matching If-None-Match must NOT get 304; lowercase method "get" is not GET (net/http methods are case-sensitive).
+3. GET/HEAD with a final status of 200 (explicit WriteHeader(200), or implicit via Write, or the handler writing nothing at all) and no `ETag` header set by the handler: the response gets a strong ETag `"<opaque>"` (double-quoted, no `W/` prefix, only etagc characters) that is a deterministic hash of the full buffered body (e.g. hex of sha256 or similar). Same body => same ETag; different body => different ETag. The body sent is byte-identical to what the handler wrote, across multiple Write calls.
+   Hostile: body written in many small chunks must hash identically to one big write; empty body (200, no Write) still gets a valid ETag; a handler that sets `ETag` must keep its value exactly (including weak `W/"x"`), never overwritten.
+4. HEAD: if the handler wrote no body bytes on HEAD, do NOT invent an ETag from the empty body (it would disagree with the GET ETag); a handler-set ETag is still used for If-None-Match matching. If a HEAD handler does write the body (e.g. via chi's GetHead or a GET handler serving HEAD), the ETag is computed from those bytes and equals the GET ETag for the same content.
+5. If-None-Match evaluation (GET/HEAD, final status 200 only), per RFC 9110 §13.1.2 using weak comparison: it matches if the header is `*`, or any listed entity-tag weakly matches the response's ETag (computed or handler-set). Weak comparison: opaque-tags equal, ignoring `W/` on either side (`W/"x"` matches `"x"`, `"x"` matches `W/"x"`). Lists are comma-separated with optional whitespace (OWS), may contain empty members, and multiple If-None-Match header lines are combined (use `r.Header.Values`).
+   Hostile: an entity-tag containing a comma inside quotes (`"a,b"` — comma is a legal etagc) is ONE tag and must match ETag `"a,b"` and must not match `"a"`; malformed members (unquoted `abc`, unterminated `"abc`, `W/abc`, `w/"x"` lowercase) must never produce a match, and a valid tag later in the same list should still match; case differs (`"ABC"` vs `"abc"`) => no match; empty header or header of only commas/spaces => no match; `"x"` must not match ETag `"xy"` (no prefix matching).
+6. On match: respond `304 Not Modified` with no body, keep the handler's headers (ETag, Cache-Control, Vary, Expires, Content-Location, Date …) and set the ETag header, and delete `Content-Length` (and the body). On no match: respond 200 with the full body and the ETag.
+7. Non-200 final status (e.g. 201, 204, 206, 301, 404, 500) on GET/HEAD: passes through unchanged — same status, headers and body, no ETag added, no 304 even if If-None-Match matches a handler-set ETag. Once a non-200 status is written, later writes go straight to the underlying writer (no buffering needed).
+   Hostile: `WriteHeader` called twice (200 then 500, or 404 then 200) — the first call wins, as with net/http; a 1xx informational WriteHeader (e.g. 103 Early Hints) is forwarded immediately and is not treated as the final status.
+8. The response writer wrapper forwards optional interfaces the way the sibling `middleware/compress.go` does: `Flush` (http.Flusher), `Hijack` (http.Hijacker; error `chi/middleware: http.Hijacker is unavailable on the writer` when unsupported), `Push` (http.Pusher; analogous error), and `Unwrap() http.ResponseWriter` so `http.ResponseController` works.
+   - Flush mid-response: commits to streaming — writes the status (200 if none yet) and buffered headers/body to the underlying writer, flushes it, and passes all later writes straight through; no ETag is added and no 304 is sent for that response (omitting beats a wrong ETag). Nothing is written twice.
+   - Hijack: after a successful hijack the middleware writes nothing more to the original writer.
+9. If the handler panics, the middleware writes nothing (no partial buffered body, no headers) and the panic propagates, so an outer `Recoverer` can still send a 500.
+10. Per-request state only; safe under concurrent requests (`go test -race` clean). No new dependencies (stdlib only).
+11. Tests in `middleware/etag_test.go` (package `middleware`, `httptest`) cover criteria 2–9 including the hostile inputs above.
+12. README.md: a `| [ETag] | ... |` row in the "Core middlewares" table (alphabetical position, between `[CleanPath]` and `[GetHead]`), with column alignment matching neighbors, and a link line `[ETag]: https://pkg.go.dev/github.com/go-chi/chi/v5/middleware#ETag` in the link list (alphabetical, next to `[CleanPath]`/`[GetHead]`). No other README lines changed.
+13. Standing: existing tests pass; `go test -race ./...`, `go vet ./...` pass; `gofmt -l .` prints nothing; builds with Go 1.24.
+
+Also probe: ETag combined with chi's Recoverer (outer) and a panicking handler; ETag wrapped around Compress and Compress around ETag; http.ResponseController(w).Flush() and SetWriteDeadline from inside the handler; a handler calling WriteHeader(304) itself; handler-set ETag that is malformed (`abc` unquoted) with If-None-Match `"abc"`.
+
+PROJECT CHECKLIST:
+- The change follows the patterns around it (naming, doc comments, README table row and link, tests next to the code).
+- Anything the sibling named in FILES does that the new code should and doesn't is a finding (for writer wrappers: Flush, Hijack, Push, Unwrap / http.ResponseController).
+- Run the tests with `-race`.
+
+APPROVED DIFFERENCES: Flush must not send bytes before the response completes.
+
+TRIGGERED CHECKS:
+## Invariants, round trips and equivalence
+
+- **Trigger:** the criteria state something that must always hold (a balance never negative,
+  a total never over a cap), a round trip (parse then format, encode then decode), idempotency
+  (doing it twice equals doing it once), or that new code must match old code.
+- **Check:** a property test. Use the repo's property library if it has one (Hypothesis,
+  fast-check, proptest); otherwise a seeded random loop of at least 1000 generated inputs,
+  including the hostile ones, that asserts the property and prints the first failing input.
+- **From:** edge cases that the implementor's own tests missed because the tests shared the
+  code's assumptions.
+
+## Wrappers and stand-ins
+
+- **Trigger:** the new code wraps or replaces something: a response writer, stream, handler,
+  middleware, file, parameter type, DOM node.
+- **Check:** a differential test. Run the same inputs through the wrapped and the unwrapped
+  version, across call orders (before and after the first write, flush, hijack, close, a
+  second call), and diff every output: status, headers, body, errors, side effects. The
+  handoff's `APPROVED DIFFERENCES:` lists what the request changes on purpose. A difference
+  not on that list is [blocking]. So is an approved difference that doesn't actually happen:
+  check each one directly, in every call order.
+- **From:** a buffering response writer whose Flush still sent bytes early, which the request
+  ruled out; probes that compared only pass-through behaviour couldn't see it.
+
+## Nesting and composition
+
+- **Trigger:** the code walks a tree or a container (DOM, shadow roots, portals, slots,
+  routers, nested config), or the thing it builds can contain another of itself.
+- **Check:** nest it. Put a target inside another target, including inside another target's
+  shadow root; a dialog in a dialog; a router mounted in a router. Check the inner and the
+  outer each still behave as they do alone, and that nothing inside a target gets the
+  treatment meant for what's outside it.
+- **From:** hide-everything-else logic that walked into a nested target's shadow root, and
+  dialogs where one Escape closed both.
+
+## HTTP responses
+
+- **Trigger:** the change sets or computes response headers, status or body (caching,
+  compression, ETags, content length, streaming).
+- **Check:** probe HEAD, a conditional request that should return 304, an empty body, a
+  response streamed across several writes, headers set after the first write, and an error
+  status. Each gets the headers its method and status call for; a HEAD response never carries
+  a validator computed from an empty body.
+- **From:** ETags computed from the empty body of HEAD responses.

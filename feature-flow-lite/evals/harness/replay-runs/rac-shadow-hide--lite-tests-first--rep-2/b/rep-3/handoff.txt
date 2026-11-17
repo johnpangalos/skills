@@ -1,0 +1,80 @@
+GOAL: Red-team the uncommitted change in /tmp/claude-0/-home-user-skills/0fc1097f-4e24-5c23-8608-e10aa16a6c85/scratchpad/ff-replay/rac-shadow-hide--lite-tests-first--rep-2/workspace (`git diff -- packages/ yarn.lock`) that makes `ariaHideOutside` (packages/@react-aria/overlays/src/ariaHideOutside.ts) shadow-DOM aware when `shadowDOM()` from `@react-stately/flags` is on. Tests: packages/@react-aria/overlays/test/ariaHideOutside.test.js ("with shadow DOM" describe at the end).
+
+FILES: the diff above; packages/@react-aria/utils/src/shadowdom/ShadowTreeWalker.ts (createShadowTreeWalker; how it treats REJECT/SKIP/ACCEPT on a shadow host), packages/@react-aria/utils/src/shadowdom/DOMFunctions.ts (nodeContains), packages/dev/test-utils/src/shadowDOM.ts (createShadowRoot fixture). Sibling: the original light-DOM behavior of the same function (`git show HEAD:packages/@react-aria/overlays/src/ariaHideOutside.ts`).
+
+CONSTRAINTS: Do not edit source or the existing test file. Write probes as a NEW temporary test file, e.g. packages/@react-aria/overlays/test/zz_probe.test.js (call `enableShadowDOM()` from '@react-stately/flags' at the top of that file; jsdom has no `inert`, so probe aria-hidden), run it with `yarn jest <path>`, and DELETE it when done. Don't run `yarn install`. Only reproduced failures count as [blocking].
+
+ACCEPTANCE CRITERIA:
+- With enableShadowDOM() on, for a target inside a shadow root, every element outside the targets is hidden: siblings of the target inside its shadow root, siblings inside every enclosing shadow root (nested hosts), and light DOM siblings of the outermost host. Each shadow host on the path to a target stays visible (no aria-hidden, no inert), and the target and its descendants stay visible.
+- Same with `shouldUseInert: true`: hidden elements get `inert`, hosts on the path and targets do not.
+- After ariaHideOutside runs, an element appended anywhere in a target's shadow root, or in any shadow root enclosing a target, or in the light DOM, gets hidden (await waitFor). An element appended inside a target stays visible. An element appended inside an already-hidden container gets no aria-hidden of its own (same as the light DOM rule).
+- Live announcers (`data-live-announcer="true"`) and top-layer elements (`data-react-aria-top-layer="true"`) stay visible both when present before ariaHideOutside runs and when added afterwards inside a target's shadow root or enclosing shadow root.
+- Targets in different shadow roots work: e.g. an input in shadow root A and its popover in shadow root B (sibling hosts in body): both targets and both hosts stay visible; everything else in A, in B, and in the body is hidden; content added later in A or B is hidden.
+- The returned function restores every element it hid (aria-hidden / inert removed, elements that already had aria-hidden="true" before keep it) and stops observing all roots: content appended to any of those shadow roots after revert stays visible.
+- Nested calls (observerStack) keep working with shadow roots: a second ariaHideOutside call disconnects the first's observers on all its roots; reverting the second re-observes the first's roots (content added then in a shadow root is hidden again by the first).
+- With shadow DOM support off, nothing changes: all existing ariaHideOutside tests pass unchanged, and a test (run before the flag is enabled) shows that with the flag off, siblings inside a target's shadow root are NOT hidden (documents current behavior).
+- `keepVisible` still works for an element inside a shadow root (e.g. added later as a sibling in the shadow root after keepVisible was called, it isn't hidden).
+- Existing repo checks pass: `yarn jest packages/@react-aria/overlays`, `yarn eslint` on changed files, `yarn check-types`.
+
+Hostile inputs to reproduce:
+- Target nested two shadow levels deep with siblings at every level; a sibling shadow host (not on the path) whose shadow content contains elements — is only the host hidden (not each inner element separately), and are they restored?
+- A shadow host that is itself a target.
+- Element added directly as a child of a ShadowRoot; element added inside a hidden sibling host's shadow root later (should get no aria-hidden of its own); element added in a light DOM container that is a sibling.
+- Live announcer added later inside an enclosing shadow root; live announcer inside a non-target sibling shadow host present before the call (light DOM rule: the announcer stays visible, its ancestors are skipped not hidden).
+- An element moved (reparented) from inside the target to a sibling position in the shadow root.
+- Two calls where the second's targets are in a different shadow root than the first; revert out of order.
+- A sibling with role="row" inside a shadow root (cells inside also hidden, as in light DOM).
+- A custom `root` option that is inside a shadow root, or is a light-DOM element that does not contain the host.
+- Revert after the host was removed from the document.
+
+CHECKS: `yarn jest <probe file>`; `yarn jest packages/@react-aria/overlays`.
+
+PROJECT CHECKLIST:
+- The change follows the patterns around it (naming, the `@react-aria/utils` shadow DOM helpers, license headers).
+- Anything the sibling named in FILES does that the new code should and doesn't is a finding.
+- Flag-gated behavior: probe with the flag off as well as on, and check tests don't leak the flag between tests.
+
+TRIGGERED CHECKS:
+## Invariants, round trips and equivalence
+
+- **Trigger:** the criteria state something that must always hold (a balance never negative,
+  a total never over a cap), a round trip (parse then format, encode then decode), idempotency
+  (doing it twice equals doing it once), or that new code must match old code.
+- **Check:** a property test. Use the repo's property library if it has one (Hypothesis,
+  fast-check, proptest); otherwise a seeded random loop of at least 1000 generated inputs,
+  including the hostile ones, that asserts the property and prints the first failing input.
+- **From:** edge cases that the implementor's own tests missed because the tests shared the
+  code's assumptions.
+
+## Wrappers and stand-ins
+
+- **Trigger:** the new code wraps or replaces something: a response writer, stream, handler,
+  middleware, file, parameter type, DOM node.
+- **Check:** a differential test. Run the same inputs through the wrapped and the unwrapped
+  version, across call orders (before and after the first write, flush, hijack, close, a
+  second call), and diff every output: status, headers, body, errors, side effects. The
+  handoff's `APPROVED DIFFERENCES:` lists what the request changes on purpose. A difference
+  not on that list is [blocking]. So is an approved difference that doesn't actually happen:
+  check each one directly, in every call order.
+- **From:** a buffering response writer whose Flush still sent bytes early, which the request
+  ruled out; probes that compared only pass-through behaviour couldn't see it.
+
+## Nesting and composition
+
+- **Trigger:** the code walks a tree or a container (DOM, shadow roots, portals, slots,
+  routers, nested config), or the thing it builds can contain another of itself.
+- **Check:** nest it. Put a target inside another target, including inside another target's
+  shadow root; a dialog in a dialog; a router mounted in a router. Check the inner and the
+  outer each still behave as they do alone, and that nothing inside a target gets the
+  treatment meant for what's outside it.
+- **From:** hide-everything-else logic that walked into a nested target's shadow root, and
+  dialogs where one Escape closed both.
+
+## New dependencies
+
+- **Trigger:** the diff adds or changes a dependency in a manifest (package.json, go.mod,
+  Cargo.toml, pyproject).
+- **Check:** the lockfile changed with it, and the frozen install passes (`yarn install
+  --immutable`, `pnpm install --frozen-lockfile`, `npm ci`, `go mod verify`, `cargo build
+  --locked`).
+- **From:** builds that added a dependency without updating yarn.lock.
