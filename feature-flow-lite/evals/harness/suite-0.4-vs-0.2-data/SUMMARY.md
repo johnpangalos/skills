@@ -253,3 +253,49 @@ Ship 0.5b plus the fixed mod as 0.5, with these open:
 - a final re-review after the last fix round that reports instead of looping;
 - a proportion rule that names meta-tests and emulation layers;
 - NaN handling under the money and numbers check.
+
+# Round 5: candidate-0.5c rerun with the fixed mod (2026-11-17)
+
+The round-4 0.5c builds ran with three mod bugs, so the mod could barely act:
+- background agents hid results from it;
+- its main-edit note couldn't fire in `/tmp` workspaces;
+- its checks rewrite could delete the orchestrator's text.
+
+After fixing those (`cd8fbad`, `3489e9a`) and adding a log line for every delivered note (`6d749d5`), 0.5c ran again: 3 builds each on chi-etag, risky-auth and risky-refunds. Those builds were blind-judged in the round-4 pools (`judge/prep_round5.sh`, `plan5.tsv`, `round5-m*.json`; remap `source` `c2` marks the rerun).
+
+| Task | 0.2 | 0.5 | 0.5b | 0.5c, first mod | 0.5c, fixed mod |
+|---|---|---|---|---|---|
+| chi-etag | 8.05 | 7.20 | 7.25 | 7.42 | 7.75 |
+| risky-refunds | 7.61 | 7.43 | 7.90 | 7.82 | 7.43 |
+| risky-auth | 6.80 | 8.10 | – | 7.58 | 7.67 |
+| Mean | 7.49 | 7.58 | – | 7.61 | 7.62 |
+
+Outcomes for the fixed-mod builds:
+- 8/9 pass every outcome check, including every race stress test.
+- One chi-etag build fails the hidden Flush test. Its orchestrator wrote the approved difference as "held until the handler returns (or first Flush)", so the criteria were wrong before any code was written. It's the first of 17 candidate chi-etag builds to do this.
+
+## What the fixed mod did
+
+- **The last-fix-round note:** delivered in 6 builds, 3 of them on background launches. The orchestrator never called the implementor again. Twice it ran one more review and reported that review's findings as open.
+- **The can't-fail escalation:** fired once. The finding went to the implementor, labelled "[blocking, a test can't fail]".
+- **Carrying findings:** fired once, redundantly, because the orchestrator had listed them under "FINDINGS TO FIX:". That's fixed in `d2b9f60` (54 mod tests pass).
+- **Exact-check additions and restored blocks:** none needed. Every handoff already had them.
+- **False positives:** none, apart from the redundant findings above.
+
+## What it shows
+
+- **The fixed mod works mechanically, but doesn't change quality.**
+  - Its notes reach the orchestrator, including on background agents, and the orchestrator follows them.
+  - In most builds the orchestrator was already counting rounds and carrying findings, because SKILL.md says to. The notes back that up rather than cause it.
+  - Its mean over the three tasks (7.62) is level with the first mod (7.61) and with 0.5 (7.58). The task-by-task swings are within noise for 3 builds.
+- **The approved differences are only as good as the orchestrator's reading of the request.** Without 0.4's Opus criteria-checker, a misread of Flush can still slip through, though rarely (1 in 17).
+
+## Recommendation
+
+Ship 0.5 as candidate-0.5b's SKILL.md, agents and references, plus the fixed mod from candidate-0.5c. The mod is cheap, never deletes, and guards the rules on runs where the orchestrator drifts. It doesn't raise scores.
+
+Open items:
+- a re-review after the last fix round that reports instead of looping;
+- a proportion rule that names meta-tests and emulation layers;
+- NaN under the money and numbers check;
+- a check of approved differences against the request's own words.
