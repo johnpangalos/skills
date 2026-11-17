@@ -272,7 +272,7 @@ After fixing those (`cd8fbad`, `3489e9a`) and adding a log line for every delive
 
 Outcomes for the fixed-mod builds:
 - 8/9 pass every outcome check, including every race stress test.
-- One chi-etag build fails the hidden Flush test. Its orchestrator wrote the approved difference as "held until the handler returns (or first Flush)", so the criteria were wrong before any code was written. It's the first of 17 candidate chi-etag builds to do this.
+- One chi-etag build fails the hidden Flush test. Its orchestrator wrote the approved difference as "held until the handler returns (or first Flush)", so the criteria were wrong before any code was written. It's the only one of 14 judged candidate chi-etag builds to do this.
 
 ## What the fixed mod did
 
@@ -288,7 +288,7 @@ Outcomes for the fixed-mod builds:
   - Its notes reach the orchestrator, including on background agents, and the orchestrator follows them.
   - In most builds the orchestrator was already counting rounds and carrying findings, because SKILL.md says to. The notes back that up rather than cause it.
   - Its mean over the three tasks (7.62) is level with the first mod (7.61) and with 0.5 (7.58). The task-by-task swings are within noise for 3 builds.
-- **The approved differences are only as good as the orchestrator's reading of the request.** Without 0.4's Opus criteria-checker, a misread of Flush can still slip through, though rarely (1 in 17).
+- **The approved differences are only as good as the orchestrator's reading of the request.** Without 0.4's Opus criteria-checker, a misread of Flush can still slip through, though rarely (1 of 14 builds).
 
 ## Recommendation
 
