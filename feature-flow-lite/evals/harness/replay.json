@@ -528,6 +528,92 @@
   "finding_quote": "[blocking] Approved difference does not hold, and it conflicts with criterion 8. The handoff says \"Flush must not send bytes before the response completes\", but `Flush()` \u2192 `startStreaming()` writes status and body to the wire immediately. Reproduced: a real server with the handler writing \"first\", calling Flush, then blocking, delivered `HTTP/1.1 200 OK \u2026 5\\r\\nfirst\\r\\n` before the handler finished. The orchestrator must decide which rule wins; the code follows criterion 8."
  },
  {
+  "item": "chi-etag--lite-tests-first--rep-3",
+  "kind": "clean",
+  "task": "chi-etag",
+  "reviewer": "a",
+  "rep": 1,
+  "cost": 0.03355869,
+  "wall_s": 179.1,
+  "blocking": [
+   "[blocking] Hijack after a buffered 200 loses the response head. Probe: handler calls `w.WriteHeader(200)` (or `w.Write`) then `http.NewResponseController(w).Hijack()` and writes \"RAW\". Without the middleware the client receives `HTTP/1.1 200 OK | Date | Connection: close | Transfer-Encoding: chunked | | RAW`. With `r.Use(ETag)` the client receives only `RAW`. Cause: Hijack forwards to net/http without first sending the held snapshot head, and `hijacked` then suppresses `finish`. Fix: in Hijack, when `wroteHeader && !passthrough`, send the snapshot status and headers before hijacking, or document and reject the case."
+  ],
+  "empty": false,
+  "key": null
+ },
+ {
+  "item": "chi-etag--lite-tests-first--rep-3",
+  "kind": "clean",
+  "task": "chi-etag",
+  "reviewer": "a",
+  "rep": 2,
+  "cost": 0.03428692,
+  "wall_s": 176.8,
+  "blocking": [
+   "[blocking] Hijack after a held 200 loses the status line and headers. `w.WriteHeader(200); w.Write(\"HELLO\"); http.NewResponseController(w).Hijack(); rw.WriteString(\"RAW\")`. Plain server output: `\"HTTP/1.1 200 OK|Date\u2026|Transfer-Encoding: chunked||RAW\"`. With `ETag` outer: `\"RAW\"`. net/http flushes the header before handing over the conn; this middleware discards it, so the client gets a malformed response. Criterion 10 says Hijack forwards, and the criteria do not carve out this case. Fix: on Hijack with a held 200, flush the snapshot status and headers (and buffered body) first, or document the difference."
+  ],
+  "empty": false,
+  "key": null
+ },
+ {
+  "item": "chi-etag--lite-tests-first--rep-3",
+  "kind": "clean",
+  "task": "chi-etag",
+  "reviewer": "a",
+  "rep": 3,
+  "cost": 0.02976057,
+  "wall_s": 151.2,
+  "blocking": [
+   "[blocking] Late declared trailer leaks into headers. Reproduced with `Trailer: X-Sum`, `Write(\"abc\")`, then `Header().Set(\"X-Sum\",\"zz\")`, over httptest.Server. Without ETag: `header.X-Sum=\"\"`, `trailer.X-Sum=\"zz\"`. With `r.Use(ETag)`: `header.X-Sum=\"zz\"`, `trailer.X-Sum=\"zz\"`. Cause: `finish` copies `lateTrailers` back into the header map before `WriteHeader(200)`, so the value goes out as a header too. Criterion 11 says late changes must look the same as without the middleware."
+  ],
+  "empty": false,
+  "key": null
+ },
+ {
+  "item": "chi-etag--lite-tests-first--rep-3",
+  "kind": "clean",
+  "task": "chi-etag",
+  "reviewer": "b",
+  "rep": 1,
+  "cost": 0.02563334,
+  "wall_s": 130.9,
+  "blocking": [
+   "[blocking] Writes after a successful Hijack are silently accepted. The baseline returns an error, and the middleware does not. Reproduced over a real httptest.Server with `ResponseController.Hijack` then `w.Write(\"after\")`: baseline `err=http: connection has been hijacked`, with ETag `err=<nil>`. The middleware drops the bytes into the buffer and reports success, so the handler is misled. Cause: `etagWriter.Write` ignores `ew.hijacked`. Fix: return `http.ErrHijacked` from Write, ReadFrom and WriteHeader once hijacked.",
+   "[blocking] Bytes the handler wrote before Hijack change the wire output. Baseline sends the status line and headers before the raw bytes (`HTTP/1.1 200 OK ... Transfer-Encoding: chunked ... RAW`). With ETag the client gets only `RAW`, with no status line. The approved list covers only Flush, so this is an unapproved difference. Fix: when hijacking a buffered 200, flush the held status and headers to the underlying writer first, or refuse with the same behaviour as net/http."
+  ],
+  "empty": false,
+  "key": null
+ },
+ {
+  "item": "chi-etag--lite-tests-first--rep-3",
+  "kind": "clean",
+  "task": "chi-etag",
+  "reviewer": "b",
+  "rep": 2,
+  "cost": 0.03516438000000001,
+  "wall_s": 169.8,
+  "blocking": [
+   "[blocking] Late declared trailer reaches the header block. `finish` runs `maps.Copy(h, trailers)` before `ew.ResponseWriter.WriteHeader(200)`, so the value is written as a regular header. Repro: `Trailer: X-T`, `Write(\"tt\")`, then `Header().Set(\"X-T\",\"v\")`. Client gets `resp.Header.Get(\"X-T\") == \"v\"` (direct handler: empty). The probe failed with `late trailer X-T leaked into header block: \"v\"`. The existing test \"declared in Trailer header, set late\" misses this because it only checks `X-Late`/`X-Checksum`. In a scratch copy, moving the trailer copy after the underlying Write fixes the leak, but it breaks the existing `TestETagLateTrailersKept/http.TrailerPrefix_key_set_late`, so the fix is not a simple reorder."
+  ],
+  "empty": false,
+  "key": null
+ },
+ {
+  "item": "chi-etag--lite-tests-first--rep-3",
+  "kind": "clean",
+  "task": "chi-etag",
+  "reviewer": "b",
+  "rep": 3,
+  "cost": 0.03797431,
+  "wall_s": 307.5,
+  "blocking": [
+   "[blocking] Hijack after a buffered 200 drops the body the handler already wrote. Repro: GET handler does `Write(\"hi\")`, then `ResponseController.Hijack()`, then writes a raw response. Without ETag the client receives `HTTP/1.1 200 OK \u2026 Transfer-Encoding: chunked \u2026 hi` followed by the raw bytes. With ETag it receives only the raw bytes. Outcome differs and the difference is not approved.",
+   "[blocking] A 1xx sent after a final 200 is forwarded and reaches the client. Repro: `WriteHeader(200)`, then `Header().Set(\"Link\",\u2026)`, then `WriteHeader(103)`, then `Write(\"x\")`. Without ETag the client sees zero 1xx (net/http logs \"superfluous WriteHeader\"). With ETag the client sees a 103. This is an unapproved difference. Impact is low because it is a handler bug."
+  ],
+  "empty": false,
+  "key": null
+ },
+ {
   "item": "rac-shadow-hide--lite-shipped-0.2--rep-2",
   "kind": "bug",
   "task": "rac-shadow-hide",
