@@ -60,7 +60,7 @@ I checked every [blocking] finding on the clean diffs. For each one I either rep
 
 | Diff | Reviewer, reps | Finding | Real? How checked |
 |---|---|---|---|
-| chi-etag tests-first r3 | a r1, a r2; b r1, b r3 | Hijack after a buffered Write drops the status line, headers and body. The client gets only the raw bytes. | **Real.** A Go probe over httptest.Server (`zz_verify_test.go`) gives `plain: "HTTP/1.1 200 OK…\|\|RAW"` and `etag: "RAW"`. |
+| chi-etag tests-first r3 | a r1, a r2; b r1, b r3 | Hijack after a buffered Write drops the status line, headers and body. The client gets only the raw bytes. | **Real.** A Go probe over httptest.Server (`replay-verify-chi_test.go.txt`, run as middleware/zz_verify_test.go) gives `plain: "HTTP/1.1 200 OK…\|\|RAW"` and `etag: "RAW"`. |
 | chi-etag tests-first r3 | a r3, b r2 | A trailer declared and set late also goes out as a header. | **Real.** Same probe: `plain header="" trailer="zz"`, `etag header="zz" trailer="zz"` (`finish` runs `maps.Copy(h, trailers)` before WriteHeader). |
 | chi-etag tests-first r3 | b r1 | A Write after a successful Hijack returns nil, not `http.ErrHijacked`. | **Real.** Probe: plain gives `err=http: connection has been hijacked`, etag gives `err=<nil>`. |
 | chi-etag tests-first r3 | b r3 | A 1xx written after a final 200 is forwarded. | **Real, but low impact.** It's a handler bug that net/http drops as superfluous. The probe shows `HTTP/1.1 103 Early Hints` ahead of the 200 with ETag. |
