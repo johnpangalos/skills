@@ -141,3 +141,70 @@ func TestProbeNonCanonicalKey(t *testing.T) {
 		t.Fatalf("non-canonical ETag key ignored: %d", rec.Code)
 	}
 }
+
+// Answer-key probes (probes/keys.json). TestKey_<id with _ for -> fails when that keyed bug is present.
+
+// flush-bypass: a handler's Flush must not send the buffered bytes early; the response still gets
+// its ETag and a conditional request still gets 304 (as the hidden test requires).
+func TestKey_flush_bypass(t *testing.T) {
+	h := middleware.ETag(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "part1")
+		http.NewResponseController(w).Flush()
+		io.WriteString(w, "part2")
+	}))
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	res, err := http.Get(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	tag := res.Header.Get("ETag")
+	if res.StatusCode != 200 || string(b) != "part1part2" || tag == "" {
+		t.Fatalf("after Flush: %d %q etag %q", res.StatusCode, b, tag)
+	}
+	req, _ := http.NewRequest("GET", srv.URL, nil)
+	req.Header.Set("If-None-Match", tag)
+	res2, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b2, _ := io.ReadAll(res2.Body)
+	res2.Body.Close()
+	if res2.StatusCode != 304 || len(b2) != 0 {
+		t.Fatalf("conditional after Flush: %d %q", res2.StatusCode, b2)
+	}
+}
+
+// head-empty-etag: a HEAD that writes no body (ServeContent, Content-Length only, or neither) must
+// not get a strong ETag that differs from the GET's, i.e. one hashed from the empty body.
+func TestKey_head_empty_etag(t *testing.T) {
+	handlers := map[string]http.HandlerFunc{
+		"servecontent": func(w http.ResponseWriter, r *http.Request) {
+			http.ServeContent(w, r, "a.txt", time.Time{}, strings.NewReader("hello content"))
+		},
+		"contentlength": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Length", "5")
+			if r.Method != "HEAD" {
+				io.WriteString(w, "hello")
+			}
+		},
+		"nobody": func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != "HEAD" {
+				io.WriteString(w, "hello")
+			}
+		},
+	}
+	for name, hf := range handlers {
+		h := middleware.ETag(hf)
+		g := httptest.NewRecorder()
+		h.ServeHTTP(g, httptest.NewRequest("GET", "/", nil))
+		hd := httptest.NewRecorder()
+		h.ServeHTTP(hd, httptest.NewRequest("HEAD", "/", nil))
+		ge, he := g.Header().Get("ETag"), hd.Header().Get("ETag")
+		if he != "" && he != ge {
+			t.Errorf("%s: HEAD ETag %q, GET ETag %q", name, he, ge)
+		}
+	}
+}

@@ -1,6 +1,6 @@
 #!/bin/bash
 # probe.sh <build dir>: prints "pass/total failing..."
-set -u
+set -u; here=$(cd "$(dirname "$0")" && pwd)
 d=$(mktemp -d); cp -r "$1"/. "$d"
 cache="${FF_EVALS_CACHE:-$HOME/.cache/ff-evals}/fd.target"
 [ -d "$cache" ] && [ ! -d "$d/target" ] && cp -r "$cache" "$d/target"
@@ -15,5 +15,9 @@ check print0_conflict_usage_error "cd '$t' && '$fd' --count -0 >/dev/null 2>/dev
 check write_error_reported "cd '$t' && ! '$fd' --count foo >/dev/full 2>/dev/null"
 check tests_assert_message "grep -q 'cannot be used\|assert_failure_with_error\|stderr' <(cd '$d' && git diff HEAD -- tests/ 2>/dev/null || cat tests/tests.rs)"
 check no_partial_count_on_interrupt "[ -z \"\$(timeout -s INT 0.3 '$fd' --color=always --count -u . / 2>/dev/null)\" ]"
+# answer-key probes (probes/keys.json ids). write-error-silent: /dev/full must give a non-zero exit
+# and a message (a closed pipe is left out: plain fd, and every round-2 build, exit silently on EPIPE).
+check write-error-silent "cd '$t' && ! '$fd' --count foo >/dev/full 2>'$t/err' && [ -s '$t/err' ]"
+check zsh-completion "python3 '$here/zsh_count.py' '$d' '$fd' '$t' >/dev/null"
 check count_with_filters "cd '$t' && [ \"\$('$fd' --count -e txt foo)\" = 1 ]"
-echo "$pass/$total$fails"; rm -rf "$d" "$t"
+echo "$pass/$total$fails"; rm -rf "${d:?}" "${t:?}"
