@@ -333,6 +333,7 @@ export const register: Register = on => {
     if (pending.length === 0) return ran
     const notes = pending
     pending = []
+    for (const note of notes) $.ui.log(`${$.plugin.name}: delivered a note with the ${e.tool} result: ${note.split('\n')[0]}`)
     return { ...ran, context: [...(ran.context ?? []), ...notes] }
   }).catch(($, e, next) => next(e))
 

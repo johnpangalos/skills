@@ -725,7 +725,7 @@ test('edits: with no repo root, only the project file, scratchpad and .claude ar
 
   expect(code.context?.[0]).toMatch(/itself/)
   expect(scratch.context ?? []).toEqual([])
-  expect(w.logs).toEqual([])
+  expect(w.logs.filter(line => !line.includes('delivered a note'))).toEqual([])
 })
 
 test('checks: the orchestrator\'s own text after the checks is kept, and reordered exact checks are left alone', async ($, on) => {
@@ -758,4 +758,13 @@ test('findings: "cannot see the bug" and "would pass with the bug" count as a te
   const out = await ran($, REVIEWER)
 
   expect(out.context?.[0]).toMatch(/2 finding\(s\) \[minor\] that say a test can't fail/)
+})
+
+test('notes: each delivered note is also logged, so a trace shows it', async ($, on) => {
+  const w = world(on)
+  await $.skill.prompt({ skill: 'feature-flow-lite', text: '' })
+  for (let i = 0; i < 3; i++) await $.agent.spawn({ prompt: `GOAL: ${i}`, subagentType: IMPLEMENTOR })
+  await ran($, IMPLEMENTOR)
+
+  expect(w.logs.some(line => /delivered a note with the Agent result: .*second fix round/.test(line))).toBe(true)
 })
