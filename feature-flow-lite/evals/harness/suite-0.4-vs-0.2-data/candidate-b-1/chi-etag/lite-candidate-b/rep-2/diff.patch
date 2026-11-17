@@ -1,0 +1,1252 @@
+diff --git a/README.md b/README.md
+index 5f9f443..c47c84b 100644
+--- a/README.md
++++ b/README.md
+@@ -345,6 +345,7 @@ with `net/http` can be used with chi's mux.
+ | [Compress]             | Gzip compression for clients that accept compressed responses           |
+ | [ContentCharset]       | Ensure charset for Content-Type request headers                         |
+ | [CleanPath]            | Clean double slashes from request path                                  |
++| [ETag]                 | Strong ETag for GET/HEAD 200 responses; 304 on If-None-Match match      |
+ | [GetHead]              | Automatically route undefined HEAD requests to GET handlers             |
+ | [Heartbeat]            | Monitoring endpoint to check the servers pulse                          |
+ | [Logger]               | Logs the start and end of each request with the elapsed processing time |
+@@ -374,6 +375,7 @@ with `net/http` can be used with chi's mux.
+ [Compress]: https://pkg.go.dev/github.com/go-chi/chi/v5/middleware#Compress
+ [ContentCharset]: https://pkg.go.dev/github.com/go-chi/chi/v5/middleware#ContentCharset
+ [CleanPath]: https://pkg.go.dev/github.com/go-chi/chi/v5/middleware#CleanPath
++[ETag]: https://pkg.go.dev/github.com/go-chi/chi/v5/middleware#ETag
+ [GetHead]: https://pkg.go.dev/github.com/go-chi/chi/v5/middleware#GetHead
+ [GetReqID]: https://pkg.go.dev/github.com/go-chi/chi/v5/middleware#GetReqID
+ [Heartbeat]: https://pkg.go.dev/github.com/go-chi/chi/v5/middleware#Heartbeat
+diff --git a/middleware/etag.go b/middleware/etag.go
+new file mode 100644
+index 0000000..ffc0344
+--- /dev/null
++++ b/middleware/etag.go
+@@ -0,0 +1,292 @@
++package middleware
++
++import (
++	"bufio"
++	"crypto/sha256"
++	"encoding/hex"
++	"errors"
++	"maps"
++	"net"
++	"net/http"
++	"strings"
++)
++
++// ETag adds a strong ETag to GET and HEAD responses that have status 200 and no
++// ETag of their own, and answers 304 Not Modified when If-None-Match matches it.
++//
++// The response is buffered until the handler returns so the ETag can be computed
++// from the body. Until then, Flush sends nothing to the client. The ETag is the
++// hex SHA-256 digest of the body, quoted. On HEAD, a body-derived ETag is only
++// set when the handler wrote a body, so an empty HEAD response never gets one.
++// If-None-Match uses the weak comparison from RFC 9110 §13.1.2 and also accepts
++// "*". Matching responses are sent as 304 with no body. Responses with any other
++// status, and all other methods, pass through unchanged.
++func ETag(next http.Handler) http.Handler {
++	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		if r.Method != http.MethodGet && r.Method != http.MethodHead {
++			next.ServeHTTP(w, r)
++			return
++		}
++		ew := &etagResponseWriter{ResponseWriter: w, req: r}
++		next.ServeHTTP(ew, r)
++		ew.finish()
++	})
++}
++
++type etagResponseWriter struct {
++	http.ResponseWriter
++	req *http.Request
++
++	// header is the snapshot of the handler's headers taken when status 200 was
++	// written, so later header changes are not sent, as in net/http.
++	header      http.Header
++	body        []byte
++	wroteHeader bool
++	// passthrough is set once a non-200 final status is written. Writes and
++	// Flush then go straight to the underlying writer.
++	passthrough bool
++	// flushed is set when the handler calls Flush while the 200 is buffered.
++	flushed  bool
++	hijacked bool
++}
++
++func (cw *etagResponseWriter) WriteHeader(code int) {
++	if code >= 100 && code <= 199 && code != http.StatusSwitchingProtocols {
++		// Informational responses are sent now and do not set the final status.
++		cw.ResponseWriter.WriteHeader(code)
++		return
++	}
++	if cw.wroteHeader {
++		if cw.passthrough {
++			cw.ResponseWriter.WriteHeader(code) // Let net/http report the superfluous call.
++		}
++		return
++	}
++	cw.wroteHeader = true
++	if code != http.StatusOK {
++		cw.passthrough = true
++		cw.ResponseWriter.WriteHeader(code)
++		return
++	}
++	cw.header = cw.ResponseWriter.Header().Clone()
++}
++
++func (cw *etagResponseWriter) Write(p []byte) (int, error) {
++	if cw.hijacked {
++		return 0, http.ErrHijacked
++	}
++	if !cw.wroteHeader {
++		cw.WriteHeader(http.StatusOK)
++	}
++	if cw.passthrough {
++		return cw.ResponseWriter.Write(p)
++	}
++	cw.body = append(cw.body, p...)
++	return len(p), nil
++}
++
++func (cw *etagResponseWriter) Flush() {
++	if !cw.wroteHeader {
++		cw.WriteHeader(http.StatusOK)
++	}
++	if !cw.passthrough {
++		cw.flushed = true
++		return // A buffered 200 is held until the handler returns.
++	}
++	if f, ok := cw.ResponseWriter.(http.Flusher); ok {
++		f.Flush()
++	}
++}
++
++func (cw *etagResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
++	hj, ok := cw.ResponseWriter.(http.Hijacker)
++	if !ok {
++		return nil, nil, errors.New("chi/middleware: http.Hijacker is unavailable on the writer")
++	}
++	if cw.wroteHeader && !cw.passthrough {
++		// Send the buffered 200 as the handler wrote it, as the bare handler would.
++		cw.sendBuffered()
++		cw.passthrough = true
++	}
++	conn, rw, err := hj.Hijack()
++	if err == nil {
++		cw.hijacked = true
++	}
++	return conn, rw, err
++}
++
++func (cw *etagResponseWriter) Push(target string, opts *http.PushOptions) error {
++	if ps, ok := cw.ResponseWriter.(http.Pusher); ok {
++		return ps.Push(target, opts)
++	}
++	return errors.New("chi/middleware: http.Pusher is unavailable on the writer")
++}
++
++func (cw *etagResponseWriter) Unwrap() http.ResponseWriter {
++	return cw.ResponseWriter
++}
++
++// finish sends the buffered 200 response, adding the ETag and answering 304 when
++// If-None-Match matches.
++func (cw *etagResponseWriter) finish() {
++	if cw.passthrough || cw.hijacked {
++		return
++	}
++	if !cw.wroteHeader {
++		cw.WriteHeader(http.StatusOK)
++	}
++	trailers := cw.restoreHeader()
++
++	h := cw.ResponseWriter.Header()
++	if h.Get("ETag") == "" && (cw.req.Method == http.MethodGet || len(cw.body) > 0) {
++		sum := sha256.Sum256(cw.body)
++		h.Set("ETag", `"`+hex.EncodeToString(sum[:])+`"`)
++	}
++
++	if ifNoneMatchMatches(cw.req.Header.Values("If-None-Match"), h.Get("ETag")) {
++		h.Del("Content-Type")
++		h.Del("Content-Length")
++		h.Del("Content-Encoding")
++		h.Del("Transfer-Encoding")
++		cw.ResponseWriter.WriteHeader(http.StatusNotModified)
++		maps.Copy(h, trailers)
++		return
++	}
++
++	cw.ResponseWriter.WriteHeader(http.StatusOK)
++	maps.Copy(h, trailers)
++	cw.ResponseWriter.Write(cw.body) // net/http drops the body of a HEAD response.
++}
++
++// sendBuffered sends the buffered 200 response as the handler wrote it, with no
++// ETag and no 304 handling. If the handler flushed, it flushes too. Otherwise the
++// body stays unsent, as in net/http, whose Hijack does not flush the response body.
++func (cw *etagResponseWriter) sendBuffered() {
++	trailers := cw.restoreHeader()
++	cw.ResponseWriter.WriteHeader(http.StatusOK)
++	maps.Copy(cw.ResponseWriter.Header(), trailers)
++	cw.ResponseWriter.Write(cw.body)
++	if f, ok := cw.ResponseWriter.(http.Flusher); ok && cw.flushed {
++		f.Flush()
++	}
++}
++
++// restoreHeader replaces the handler's headers with the snapshot taken when status
++// 200 was written, and returns the trailers set since then. net/http reads the
++// headers when the status is written, so the caller copies the trailers back only
++// after that, where net/http reads them when the response ends.
++func (cw *etagResponseWriter) restoreHeader() http.Header {
++	h := cw.ResponseWriter.Header()
++	trailers := make(http.Header)
++	for k, v := range h {
++		if strings.HasPrefix(k, http.TrailerPrefix) {
++			trailers[k] = v
++		}
++	}
++	for _, line := range cw.header.Values("Trailer") {
++		for _, name := range strings.Split(line, ",") {
++			key := http.CanonicalHeaderKey(strings.TrimSpace(name))
++			if v, ok := h[key]; ok {
++				trailers[key] = v
++			}
++		}
++	}
++	clear(h)
++	maps.Copy(h, cw.header)
++	return trailers
++}
++
++// ifNoneMatchMatches reports whether any member of the If-None-Match header lines
++// matches etag by weak comparison (RFC 9110 §8.8.3.2). A "*" member matches any
++// current representation. An empty etag matches only "*".
++func ifNoneMatchMatches(lines []string, etag string) bool {
++	current, ok := parseETag(etag)
++	for _, line := range lines {
++		for _, member := range etagListMembers(line) {
++			if member == "*" {
++				return true
++			}
++			if tag, valid := parseETag(member); ok && valid && tag == current {
++				return true
++			}
++		}
++	}
++	return false
++}
++
++// etagListMembers returns the valid members of an If-None-Match line, as written.
++// Commas and optional whitespace separate members. Malformed members are dropped.
++func etagListMembers(line string) []string {
++	var members []string
++	rest := line
++	for {
++		rest = strings.TrimLeft(rest, " \t,")
++		if rest == "" {
++			return members
++		}
++		var member string
++		var ok bool
++		member, rest, ok = scanETagMember(rest)
++		if ok {
++			members = append(members, member)
++		}
++	}
++}
++
++// scanETagMember reads the If-None-Match member at the start of s, which begins
++// with neither whitespace nor a comma. It returns the member, the text after it,
++// and whether the member is valid. A malformed member is skipped up to the next
++// comma. A malformed quoted member is skipped up to the first comma after its
++// opening quote, so a quote without a closing quote cannot hide the members after it.
++func scanETagMember(s string) (string, string, bool) {
++	quoted := strings.TrimPrefix(s, "W/")
++	if strings.HasPrefix(quoted, `"`) {
++		if i := strings.IndexByte(quoted[1:], '"'); i >= 0 {
++			if rest, ok := afterETagMember(quoted[i+2:]); ok {
++				return s[:len(s)-len(quoted)+i+2], rest, true
++			}
++		}
++		return "", afterComma(quoted), false
++	}
++	if s[0] == '*' {
++		if rest, ok := afterETagMember(s[1:]); ok {
++			return "*", rest, true
++		}
++	}
++	return "", afterComma(s), false
++}
++
++// afterETagMember checks that tail, the text after a member, is empty or starts with
++// a comma after optional whitespace. It returns the text after that comma.
++func afterETagMember(tail string) (string, bool) {
++	tail = strings.TrimLeft(tail, " \t")
++	if tail == "" {
++		return "", true
++	}
++	if tail[0] == ',' {
++		return tail[1:], true
++	}
++	return "", false
++}
++
++// afterComma returns the text after the first comma in s, or "" if s has no comma.
++func afterComma(s string) string {
++	if i := strings.IndexByte(s, ','); i >= 0 {
++		return s[i+1:]
++	}
++	return ""
++}
++
++// parseETag returns the opaque-tag of an entity-tag, with any weak prefix removed.
++// The weak prefix is case-sensitive. The bool is false if s is not an entity-tag.
++func parseETag(s string) (string, bool) {
++	s = strings.TrimPrefix(s, "W/")
++	if len(s) < 2 || s[0] != '"' || s[len(s)-1] != '"' {
++		return "", false
++	}
++	opaque := s[1 : len(s)-1]
++	if strings.Contains(opaque, `"`) {
++		return "", false
++	}
++	return opaque, true
++}
+diff --git a/middleware/etag_test.go b/middleware/etag_test.go
+new file mode 100644
+index 0000000..363b73f
+--- /dev/null
++++ b/middleware/etag_test.go
+@@ -0,0 +1,928 @@
++package middleware
++
++import (
++	"bufio"
++	"context"
++	"errors"
++	"io"
++	"maps"
++	"net"
++	"net/http"
++	"net/http/httptest"
++	"net/http/httptrace"
++	"net/textproto"
++	"regexp"
++	"slices"
++	"strconv"
++	"strings"
++	"testing"
++	"time"
++)
++
++var strongETag = regexp.MustCompile(`^"[0-9a-f]+"$`)
++
++func etagBody(body string) http.Handler {
++	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		w.Write([]byte(body))
++	})
++}
++
++// serveETag runs ETag around h, sending each ifNoneMatch value as its own header line.
++func serveETag(h http.Handler, method string, ifNoneMatch ...string) *httptest.ResponseRecorder {
++	req := httptest.NewRequest(method, "/", nil)
++	for _, v := range ifNoneMatch {
++		req.Header.Add("If-None-Match", v)
++	}
++	rec := httptest.NewRecorder()
++	ETag(h).ServeHTTP(rec, req)
++	return rec
++}
++
++func TestETagSignature(t *testing.T) {
++	var mw func(http.Handler) http.Handler = ETag
++	rec := httptest.NewRecorder()
++	mw(etagBody("hello")).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
++	if rec.Header().Get("ETag") == "" {
++		t.Fatalf("ETag header missing, want a strong ETag added by the middleware")
++	}
++}
++
++func TestETagStrongValidator(t *testing.T) {
++	tests := []struct {
++		name    string
++		handler http.Handler
++	}{
++		{"explicit WriteHeader(200)", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++			w.WriteHeader(http.StatusOK)
++			w.Write([]byte("hello"))
++		})},
++		{"implicit 200 from Write", etagBody("hello")},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			rec := serveETag(tt.handler, http.MethodGet)
++			if rec.Code != http.StatusOK {
++				t.Fatalf("status = %d, want 200", rec.Code)
++			}
++			if got := rec.Body.String(); got != "hello" {
++				t.Fatalf("body = %q, want %q", got, "hello")
++			}
++			if etag := rec.Header().Get("ETag"); !strongETag.MatchString(etag) {
++				t.Fatalf("ETag = %q, want a strong quoted hex digest", etag)
++			}
++		})
++	}
++}
++
++func TestETagFollowsBody(t *testing.T) {
++	alpha := serveETag(etagBody("alpha"), http.MethodGet).Header().Get("ETag")
++	again := serveETag(etagBody("alpha"), http.MethodGet).Header().Get("ETag")
++	beta := serveETag(etagBody("beta"), http.MethodGet).Header().Get("ETag")
++	chunked := serveETag(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		w.Write([]byte("al"))
++		w.Write([]byte("pha"))
++	}), http.MethodGet).Header().Get("ETag")
++	if alpha == "" || alpha != again {
++		t.Fatalf("same body gave ETags %q and %q, want equal", alpha, again)
++	}
++	if chunked != alpha {
++		t.Fatalf("ETag over two writes = %q, want %q from one write", chunked, alpha)
++	}
++	if beta == alpha {
++		t.Fatalf("different bodies share ETag %q", beta)
++	}
++}
++
++func TestETagHostileBodies(t *testing.T) {
++	tests := []struct {
++		name    string
++		handler http.Handler
++		body    string
++	}{
++		{"empty body", etagBody(""), ""},
++		{"1000 one-byte writes", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++			for i := 0; i < 1000; i++ {
++				w.Write([]byte("x"))
++			}
++		}), strings.Repeat("x", 1000)},
++		{"no Write or WriteHeader", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}), ""},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			rec := serveETag(tt.handler, http.MethodGet)
++			if rec.Code != http.StatusOK {
++				t.Fatalf("status = %d, want 200", rec.Code)
++			}
++			if got := rec.Body.String(); got != tt.body {
++				t.Fatalf("body length = %d, want %d", len(got), len(tt.body))
++			}
++			etag := rec.Header().Get("ETag")
++			if !strongETag.MatchString(etag) {
++				t.Fatalf("ETag = %q, want a strong quoted hex digest", etag)
++			}
++			if want := serveETag(etagBody(tt.body), http.MethodGet).Header().Get("ETag"); etag != want {
++				t.Fatalf("ETag = %q, want %q (same bytes in one Write)", etag, want)
++			}
++		})
++	}
++}
++
++func TestETagHead(t *testing.T) {
++	t.Run("empty body gets no ETag", func(t *testing.T) {
++		rec := serveETag(etagBody(""), http.MethodHead)
++		if rec.Code != http.StatusOK {
++			t.Fatalf("status = %d, want 200", rec.Code)
++		}
++		if etag := rec.Header().Get("ETag"); etag != "" {
++			t.Fatalf("ETag = %q on empty HEAD body, want none", etag)
++		}
++	})
++
++	t.Run("body gets the GET ETag and sends no body", func(t *testing.T) {
++		get := serveETag(etagBody("hello"), http.MethodGet).Header().Get("ETag")
++		srv := httptest.NewServer(ETag(etagBody("hello")))
++		defer srv.Close()
++		raw := rawResponse(t, srv.Listener.Addr().String(), "HEAD / HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n")
++		br := bufio.NewReader(strings.NewReader(raw))
++		resp, err := http.ReadResponse(br, httptest.NewRequest(http.MethodHead, "/", nil))
++		if err != nil {
++			t.Fatal(err)
++		}
++		if etag := resp.Header.Get("ETag"); etag != get {
++			t.Fatalf("HEAD ETag = %q, want GET ETag %q", etag, get)
++		}
++		if cl := resp.Header.Get("Content-Length"); cl != "5" {
++			t.Fatalf("Content-Length = %q, want 5", cl)
++		}
++		if rest, _ := io.ReadAll(br); len(rest) != 0 {
++			t.Fatalf("HEAD sent %q after the headers, want no body bytes", rest)
++		}
++	})
++
++	t.Run("handler Content-Length is kept", func(t *testing.T) {
++		h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++			w.Header().Set("Content-Length", "42")
++			w.Write([]byte("hello"))
++		})
++		rec := serveETag(h, http.MethodHead)
++		if cl := rec.Header().Get("Content-Length"); cl != "42" {
++			t.Fatalf("Content-Length = %q, want handler value 42", cl)
++		}
++	})
++}
++
++func TestETagKeepsHandlerValidator(t *testing.T) {
++	for _, etag := range []string{`"v1"`, `W/"v1"`} {
++		t.Run(etag, func(t *testing.T) {
++			withBody := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				w.Header().Set("ETag", etag)
++				w.Write([]byte("hello"))
++			})
++			empty := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				w.Header().Set("ETag", etag)
++			})
++			if got := serveETag(withBody, http.MethodGet).Header().Get("ETag"); got != etag {
++				t.Fatalf("GET ETag = %q, want handler value %q", got, etag)
++			}
++			if got := serveETag(empty, http.MethodHead).Header().Get("ETag"); got != etag {
++				t.Fatalf("empty HEAD ETag = %q, want handler value %q", got, etag)
++			}
++		})
++	}
++}
++
++func TestETagIfNoneMatch(t *testing.T) {
++	tests := []struct {
++		name string
++		etag string // validator the handler sets
++		inm  []string
++		want int
++	}{
++		{"strong match", `"v1"`, []string{`"v1"`}, http.StatusNotModified},
++		{"weak request matches strong", `"v1"`, []string{`W/"v1"`}, http.StatusNotModified},
++		{"strong request matches weak", `W/"v1"`, []string{`"v1"`}, http.StatusNotModified},
++		{"weak matches weak", `W/"v1"`, []string{`W/"v1"`}, http.StatusNotModified},
++		{"list with spaces and tabs", `"v1"`, []string{" \"x\" ,\t\"v1\"  "}, http.StatusNotModified},
++		{"multiple header lines", `"v1"`, []string{`"x"`, `"v1"`}, http.StatusNotModified},
++		{"star matches", `"v1"`, []string{`*`}, http.StatusNotModified},
++		{"no match", `"v1"`, []string{`"x"`}, http.StatusOK},
++		{"quoted comma stays in one tag", `"a,b"`, []string{`"a,b"`}, http.StatusNotModified},
++		{"comma inside a tag does not split", `"a,b"`, []string{`"a", "b"`}, http.StatusOK},
++		{"junk members skipped", `"v1"`, []string{`junk, ,, W/junk, "v1"`}, http.StatusNotModified},
++		{"unterminated member skipped", `"v1"`, []string{`"v1", "unterminated`}, http.StatusNotModified},
++		{"unterminated alone", `"v1"`, []string{`"unterminated`}, http.StatusOK},
++		{"junk alone", `"v1"`, []string{`junk`}, http.StatusOK},
++		{"empty members", `"v1"`, []string{`,,`}, http.StatusOK},
++		{"empty header", `"v1"`, []string{""}, http.StatusOK},
++		{"empty opaque tag does not match", `"v1"`, []string{`""`}, http.StatusOK},
++		{"opaque tags are case sensitive", `"abc"`, []string{`"ABC"`}, http.StatusOK},
++		{"lowercase w is not a weak prefix", `"v1"`, []string{`w/"v1"`}, http.StatusOK},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				w.Header().Set("ETag", tt.etag)
++				w.Write([]byte("hello"))
++			})
++			rec := serveETag(h, http.MethodGet, tt.inm...)
++			if rec.Code != tt.want {
++				t.Fatalf("status = %d, want %d", rec.Code, tt.want)
++			}
++			body := rec.Body.String()
++			if tt.want == http.StatusNotModified && body != "" {
++				t.Fatalf("304 body = %q, want empty", body)
++			}
++			if tt.want == http.StatusOK && body != "hello" {
++				t.Fatalf("200 body = %q, want %q", body, "hello")
++			}
++		})
++	}
++}
++
++func TestETagNotModifiedHeaders(t *testing.T) {
++	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		w.Header().Set("Content-Type", "text/plain")
++		w.Header().Set("Content-Length", "5")
++		w.Header().Set("Content-Encoding", "identity")
++		w.Header().Set("Transfer-Encoding", "identity")
++		w.Header().Set("Cache-Control", "max-age=60")
++		w.Header().Add("Vary", "Accept")
++		w.Write([]byte("hello"))
++	})
++	etag := serveETag(h, http.MethodGet).Header().Get("ETag")
++	rec := serveETag(h, http.MethodGet, etag)
++	if rec.Code != http.StatusNotModified {
++		t.Fatalf("status = %d, want 304", rec.Code)
++	}
++	if rec.Body.Len() != 0 {
++		t.Fatalf("304 body = %q, want empty", rec.Body.String())
++	}
++	header := rec.Result().Header
++	if got := header.Get("ETag"); got != etag {
++		t.Fatalf("ETag = %q, want %q kept", got, etag)
++	}
++	for _, key := range []string{"Content-Type", "Content-Length", "Content-Encoding", "Transfer-Encoding"} {
++		if v := header.Values(key); len(v) != 0 {
++			t.Fatalf("%s = %q on 304, want removed", key, v)
++		}
++	}
++	if got := header.Get("Cache-Control"); got != "max-age=60" {
++		t.Fatalf("Cache-Control = %q, want kept", got)
++	}
++	if got := header.Get("Vary"); got != "Accept" {
++		t.Fatalf("Vary = %q, want kept", got)
++	}
++}
++
++func TestETagOtherMethods(t *testing.T) {
++	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodPatch, http.MethodOptions} {
++		t.Run(method, func(t *testing.T) {
++			rec := httptest.NewRecorder()
++			var seen string
++			var flushed bool
++			h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				w.Write([]byte("hello"))
++				seen = rec.Body.String()
++				http.NewResponseController(w).Flush()
++				flushed = rec.Flushed
++			})
++			req := httptest.NewRequest(method, "/", nil)
++			req.Header.Set("If-None-Match", "*")
++			ETag(h).ServeHTTP(rec, req)
++			if seen != "hello" {
++				t.Fatalf("recorder held %q before the handler returned, want %q streamed", seen, "hello")
++			}
++			if !flushed {
++				t.Fatalf("Flush did not reach the writer")
++			}
++			if rec.Code != http.StatusOK || rec.Body.String() != "hello" {
++				t.Fatalf("status = %d body = %q, want 200 and hello", rec.Code, rec.Body.String())
++			}
++			if etag := rec.Header().Get("ETag"); etag != "" {
++				t.Fatalf("ETag = %q on %s, want none", etag, method)
++			}
++		})
++	}
++}
++
++func TestETagNonOKPassesThrough(t *testing.T) {
++	for _, status := range []int{201, 204, 206, 301, 304, 404, 500} {
++		for _, method := range []string{http.MethodGet, http.MethodHead} {
++			t.Run(method+" "+strconv.Itoa(status), func(t *testing.T) {
++				h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++					w.Header().Set("X-Test", "yes")
++					w.WriteHeader(status)
++					w.Write([]byte("body"))
++				})
++				rec := serveETag(h, method, "*")
++				if rec.Code != status {
++					t.Fatalf("status = %d, want %d", rec.Code, status)
++				}
++				if etag := rec.Header().Get("ETag"); etag != "" {
++					t.Fatalf("ETag = %q on status %d, want none", etag, status)
++				}
++				if got := rec.Header().Get("X-Test"); got != "yes" {
++					t.Fatalf("X-Test = %q, want yes", got)
++				}
++				if got := rec.Body.String(); got != "body" {
++					t.Fatalf("body = %q, want %q", got, "body")
++				}
++			})
++		}
++	}
++}
++
++func TestETagNonOKIgnoresValidator(t *testing.T) {
++	for _, status := range []int{404, 500} {
++		t.Run(strconv.Itoa(status), func(t *testing.T) {
++			h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				w.Header().Set("ETag", `"v1"`)
++				w.WriteHeader(status)
++				w.Write([]byte("body"))
++			})
++			rec := serveETag(h, http.MethodGet, `"v1"`)
++			if rec.Code != status {
++				t.Fatalf("status = %d, want %d (If-None-Match not applied)", rec.Code, status)
++			}
++			if got := rec.Header().Get("ETag"); got != `"v1"` {
++				t.Fatalf("ETag = %q, want handler value kept", got)
++			}
++		})
++	}
++}
++
++func TestETagFirstStatusWins(t *testing.T) {
++	tests := []struct {
++		name          string
++		first, second int
++		want          int
++		etag          bool
++	}{
++		{"200 then 500 keeps 200", http.StatusOK, http.StatusInternalServerError, http.StatusOK, true},
++		{"201 then 500 keeps 201", http.StatusCreated, http.StatusInternalServerError, http.StatusCreated, false},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				w.WriteHeader(tt.first)
++				w.WriteHeader(tt.second)
++				w.Write([]byte("body"))
++			})
++			rec := serveETag(h, http.MethodGet)
++			if rec.Code != tt.want {
++				t.Fatalf("status = %d, want %d", rec.Code, tt.want)
++			}
++			if got := rec.Header().Get("ETag") != ""; got != tt.etag {
++				t.Fatalf("ETag present = %v, want %v", got, tt.etag)
++			}
++			if got := rec.Body.String(); got != "body" {
++				t.Fatalf("body = %q, want %q", got, "body")
++			}
++		})
++	}
++}
++
++func TestETagInformationalResponse(t *testing.T) {
++	forwarded := make(chan struct{})
++	srv := httptest.NewServer(ETag(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		w.Header().Set("Link", "</style.css>; rel=preload")
++		w.WriteHeader(http.StatusEarlyHints)
++		body := "late"
++		select {
++		case <-forwarded:
++			body = "hello"
++		case <-time.After(5 * time.Second):
++		}
++		w.Write([]byte(body))
++	})))
++	defer srv.Close()
++
++	var codes []int
++	trace := &httptrace.ClientTrace{
++		Got1xxResponse: func(code int, _ textproto.MIMEHeader) error {
++			codes = append(codes, code)
++			close(forwarded)
++			return nil
++		},
++	}
++	req, err := http.NewRequestWithContext(httptrace.WithClientTrace(context.Background(), trace), http.MethodGet, srv.URL, nil)
++	if err != nil {
++		t.Fatal(err)
++	}
++	resp, err := http.DefaultClient.Do(req)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer resp.Body.Close()
++	body, err := io.ReadAll(resp.Body)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if !slices.Equal(codes, []int{http.StatusEarlyHints}) {
++		t.Fatalf("informational codes = %v, want [103] forwarded immediately", codes)
++	}
++	if resp.StatusCode != http.StatusOK {
++		t.Fatalf("final status = %d, want 200", resp.StatusCode)
++	}
++	if string(body) != "hello" {
++		t.Fatalf("body = %q, want %q (103 was not forwarded before the handler wrote)", body, "hello")
++	}
++	want := serveETag(etagBody("hello"), http.MethodGet).Header().Get("ETag")
++	if !strongETag.MatchString(want) {
++		t.Fatalf("reference ETag = %q, want a strong quoted hex digest", want)
++	}
++	if got := resp.Header.Get("ETag"); got != want {
++		t.Fatalf("ETag = %q, want %q", got, want)
++	}
++}
++
++func TestETagHeadersAfterWriteHeader(t *testing.T) {
++	for _, status := range []int{http.StatusOK, http.StatusCreated} {
++		t.Run(strconv.Itoa(status), func(t *testing.T) {
++			h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				w.Header().Set("X-Test", "before")
++				w.WriteHeader(status)
++				w.Header().Set("X-Test", "after")
++				w.Header().Set("X-Late", "yes")
++				w.Write([]byte("hello"))
++			})
++			rec := serveETag(h, http.MethodGet)
++			if rec.Code != status {
++				t.Fatalf("status = %d, want %d", rec.Code, status)
++			}
++			header := rec.Result().Header
++			if got := header.Get("X-Test"); got != "before" {
++				t.Fatalf("X-Test = %q, want value at WriteHeader time", got)
++			}
++			if got := header.Get("X-Late"); got != "" {
++				t.Fatalf("X-Late = %q, want header set after WriteHeader dropped", got)
++			}
++		})
++	}
++}
++
++func TestETagUnwrap(t *testing.T) {
++	rec := httptest.NewRecorder()
++	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		u, ok := w.(interface{ Unwrap() http.ResponseWriter })
++		if !ok {
++			t.Fatalf("wrapped writer has no Unwrap method")
++		}
++		if u.Unwrap() != rec {
++			t.Fatalf("Unwrap did not return the underlying writer")
++		}
++	})
++	ETag(h).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
++}
++
++// hijackRecorder is a ResponseRecorder that also accepts Hijack.
++type hijackRecorder struct {
++	*httptest.ResponseRecorder
++	hijacked bool
++}
++
++func (h *hijackRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
++	h.hijacked = true
++	return nil, nil, nil
++}
++
++// pushRecorder is a ResponseRecorder that also accepts Push.
++type pushRecorder struct {
++	*httptest.ResponseRecorder
++	pushed string
++}
++
++func (p *pushRecorder) Push(target string, _ *http.PushOptions) error {
++	p.pushed = target
++	return nil
++}
++
++func TestETagHijack(t *testing.T) {
++	t.Run("forwards to the writer and writes nothing after", func(t *testing.T) {
++		hr := &hijackRecorder{ResponseRecorder: httptest.NewRecorder()}
++		var err error
++		h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++			_, _, err = http.NewResponseController(w).Hijack()
++			w.Write([]byte("after"))
++		})
++		ETag(h).ServeHTTP(hr, httptest.NewRequest(http.MethodGet, "/", nil))
++		if err != nil {
++			t.Fatalf("Hijack error = %v, want nil", err)
++		}
++		if !hr.hijacked {
++			t.Fatalf("Hijack was not forwarded to the writer")
++		}
++		if hr.Body.Len() != 0 {
++			t.Fatalf("wrote %q after a hijack, want nothing", hr.Body.String())
++		}
++	})
++
++	t.Run("unsupported writer", func(t *testing.T) {
++		var err error
++		h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++			_, _, err = http.NewResponseController(w).Hijack()
++		})
++		ETag(h).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
++		if err == nil || err.Error() != "chi/middleware: http.Hijacker is unavailable on the writer" {
++			t.Fatalf("Hijack error = %v, want chi/middleware: http.Hijacker is unavailable on the writer", err)
++		}
++	})
++}
++
++func TestETagPush(t *testing.T) {
++	t.Run("forwards to the writer", func(t *testing.T) {
++		pr := &pushRecorder{ResponseRecorder: httptest.NewRecorder()}
++		h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++			p, ok := w.(http.Pusher)
++			if !ok {
++				t.Errorf("wrapped writer does not implement http.Pusher")
++				return
++			}
++			if err := p.Push("/style.css", nil); err != nil {
++				t.Errorf("Push error = %v, want nil", err)
++			}
++		})
++		ETag(h).ServeHTTP(pr, httptest.NewRequest(http.MethodGet, "/", nil))
++		if pr.pushed != "/style.css" {
++			t.Fatalf("pushed = %q, want /style.css", pr.pushed)
++		}
++	})
++
++	t.Run("unsupported writer", func(t *testing.T) {
++		var err error
++		h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++			p, ok := w.(http.Pusher)
++			if !ok {
++				t.Errorf("wrapped writer does not implement http.Pusher")
++				return
++			}
++			err = p.Push("/style.css", nil)
++		})
++		ETag(h).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
++		if err == nil || err.Error() != "chi/middleware: http.Pusher is unavailable on the writer" {
++			t.Fatalf("Push error = %v, want chi/middleware: http.Pusher is unavailable on the writer", err)
++		}
++	})
++}
++
++func TestETagFlush(t *testing.T) {
++	tests := []struct {
++		name        string
++		steps       func(w http.ResponseWriter)
++		wantSeen    string // what the recorder held before the handler returned
++		wantFlushed bool
++	}{
++		{"200 flush before write holds bytes", func(w http.ResponseWriter) {
++			http.NewResponseController(w).Flush()
++			w.Write([]byte("hello"))
++			http.NewResponseController(w).Flush()
++		}, "", false},
++		{"200 write then flush holds bytes", func(w http.ResponseWriter) {
++			w.Write([]byte("hello"))
++			http.NewResponseController(w).Flush()
++		}, "", false},
++		{"201 write then flush goes through", func(w http.ResponseWriter) {
++			w.WriteHeader(http.StatusCreated)
++			w.Write([]byte("hello"))
++			http.NewResponseController(w).Flush()
++		}, "hello", true},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			rec := httptest.NewRecorder()
++			var seen string
++			var flushed bool
++			h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				tt.steps(w)
++				seen = rec.Body.String()
++				flushed = rec.Flushed
++			})
++			ETag(h).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
++			if seen != tt.wantSeen {
++				t.Fatalf("recorder held %q before return, want %q", seen, tt.wantSeen)
++			}
++			if flushed != tt.wantFlushed {
++				t.Fatalf("recorder flushed = %v, want %v", flushed, tt.wantFlushed)
++			}
++			if rec.Body.String() != "hello" {
++				t.Fatalf("final body = %q, want %q", rec.Body.String(), "hello")
++			}
++		})
++	}
++}
++
++// brokenWriter fails every body write.
++type brokenWriter struct {
++	*httptest.ResponseRecorder
++}
++
++func (brokenWriter) Write([]byte) (int, error) {
++	return 0, errors.New("broken pipe")
++}
++
++func TestETagWriteErrorsDeferred(t *testing.T) {
++	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		n, err := w.Write([]byte("hello"))
++		if n != 5 || err != nil {
++			t.Errorf("Write = (%d, %v), want (5, nil) while buffering", n, err)
++		}
++	})
++	ETag(h).ServeHTTP(brokenWriter{httptest.NewRecorder()}, httptest.NewRequest(http.MethodGet, "/", nil))
++}
++
++type etagResult struct {
++	code   int
++	body   string
++	header http.Header
++}
++
++func fetchETag(t *testing.T, url, method string) etagResult {
++	t.Helper()
++	req, err := http.NewRequest(method, url, nil)
++	if err != nil {
++		t.Fatal(err)
++	}
++	resp, err := http.DefaultClient.Do(req)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer resp.Body.Close()
++	body, err := io.ReadAll(resp.Body)
++	if err != nil {
++		t.Fatal(err)
++	}
++	header := resp.Header.Clone()
++	header.Del("Date")
++	header.Del("ETag")
++	return etagResult{resp.StatusCode, string(body), header}
++}
++
++func TestETagIfNoneMatchMembers(t *testing.T) {
++	tests := []struct {
++		name        string
++		etag        string
++		ifNoneMatch string
++		code        int
++	}{
++		{"unterminated quote before a valid tag", `"v1"`, `"unterminated, "v1"`, http.StatusNotModified},
++		{"unterminated quote before a weak valid tag", `"v1"`, `"unterminated, W/"v1"`, http.StatusNotModified},
++		{"quoted comma matches the same opaque-tag", `"a,b"`, `"a,b"`, http.StatusNotModified},
++		{"quoted comma is not split", `"a"`, `"a,b"`, http.StatusOK},
++		{"junk after closing quote", `"v1"`, `"x"junk, "v1"`, http.StatusNotModified},
++		{"junk member", `"v1"`, `junk, "v1"`, http.StatusNotModified},
++		{"weak junk member", `"v1"`, `W/junk, "v1"`, http.StatusNotModified},
++		{"empty members", `"v1"`, `,,`, http.StatusOK},
++		{"unterminated quote alone", `"v1"`, `"unterminated`, http.StatusOK},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				w.Header().Set("ETag", tt.etag)
++				w.Write([]byte("hello"))
++			})
++			rec := serveETag(h, http.MethodGet, tt.ifNoneMatch)
++			if rec.Code != tt.code {
++				t.Fatalf("status = %d, want %d", rec.Code, tt.code)
++			}
++		})
++	}
++}
++
++// rawResponse sends request to addr over a plain connection and returns every byte the server sends back.
++func rawResponse(t *testing.T, addr, request string) string {
++	t.Helper()
++	conn, err := net.Dial("tcp", addr)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer conn.Close()
++	if _, err := io.WriteString(conn, request); err != nil {
++		t.Fatal(err)
++	}
++	out, err := io.ReadAll(conn)
++	if err != nil {
++		t.Fatal(err)
++	}
++	return string(out)
++}
++
++// hijackAndSend hijacks w, writes RAW to the connection and closes it.
++func hijackAndSend(t *testing.T, w http.ResponseWriter) {
++	t.Helper()
++	conn, rw, err := http.NewResponseController(w).Hijack()
++	if err != nil {
++		t.Error(err)
++		return
++	}
++	defer conn.Close()
++	rw.WriteString("RAW")
++	rw.Flush()
++}
++
++// TestETagHijackSendsBufferedResponse compares the raw bytes of a hijacked response with the bare handler's.
++func TestETagHijackSendsBufferedResponse(t *testing.T) {
++	tests := []struct {
++		name    string
++		handler http.HandlerFunc
++	}{
++		{"after WriteHeader and Write", func(w http.ResponseWriter, r *http.Request) {
++			w.WriteHeader(http.StatusOK)
++			w.Write([]byte("hello"))
++			hijackAndSend(t, w)
++		}},
++		{"before any write", func(w http.ResponseWriter, r *http.Request) {
++			hijackAndSend(t, w)
++		}},
++		{"Flush before any write", func(w http.ResponseWriter, r *http.Request) {
++			http.NewResponseController(w).Flush()
++			hijackAndSend(t, w)
++		}},
++		{"after WriteHeader, Write and Flush", func(w http.ResponseWriter, r *http.Request) {
++			w.WriteHeader(http.StatusOK)
++			w.Write([]byte("hello"))
++			http.NewResponseController(w).Flush()
++			hijackAndSend(t, w)
++		}},
++	}
++	dateLine := regexp.MustCompile(`(?m)^Date: .*\r\n`)
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			bare := httptest.NewServer(tt.handler)
++			defer bare.Close()
++			wrapped := httptest.NewServer(ETag(tt.handler))
++			defer wrapped.Close()
++			request := "GET / HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n"
++			want := dateLine.ReplaceAllString(rawResponse(t, bare.Listener.Addr().String(), request), "")
++			got := dateLine.ReplaceAllString(rawResponse(t, wrapped.Listener.Addr().String(), request), "")
++			if got != want {
++				t.Fatalf("raw response = %q, want %q", got, want)
++			}
++		})
++	}
++}
++
++// failingHijackRecorder is a ResponseRecorder whose Hijack always fails.
++type failingHijackRecorder struct {
++	*httptest.ResponseRecorder
++}
++
++func (failingHijackRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
++	return nil, nil, errors.New("hijack refused")
++}
++
++// TestETagHijackFailureAfterBufferedOK documents that a failed Hijack after a buffered 200
++// has already sent the response, so no ETag can be added. The bare handler sends the same
++// response without an ETag, so this is the only difference in this path.
++func TestETagHijackFailureAfterBufferedOK(t *testing.T) {
++	rec := failingHijackRecorder{httptest.NewRecorder()}
++	var err error
++	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		w.Write([]byte("hello"))
++		_, _, err = http.NewResponseController(w).Hijack()
++	})
++	ETag(h).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
++	if err == nil || err.Error() != "hijack refused" {
++		t.Fatalf("Hijack error = %v, want hijack refused", err)
++	}
++	if rec.Code != http.StatusOK || rec.Body.String() != "hello" {
++		t.Fatalf("response = %d %q, want 200 %q", rec.Code, rec.Body.String(), "hello")
++	}
++	if etag := rec.Header().Get("ETag"); etag != "" {
++		t.Fatalf("ETag = %q, want none because the buffered 200 was already sent", etag)
++	}
++}
++
++// trailerValue returns the named trailer that the server sends after the body of url.
++func trailerValue(t *testing.T, url, name string) string {
++	t.Helper()
++	resp, err := http.Get(url)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer resp.Body.Close()
++	if _, err := io.ReadAll(resp.Body); err != nil {
++		t.Fatal(err)
++	}
++	return resp.Trailer.Get(name)
++}
++
++func TestETagTrailers(t *testing.T) {
++	tests := []struct {
++		name    string
++		handler http.HandlerFunc
++		trailer string
++		value   string
++	}{
++		{"declared trailer set after the body", func(w http.ResponseWriter, r *http.Request) {
++			w.Header().Set("Trailer", "X-Sum")
++			w.Write([]byte("hello"))
++			w.Header().Set("X-Sum", "abc")
++		}, "X-Sum", "abc"},
++		{"Trailer prefix set after the body", func(w http.ResponseWriter, r *http.Request) {
++			w.Header().Set("Trailer", "X-Late")
++			w.Write([]byte("hello"))
++			w.Header()[http.TrailerPrefix+"X-Late"] = []string{"late"}
++		}, "X-Late", "late"},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			bare := httptest.NewServer(tt.handler)
++			defer bare.Close()
++			wrapped := httptest.NewServer(ETag(tt.handler))
++			defer wrapped.Close()
++			if got := trailerValue(t, bare.URL, tt.trailer); got != tt.value {
++				t.Fatalf("bare trailer %s = %q, want %q", tt.trailer, got, tt.value)
++			}
++			if got := trailerValue(t, wrapped.URL, tt.trailer); got != tt.value {
++				t.Fatalf("wrapped trailer %s = %q, want %q", tt.trailer, got, tt.value)
++			}
++		})
++	}
++}
++
++// TestETagTrailerPrefixAfterShortBody compares the raw bytes of a short body whose trailer is
++// set with the TrailerPrefix after the body. The bare handler sends Content-Length and drops
++// the trailer, and the wrapped handler must do the same.
++func TestETagTrailerPrefixAfterShortBody(t *testing.T) {
++	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		w.Write([]byte("hello"))
++		w.Header()[http.TrailerPrefix+"X-Pfx2"] = []string{"p2"}
++	})
++	bare := httptest.NewServer(handler)
++	defer bare.Close()
++	wrapped := httptest.NewServer(ETag(handler))
++	defer wrapped.Close()
++	request := "GET / HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n"
++	dateAndETag := regexp.MustCompile(`(?im)^(Date|ETag): .*\r\n`)
++	want := dateAndETag.ReplaceAllString(rawResponse(t, bare.Listener.Addr().String(), request), "")
++	got := dateAndETag.ReplaceAllString(rawResponse(t, wrapped.Listener.Addr().String(), request), "")
++	if !strings.Contains(want, "Content-Length: 5\r\n") {
++		t.Fatalf("bare response = %q, want Content-Length: 5 framing", want)
++	}
++	if got != want {
++		t.Fatalf("raw response = %q, want %q", got, want)
++	}
++}
++
++// TestETagDifferential compares the wrapped handler with the bare one over a real server.
++// The only expected difference is the added ETag header.
++func TestETagDifferential(t *testing.T) {
++	tests := []struct {
++		name    string
++		handler http.HandlerFunc
++	}{
++		{"write only", func(w http.ResponseWriter, r *http.Request) {
++			w.Write([]byte("hello"))
++		}},
++		{"large body", func(w http.ResponseWriter, r *http.Request) {
++			w.Write([]byte(strings.Repeat("x", 5000)))
++		}},
++		{"explicit 200 and headers", func(w http.ResponseWriter, r *http.Request) {
++			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
++			w.Header().Set("Cache-Control", "no-cache")
++			w.WriteHeader(http.StatusOK)
++			w.Write([]byte("hello"))
++		}},
++		{"headers after WriteHeader", func(w http.ResponseWriter, r *http.Request) {
++			w.Header().Set("X-Test", "before")
++			w.WriteHeader(http.StatusOK)
++			w.Header().Set("X-Test", "after")
++			w.Write([]byte("hello"))
++		}},
++		{"second WriteHeader ignored", func(w http.ResponseWriter, r *http.Request) {
++			w.WriteHeader(http.StatusOK)
++			w.WriteHeader(http.StatusInternalServerError)
++			w.Write([]byte("hello"))
++		}},
++		{"empty", func(w http.ResponseWriter, r *http.Request) {}},
++		{"created", func(w http.ResponseWriter, r *http.Request) {
++			w.WriteHeader(http.StatusCreated)
++			w.Write([]byte("hello"))
++		}},
++		{"not found", func(w http.ResponseWriter, r *http.Request) {
++			w.WriteHeader(http.StatusNotFound)
++			w.Write([]byte("hello"))
++		}},
++	}
++	for _, tt := range tests {
++		plain := httptest.NewServer(tt.handler)
++		defer plain.Close()
++		wrapped := httptest.NewServer(ETag(tt.handler))
++		defer wrapped.Close()
++		for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodPost} {
++			t.Run(tt.name+" "+method, func(t *testing.T) {
++				want := fetchETag(t, plain.URL, method)
++				got := fetchETag(t, wrapped.URL, method)
++				if got.code != want.code {
++					t.Fatalf("status = %d, want %d", got.code, want.code)
++				}
++				if got.body != want.body {
++					t.Fatalf("body = %q, want %q", got.body, want.body)
++				}
++				if !maps.EqualFunc(got.header, want.header, slices.Equal) {
++					t.Fatalf("headers = %v, want %v", got.header, want.header)
++				}
++			})
++		}
++	}
++}

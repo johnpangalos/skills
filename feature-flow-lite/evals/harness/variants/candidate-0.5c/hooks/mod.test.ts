@@ -468,7 +468,7 @@ function reviewed(text: string, agentId = 'agent-r') {
   return { status: 'completed', agentId, content: [{ type: 'text', text }], prompt: '' }
 }
 
-test('checks: a paraphrased TRIGGERED CHECKS block is put back in the words of checks.md', async ($, on) => {
+test('checks: a paraphrased TRIGGERED CHECKS block gets the exact words of checks.md added, and keeps its own', async ($, on) => {
   const w = world(on)
   const reads = withChecks(on)
   await $.skill.prompt({ skill: 'feature-flow-lite', text: '' })
@@ -477,9 +477,11 @@ test('checks: a paraphrased TRIGGERED CHECKS block is put back in the words of c
     subagentType: IMPLEMENTOR,
   })
 
-  expect(w.spawned[0]).toBe(`GOAL: a\n${BLOCK}\nTRIGGERED CHECKS:\n\n${SHARED}\n\n${INVARIANTS}\nCHECKS: npm test`)
+  expect(w.spawned[0]).toBe(
+    `GOAL: a\n${BLOCK}\nTRIGGERED CHECKS:\n\n${SHARED}\n\n${INVARIANTS}\n\n- Shared state: hammer it with threads.\n- Invariants: property test the cap.\nCHECKS: npm test`,
+  )
   expect(reads[0]).toMatch(/references\/checks\.md$/)
-  expect(w.logs.some(line => line.includes('in the words of references/checks.md'))).toBe(true)
+  expect(w.logs.some(line => line.includes('added the exact words of references/checks.md'))).toBe(true)
 })
 
 test('checks: an exact block is left alone, and a dropped one is restored in fix rounds and re-reviews', async ($, on) => {
@@ -696,7 +698,7 @@ test('checks: the exact text with different blank lines is not rewritten or logg
   await $.agent.spawn({ prompt, subagentType: IMPLEMENTOR })
 
   expect(w.spawned[0]).toBe(prompt)
-  expect(w.logs.some(line => line.includes('in the words of'))).toBe(false)
+  expect(w.logs.some(line => line.includes('exact words'))).toBe(false)
 })
 
 test('edits: a repo under /tmp is still the repo, and paths outside it are fine', async ($, on) => {
@@ -724,4 +726,36 @@ test('edits: with no repo root, only the project file, scratchpad and .claude ar
   expect(code.context?.[0]).toMatch(/itself/)
   expect(scratch.context ?? []).toEqual([])
   expect(w.logs).toEqual([])
+})
+
+test('checks: the orchestrator\'s own text after the checks is kept, and reordered exact checks are left alone', async ($, on) => {
+  const w = world(on)
+  withChecks(on)
+  await $.skill.prompt({ skill: 'feature-flow-lite', text: '' })
+  const extra = 'Work tests first. Also property-test the matcher against the stdlib on 1000 random headers.'
+  const reordered = `GOAL: a\n${BLOCK}\nTRIGGERED CHECKS:\n\n${INVARIANTS}\n\n${SHARED}\n\n${extra}`
+  await $.agent.spawn({ prompt: reordered, subagentType: IMPLEMENTOR })
+  const partial = `GOAL: b\n${BLOCK}\nTRIGGERED CHECKS:\n\n${SHARED}\n- Invariants: property test it.\n\n${extra}`
+  await $.agent.spawn({ prompt: partial, subagentType: REVIEWER })
+
+  expect(w.spawned[0]).toBe(reordered)
+  expect(w.spawned[1]).toContain(extra)
+  expect(w.spawned[1]).toContain(INVARIANTS)
+  expect(w.spawned[1]).toContain('- Invariants: property test it.')
+  expect(w.spawned[1].split(SHARED)).toHaveLength(2)
+})
+
+test('findings: "cannot see the bug" and "would pass with the bug" count as a test that can\'t fail', async ($, on) => {
+  const w = world(on)
+  w.agent.result = reviewed(
+    [
+      'FINDINGS:',
+      '- [minor] `TestETagTrailersReachClient` checks only resp.Trailer, so it cannot see the duplicate header. It would pass with the bug above.',
+      '- [minor] TestHead would still pass with the mutant applied.',
+    ].join('\n'),
+  )
+  await $.skill.prompt({ skill: 'feature-flow-lite', text: '' })
+  const out = await ran($, REVIEWER)
+
+  expect(out.context?.[0]).toMatch(/2 finding\(s\) \[minor\] that say a test can't fail/)
 })

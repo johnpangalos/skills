@@ -94,13 +94,19 @@ function checkKey(title: string): string {
   return (title.split(/,| and /)[0] ?? title).trim().toLowerCase()
 }
 
-// The checks a TRIGGERED CHECKS block names, in checks.md order, each with its
-// exact text. Empty when it names none we know.
-function canonicalChecks(block: string, checks: readonly Check[]): string | undefined {
+// A TRIGGERED CHECKS block with the exact text of every check it names that
+// isn't already there word for word, inserted right after the header. It only
+// adds: whatever the orchestrator wrote stays, in its order. Undefined when
+// nothing needs adding.
+function withExactChecks(block: string, checks: readonly Check[]): string | undefined {
   const lower = block.toLowerCase()
-  const named = checks.filter(c => lower.includes(c.title.toLowerCase()) || lower.includes(checkKey(c.title)))
-  if (named.length === 0) return undefined
-  return ['TRIGGERED CHECKS:', ...named.map(c => c.text)].join('\n\n')
+  const have = squash(block)
+  const missing = checks.filter(
+    c => (lower.includes(c.title.toLowerCase()) || lower.includes(checkKey(c.title))) && !have.includes(squash(c.text)),
+  )
+  if (missing.length === 0) return undefined
+  const [header, ...rest] = block.split('\n')
+  return [header, '', missing.map(c => c.text).join('\n\n'), ...(rest.length > 0 ? ['', ...rest] : [])].join('\n')
 }
 
 // Reviewer findings, one per line, from the result text: every line tagged
@@ -121,6 +127,8 @@ const WEAK_TEST = new RegExp(
     'passes? on the unchanged',
     "(?:wouldn'?t|would not|won'?t) (?:fail|catch)",
     'catch(?:es)? (?:a |the )?(?:lock|race)[^.;]* only (?:when|if) widened',
+    '(?:would|will|does) (?:still )?pass (?:with|on|against|even with|despite) (?:the |this |that )?(?:bug|mutant|mutation|regression|broken)',
+    "(?:can'?t|cannot|doesn'?t|does not) (?:see|observe|detect|notice) (?:the |this |that )?(?:bug|duplicate|race|regression|difference)",
   ].join('|'),
   'i',
 )
@@ -249,10 +257,10 @@ export const register: Register = on => {
       const checkBlock = headerBlock(prompt, 'TRIGGERED CHECKS')
       if (checkBlock !== undefined) {
         checks ??= await loadChecks($)
-        const exact = checks.length > 0 ? canonicalChecks(checkBlock, checks) : undefined
-        if (exact !== undefined && squash(exact) !== squash(checkBlock)) {
+        const exact = checks.length > 0 ? withExactChecks(checkBlock, checks) : undefined
+        if (exact !== undefined) {
           prompt = prompt.replace(checkBlock, exact)
-          $.ui.log(`${$.plugin.name}: put the TRIGGERED CHECKS in the ${role} handoff back in the words of references/checks.md.`)
+          $.ui.log(`${$.plugin.name}: added the exact words of references/checks.md to the TRIGGERED CHECKS in the ${role} handoff.`)
         }
         savedChecks = exact ?? checkBlock
       } else if (savedChecks !== undefined) {

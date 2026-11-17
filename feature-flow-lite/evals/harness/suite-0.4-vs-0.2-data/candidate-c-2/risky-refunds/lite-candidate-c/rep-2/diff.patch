@@ -1,0 +1,390 @@
+diff --git a/README.md b/README.md
+index 620cc9b..0567a7e 100644
+--- a/README.md
++++ b/README.md
+@@ -1,7 +1,9 @@
+ # shop
+ 
+ Checkout logic for a small online coffee shop: catalog, cart totals, receipts,
+-and password-reset tokens. Standard library only.
++orders with partial refunds, and password-reset tokens. Standard library only.
++Refunds are whole-cent amounts that can't take an order past its total, and
++repeating a refund key returns the original refund (`shop/orders.py`).
+ 
+     ./check.sh        # lint + unit tests (run before every commit)
+ 
+diff --git a/shop/orders.py b/shop/orders.py
+new file mode 100644
+index 0000000..b57891b
+--- /dev/null
++++ b/shop/orders.py
+@@ -0,0 +1,77 @@
++"""Orders and partial refunds (in-memory store)."""
++
++import itertools
++import threading
++from decimal import Decimal, InvalidOperation
++
++from shop.money import CENT
++
++_LOCK = threading.RLock()  # guards order ids and every refund check-and-write
++_ORDER_IDS = itertools.count(1)
++
++
++class RefundError(ValueError):
++    pass
++
++
++class Order:
++    def __init__(self, order_id, total):
++        self.id = order_id
++        self.total = total
++        self._refunds = {}  # idempotency key -> Refund
++
++    def refunded(self):
++        """Sum of this order's refunds."""
++        with _LOCK:
++            return sum((r.amount for r in self._refunds.values()), Decimal("0.00"))
++
++    def refundable(self):
++        """Amount of the total not yet refunded."""
++        with _LOCK:
++            return self.total - self.refunded()
++
++
++class Refund:
++    def __init__(self, order_id, amount, key):
++        self.order_id = order_id
++        self.amount = amount
++        self.key = key
++
++
++def place_order(cart):
++    """Freeze the cart's current total into a new Order."""
++    if not cart.items:
++        raise ValueError("cannot place an order for an empty cart")
++    total = cart.total()
++    with _LOCK:
++        order_id = next(_ORDER_IDS)
++    return Order(order_id, total)
++
++
++def _check_amount(amount):
++    """Raise RefundError unless amount is a positive Decimal in whole cents."""
++    if not isinstance(amount, Decimal) or not amount.is_finite() or amount <= 0:
++        raise RefundError(f"refund amount must be a positive finite Decimal: {amount!r}")
++    try:
++        whole_cents = amount == amount.quantize(CENT)
++    except InvalidOperation:  # too many digits to quantize
++        whole_cents = False
++    if not whole_cents:
++        raise RefundError(f"refund amount must be whole cents: {amount!r}")
++
++
++def refund(order, amount, key):
++    """Refund amount from order. Repeating a key returns its original Refund."""
++    _check_amount(amount)
++    with _LOCK:
++        previous = order._refunds.get(key)
++        if previous is not None:
++            if previous.amount != amount:
++                raise RefundError(f"key {key!r} was already used for {previous.amount}")
++            return previous
++        available = order.refundable()
++        if amount > available:
++            raise RefundError(f"refund {amount} exceeds refundable {available}")
++        record = Refund(order.id, amount, key)
++        order._refunds[key] = record
++        return record
+diff --git a/tests/test_orders.py b/tests/test_orders.py
+new file mode 100644
+index 0000000..21af7a1
+--- /dev/null
++++ b/tests/test_orders.py
+@@ -0,0 +1,286 @@
++import random
++import threading
++import unittest
++from decimal import Decimal
++
++from shop import orders
++from shop.cart import Cart
++from shop.orders import Order, Refund, RefundError, place_order, refund
++
++HOSTILE_AMOUNTS = [
++    Decimal("NaN"),
++    Decimal("sNaN"),
++    Decimal("-NaN"),
++    Decimal("Infinity"),
++    Decimal("-Infinity"),
++    Decimal("0"),
++    Decimal("-0.00"),
++    Decimal("-1.00"),
++    Decimal("0.001"),
++    Decimal("1E-3"),
++    Decimal("1.005"),
++    5,
++    True,
++    5.0,
++    "5.00",
++    None,
++    Decimal("1E+30"),
++    Decimal("1E+999999"),
++]
++
++
++def _cart():
++    cart = Cart()
++    cart.add("MUG", 4)  # 88.00 merchandise, free shipping, 7.26 tax
++    return cart
++
++
++def _order():
++    return place_order(_cart())
++
++
++def _run_threads(count, target):
++    barrier = threading.Barrier(count)
++    errors = []
++
++    def worker(index):
++        try:
++            barrier.wait()
++            target(index)
++        except Exception as exc:  # collected and asserted by the caller
++            errors.append(exc)
++
++    threads = [threading.Thread(target=worker, args=(i,)) for i in range(count)]
++    for thread in threads:
++        thread.start()
++    for thread in threads:
++        thread.join()
++    return errors
++
++
++def _random_amount(rng):
++    if rng.randrange(10) == 0:
++        return rng.choice(HOSTILE_AMOUNTS)
++    return Decimal(f"{rng.randrange(-5, 20001)}E{rng.choice([-3, -2, -2, 0])}")
++
++
++class ModuleTest(unittest.TestCase):
++    def test_docstring_is_one_line(self):
++        self.assertTrue(orders.__doc__)
++        self.assertEqual(len(orders.__doc__.strip().splitlines()), 1)
++
++    def test_refund_error_is_value_error(self):
++        self.assertTrue(issubclass(RefundError, ValueError))
++
++
++class PlaceOrderTest(unittest.TestCase):
++    def test_order_total_is_cart_total(self):
++        order = _order()
++        self.assertIsInstance(order, Order)
++        self.assertEqual(order.total, Decimal("95.26"))
++
++    def test_cart_changes_after_placement_do_not_change_total(self):
++        cart = _cart()
++        order = place_order(cart)
++        cart.add("BEAN-ETH")
++        cart.remove("MUG")
++        self.assertEqual(order.total, Decimal("95.26"))
++        self.assertNotEqual(cart.total(), Decimal("95.26"))
++
++    def test_emptied_cart_raises(self):
++        cart = _cart()
++        cart.remove("MUG")
++        with self.assertRaises(ValueError):
++            place_order(cart)
++
++    def test_empty_cart_raises_and_creates_no_order(self):
++        before = _order()
++        with self.assertRaises(ValueError):
++            place_order(Cart())
++        after = _order()
++        self.assertEqual(after.id, before.id + 1)
++
++    def test_sequential_orders_have_different_ids(self):
++        first = _order()
++        second = _order()
++        self.assertNotEqual(first.id, second.id)
++
++    def test_many_sequential_orders_have_distinct_ids(self):
++        ids = [_order().id for _ in range(200)]
++        self.assertEqual(len(set(ids)), 200)
++
++    def test_ids_unique_across_threads(self):
++        cart = _cart()
++        ids = []
++
++        def place(_index):
++            for _ in range(200):
++                ids.append(place_order(cart).id)
++
++        errors = _run_threads(8, place)
++        self.assertEqual(errors, [])
++        self.assertEqual(len(ids), 1600)
++        self.assertEqual(len(set(ids)), 1600)
++
++
++class RefundRecordTest(unittest.TestCase):
++    def test_refund_records_order_id_amount_and_key(self):
++        order = _order()
++        record = refund(order, Decimal("1.00"), "k1")
++        self.assertIsInstance(record, Refund)
++        self.assertEqual(record.order_id, order.id)
++        self.assertEqual(record.amount, Decimal("1.00"))
++        self.assertEqual(record.key, "k1")
++
++    def test_refunded_and_refundable_track_refunds(self):
++        order = _order()
++        self.assertIsInstance(order.refunded(), Decimal)
++        self.assertIsInstance(order.refundable(), Decimal)
++        self.assertEqual(order.refunded(), Decimal("0.00"))
++        self.assertEqual(order.refundable(), order.total)
++        refund(order, Decimal("10.00"), "k1")
++        self.assertIsInstance(order.refunded(), Decimal)
++        self.assertIsInstance(order.refundable(), Decimal)
++        self.assertEqual(order.refunded(), Decimal("10.00"))
++        self.assertEqual(order.refundable(), order.total - Decimal("10.00"))
++
++
++class AmountTest(unittest.TestCase):
++    def test_equal_whole_cent_spellings_accepted(self):
++        for spelling in ("1.5", "1.50", "1.500"):
++            with self.subTest(amount=spelling):
++                order = _order()
++                refund(order, Decimal(spelling), "k")
++                self.assertEqual(order.refunded(), Decimal("1.50"))
++
++    def test_invalid_amounts_raise_and_change_nothing(self):
++        for amount in HOSTILE_AMOUNTS:
++            with self.subTest(amount=repr(amount)):
++                order = _order()
++                with self.assertRaises(RefundError):
++                    refund(order, amount, "k")
++                self.assertEqual(order.refunded(), Decimal("0.00"))
++                record = refund(order, Decimal("1.00"), "k")
++                self.assertEqual(record.amount, Decimal("1.00"))
++
++
++class CapTest(unittest.TestCase):
++    def test_refund_over_total_raises_and_key_stays_free(self):
++        order = _order()
++        with self.assertRaises(RefundError):
++            refund(order, order.total + Decimal("0.01"), "k")
++        self.assertEqual(order.refunded(), Decimal("0.00"))
++        record = refund(order, order.total, "k")
++        self.assertEqual(record.amount, order.total)
++
++    def test_two_partials_exceeding_total_by_one_cent(self):
++        order = _order()
++        refund(order, order.total - Decimal("1.00"), "a")
++        with self.assertRaises(RefundError):
++            refund(order, Decimal("1.01"), "b")
++        self.assertEqual(order.refunded(), order.total - Decimal("1.00"))
++
++    def test_exact_remaining_then_nothing_left(self):
++        order = _order()
++        refund(order, order.total, "a")
++        self.assertEqual(order.refundable(), Decimal("0.00"))
++        with self.assertRaises(RefundError):
++            refund(order, Decimal("0.01"), "b")
++
++    def test_concurrent_distinct_keys_never_exceed_total(self):
++        for _round in range(50):
++            order = _order()
++            results = []
++
++            def attempt(index):
++                try:
++                    results.append(refund(order, Decimal("15.00"), f"t{index}"))
++                except RefundError:
++                    results.append(None)
++
++            errors = _run_threads(8, attempt)
++            self.assertEqual(errors, [])
++            succeeded = [r for r in results if r is not None]
++            self.assertEqual(len(succeeded), 6)
++            self.assertEqual(order.refunded(), sum(r.amount for r in succeeded))
++            self.assertLessEqual(order.refunded(), order.total)
++
++
++class IdempotencyTest(unittest.TestCase):
++    def test_replay_returns_original_refund_without_refunding_again(self):
++        order = _order()
++        first = refund(order, Decimal("5"), "k")
++        again = refund(order, Decimal("5.00"), "k")
++        self.assertIs(again, first)
++        self.assertEqual(order.refunded(), Decimal("5.00"))
++
++    def test_replay_with_different_amount_raises_and_changes_nothing(self):
++        order = _order()
++        refund(order, Decimal("5.00"), "k")
++        with self.assertRaises(RefundError):
++            refund(order, Decimal("6.00"), "k")
++        self.assertEqual(order.refunded(), Decimal("5.00"))
++
++    def test_same_key_on_two_orders_refunds_both(self):
++        first_order = _order()
++        second_order = _order()
++        first = refund(first_order, Decimal("1.00"), "k")
++        second = refund(second_order, Decimal("1.00"), "k")
++        self.assertIsNot(first, second)
++        self.assertEqual(first_order.refunded(), Decimal("1.00"))
++        self.assertEqual(second_order.refunded(), Decimal("1.00"))
++
++    def test_replay_after_full_refund_returns_original(self):
++        order = _order()
++        first = refund(order, order.total, "k")
++        self.assertIs(refund(order, order.total, "k"), first)
++        self.assertEqual(order.refunded(), order.total)
++
++    def test_replay_with_different_amount_after_full_refund_raises(self):
++        order = _order()
++        refund(order, order.total, "k")
++        with self.assertRaises(RefundError):
++            refund(order, Decimal("0.01"), "k")
++
++    def test_concurrent_same_key_records_one_refund(self):
++        for _round in range(30):
++            order = _order()
++            results = []
++
++            def attempt(_index):
++                results.append(refund(order, Decimal("5.00"), "same"))
++
++            errors = _run_threads(8, attempt)
++            self.assertEqual(errors, [])
++            self.assertEqual(len(results), 8)
++            self.assertTrue(all(r is results[0] for r in results))
++            self.assertEqual(order.refunded(), Decimal("5.00"))
++
++
++class PropertyTest(unittest.TestCase):
++    def test_random_refunds_keep_invariants(self):
++        rng = random.Random(51)
++        order = _order()
++        seen = {}
++        for step in range(1500):
++            amount = _random_amount(rng)
++            key = rng.randrange(40)
++            context = f"step={step} amount={amount!r} key={key}"
++            before = order.refunded()
++            try:
++                record = refund(order, amount, key)
++            except RefundError:
++                self.assertEqual(order.refunded(), before, context)
++                continue
++            self.assertLessEqual(order.refunded(), order.total, context)
++            if key in seen:
++                self.assertIs(record, seen[key], context)
++                self.assertEqual(order.refunded(), before, context)
++            else:
++                seen[key] = record
++                self.assertIsInstance(amount, Decimal, context)
++                self.assertTrue(amount.is_finite(), context)
++                self.assertGreater(amount, 0, context)
++                self.assertEqual(amount, amount.quantize(Decimal("0.01")), context)
++                self.assertEqual(order.refunded(), before + amount, context)
++        self.assertEqual(order.refunded(), sum(r.amount for r in seen.values()))
