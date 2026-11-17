@@ -1,0 +1,1607 @@
+[
+ {
+  "id": "chi-etag",
+  "reports": [
+   {
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "A HEAD request whose handler writes no body (e.g. http.ServeContent, which skips the body on HEAD) gets no ETag, so a conditional HEAD using the GET's ETag returns 200 rather than 304. The doc comment explains this choice and it avoids sending a wrong ETag, but it means conditional HEAD does not work behind ServeContent.",
+      "evidence": "Throwaway probe in middleware/: ServeContent HEAD -> '200 etag=\"\" CL=\"8\"'; HEAD with If-None-Match set to the GET's ETag -> 200. Source: middleware/etag.go:117-120."
+     },
+     {
+      "severity": "minor",
+      "what": "Write errors from the underlying writer are dropped in startStreaming and finish, so a client disconnect is not visible to the handler. This happens after the handler returns in finish, so the impact is small.",
+      "evidence": "middleware/etag.go:73 and :128 (w.ResponseWriter.Write(...) return values ignored)"
+     },
+     {
+      "severity": "minor",
+      "what": "The whole body is buffered with no size cap. The doc comment states this, and there is no escape hatch for large GET responses other than Flush.",
+      "evidence": "middleware/etag.go:18-19, 37"
+     }
+    ],
+    "overall": 8.5,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8.5,
+     "code_quality": 8.5,
+     "tests": 9,
+     "docs": 8.5,
+     "product": 8.5
+    },
+    "strengths": [
+     "Tolerant RFC 9110 If-None-Match parser: weak comparison, multiple header lines, OWS, empty list members, commas inside quoted tags, and invalid members skipped while later valid tags still match ('garbage, \"tag\"' -> 304, 'garbage' -> 200, '\"a\", *' -> 200)",
+     "Handler-set ETag (including a weak one) is kept and used for matching; on a 304, Content-Length is removed and Cache-Control/Vary are kept",
+     "Non-200 responses and other methods stream straight through; the first status wins; 1xx informational responses are forwarded; Flush switches to streaming; Hijack, Push and Unwrap are handled (ResponseController.Flush works)",
+     "Works behind http.ServeContent for GET (200 with computed ETag; 304 on match; Range gives 206 with no ETag added)",
+     "Thorough table-driven tests over a real httptest server, covering parser edge cases, panic, hijack, 1xx and concurrency",
+     "go build, test (also with -race), vet and gofmt are clean; README row and pkg.go.dev link added in the existing style"
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 606,
+     "test_cases": 54
+    },
+    "summary": "Build A is a well-built ETag middleware. In /tmp/inspect-chi-etag-A, `go build ./...`, `go test ./...` (also with -race), `go vet ./...` and `gofmt -l` are all clean. Probe tests confirmed: GET gets a strong SHA-256 ETag; POST passes through; non-200 passes through even with `*`; a handler's own (weak) ETag is kept and matched; weak tags, lists, `*` and garbage members behave as RFC 9110 describes; io.Copy works (ReadFrom is not exposed, but writes go to the buffer); Flush, Hijack and ResponseController.Flush work; ServeContent GET and Range work. One deliberate design choice has a cost: a HEAD whose handler writes no body gets no computed ETag, so a conditional HEAD behind ServeContent returns 200 instead of 304. The doc comment explains it. Code is compact and idiomatic, tests are extensive and meaningful, and the README row and link are present. The CHANGELOG only holds per-release compare links, so no entry was expected.",
+    "letter": "A"
+   },
+   {
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 9,
+     "code_quality": 7,
+     "tests": 8,
+     "docs": 8,
+     "product": 7
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "A HEAD response whose handler writes no body (for example http.ServeContent, which skips the body on HEAD) gets no ETag, while GET gets one. A HEAD sent with the GET's tag in If-None-Match therefore gets 200, not 304. This is deliberate (etag.go:125 `w.method == http.MethodGet || w.buf.Len() > 0`) and covered by a test, but the doc comment does not mention it.",
+      "evidence": "A throwaway test with ETag(ServeContent(\"hello world\")) logged: `GET -> 200 etag=\"b94d27...\" cl=11` and `HEAD -> 200 body=\"\" etag=\"\" cl=11`. A handler that sets Content-Length: 5 and writes the body only on GET gave the same result: GET has an etag, HEAD has etag=\"\"."
+     },
+     {
+      "severity": "minor",
+      "what": "If-None-Match parsing stops at the first malformed member, so a valid matching tag after a garbage member is ignored. This matches net/http's checkIfNoneMatch and is tested, but it is stricter than lenient parsers.",
+      "evidence": "A throwaway test logged `GET inm=\"junk, \\\"b94d...\\\"\" -> 200`. `W/\"b94d...\", junk` gives 304. See etag.go:202-205."
+     },
+     {
+      "severity": "minor",
+      "what": "The trailer bookkeeping (snapshotTrailers/etagHoldTrailers, held map, about 40 lines) is a lot of machinery for a small middleware. The test file is about 4x the size of the code (856 vs 220 non-blank lines) and has a differential wire harness that is heavy for chi's usual test style.",
+      "evidence": "middleware/etag.go:149-176; `grep -cv '^\\s*$'` gives etag.go:220 and etag_test.go:856."
+     },
+     {
+      "severity": "minor",
+      "what": "Test comments leak process jargon that means nothing to a maintainer: '(AC10)' and the test name 'ApprovedDifferences'.",
+      "evidence": "middleware/etag_test.go:630 \"...the wrapper always does (AC10)\"; etag_test.go:437 TestETagApprovedDifferences; etag_test.go:655 \"Only the approved differences may appear\"."
+     },
+     {
+      "severity": "minor",
+      "what": "A Flush on a buffered 200 is silently a no-op (it only records the status). The doc comment warns against streamed responses but does not say that Flush is swallowed.",
+      "evidence": "etag.go:78-88. TestETagApprovedDifferences asserts rec.Flushed == false after the handler calls Flush."
+     }
+    ],
+    "strengths": [
+     "Every spec requirement holds in my probes. GET 200 gets a strong sha256 ETag. A handler-set ETag is kept and still triggers 304. Weak comparison, comma lists, multiple header lines and * all work. POST, other methods and non-200 statuses pass through unchanged, and the handler receives the unwrapped writer for non-GET/HEAD requests.",
+     "Careful writer semantics. 1xx informational responses are forwarded, a non-200 switches to streaming passthrough (Write and Flush forwarded), Hijack writes any buffered 200 before handing over the connection, and Push and Unwrap are provided. ReadFrom is deliberately not implemented, so io.Copy goes through the buffer (verified).",
+     "The 304 response drops Content-Type, Content-Length, Content-Encoding and Last-Modified and keeps Cache-Control, Vary, Expires and Set-Cookie. If-None-Match is copied before the inner handlers run, so NoCache cannot hide it.",
+     "Works with Compress in both orders. With ETag outside, the tag covers the gzip bytes and differs from the identity tag (I checked both orders, and 304 works in each). The doc comment explains the recommended order.",
+     "The test suite is very thorough: table-driven If-None-Match cases, wire-level differential tests over real connections, seeded property tests, and panic, concurrency, trailer and Compress interaction.",
+     "The README row and link are added in alphabetical order and column-aligned. Build, test and vet pass, and gofmt is clean."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 1078,
+     "test_cases": 28
+    },
+    "summary": "Build B meets the spec. The go build, go test, go vet and gofmt -l checks pass. My throwaway probes covered ServeContent, Range, Compress in both orders, weak tags, lists, *, garbage members and Flush on POST, and every result was correct. The main behavioural limitation is minor: a HEAD with no body (for example from ServeContent) gets no ETag and cannot return 304. The rest is quality: the trailer handling is heavier than the task needs, the 900-line test file is far larger than chi's usual tests and much bigger than the code, and test comments leak process jargon ('AC10', 'approved differences'). A maintainer would probably merge it after trimming the tests and comments.",
+    "letter": "B"
+   },
+   {
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 7,
+     "tests": 8,
+     "docs": 8,
+     "product": 7
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "A HEAD response whose handler writes no body (e.g. it only sets Content-Length) gets no ETag, while the GET for the same resource does. RFC 9110 says HEAD should carry the same header fields as GET. The choice is documented and avoids hashing an empty body, but HEAD and GET differ.",
+      "evidence": "Throwaway probe: a HEAD handler that only sets Content-Length: 5 returned 200 with headers map[Content-Length:[5]] and no ETag (etag.go:165 `r.Method == http.MethodGet || w.body.Len() > 0`)."
+     },
+     {
+      "severity": "minor",
+      "what": "`If-None-Match: *` on a HEAD response that has no ETag (empty body) still returns 304. This is defensible, since the representation exists, but it gives a 304 with no validator.",
+      "evidence": "etag.go:230-233 returns true for `*` regardless of etag; covered by the build's own test 'star on empty body gives 304 without ETag' (etag_test.go:376)."
+     },
+     {
+      "severity": "minor",
+      "what": "A malformed leading member stops parsing for the whole line, so a valid tag that follows it is ignored. This matches net/http's checkIfNoneMatch, so it is not a spec violation, but it is lenient in only one direction.",
+      "evidence": "Probe: If-None-Match `garbage, \"<tag>\"` -> 200; `\"<tag>\", garbage` -> 304; `\"a\" junk, \"<tag>\"` -> 200 (etag.go:236-243)."
+     },
+     {
+      "severity": "minor",
+      "what": "The wrapper does not implement io.ReaderFrom, so io.Copy falls back to Write, and pass-through (non-200) responses lose the sendfile fast path.",
+      "evidence": "Probe handler: `_, isRF := w.(io.ReaderFrom)` logged `is ReaderFrom: false`. The io.Copy body was still hashed correctly."
+     },
+     {
+      "severity": "minor",
+      "what": "The implementation and tests are heavy for a chi middleware: 255 non-blank source lines (trailer copying, 1xx forwarding, Push, hijack-commit logic) and a 1026-line test file with idiosyncratic names such as TestETagApprovedDifferencesInEveryCallOrder. That is much larger than sibling middleware tests and could deter a maintainer.",
+      "evidence": "`grep -c . middleware/etag.go middleware/etag_test.go` -> 255 / 1026"
+     }
+    ],
+    "strengths": [
+     "All spec behaviours verified by probes. GET/HEAD 200 gets a strong SHA-256 ETag. POST, 404 and 201 pass through unchanged. A handler-set W/\"v1\" is kept and matched by both \"v1\" and W/\"v1\". Comma lists and `*` give 304 with Content-Type and Content-Length stripped.",
+     "Works with http.ServeContent: plain GET gets an ETag, a matching INM gets 304, and a Range request's 206 passes through untouched.",
+     "Careful wrapper semantics: Flush is a no-op while buffering and forwarded after a non-200; Hijack commits buffered output first; Unwrap, Push and FlushError are supported; trailers are preserved; 1xx responses are forwarded; non-canonical ETag header keys are detected.",
+     "go build, go test ./..., go vet ./... all pass; gofmt -l clean; the ETag tests run in about 0.03s.",
+     "README table row and link reference added in alphabetical order, matching the existing format.",
+     "Differential tests compare wrapped and unwrapped handlers across many call orders, plus real-server probes."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 1283,
+     "test_cases": 177
+    },
+    "summary": "Build C adds middleware/etag.go, middleware/etag_test.go and a README row. It meets the spec, including weak comparison, lists, `*` and handler-set ETags, and it handles Flush, Hijack, ServeContent and trailers correctly. Build, test, vet and gofmt are all clean. I found no blockers or major bugs. The remaining issues are minor: HEAD responses with no body get no ETag (deliberate), `*` gives a 304 with no validator, a malformed leading INM member ends parsing of that line, and there is no ReaderFrom. The main drawback is size: the implementation and especially the 1000-line test file are much heavier than chi's other middleware, which a maintainer might ask to trim.",
+    "letter": "C"
+   },
+   {
+    "overall": 7,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 7,
+     "tests": 6,
+     "docs": 8,
+     "product": 6
+    },
+    "defects": [
+     {
+      "severity": "major",
+      "what": "The test file is out of proportion to the change: 1227 lines (1128 non-blank) for a 260-line middleware. It includes meta-tests that parse etag.go's doc comment for keywords and check where the README row sits. It also has a 2000-iteration property test and a combinatorial differential harness that generates about 2,400 subtests. That is a large maintenance burden for chi's lightweight test style, and it makes doc and README wording changes break tests. A reviewer would ask for it to be trimmed.",
+      "evidence": "middleware/etag_test.go:119 TestETagDocComment uses go/parser on etag.go and requires the words \"GET\",\"HEAD\",\"memory\",\"Compress\",\"If-None-Match\"; :862 TestETagReadmeRow reads ../README.md and checks the row comes between CleanPath and GetHead; :885 TestETagPropertyRandomized; :1123 TestETagDifferential builds every op sequence up to length 3 from 9 ops, run for GET/HEAD/POST. `grep -c . middleware/etag_test.go` -> 1128"
+     },
+     {
+      "severity": "minor",
+      "what": "A HEAD response with an empty body gets no ETag, even when the matching GET does. This includes http.ServeContent, which writes no body for HEAD. As a result, HEAD with an If-None-Match taken from the GET response returns 200 instead of 304, and HEAD and GET headers differ. This is documented in the doc comment, but it is inconsistent with RFC 9110's expectation that HEAD headers mirror GET.",
+      "evidence": "Throwaway probe (middleware/zz_probe_test.go) with http.ServeContent behind ETag: GET -> 200 etag=\"6aed04...\" cl=12; HEAD -> 200 etag=\"\" cl=12; HEAD If-None-Match:\"6aed04...\" -> 200 (GET with the same header -> 304)"
+     },
+     {
+      "severity": "minor",
+      "what": "The wrapper re-implements net/http's Content-Length enforcement: it tracks contentLength, written and lengthHeader, and returns ErrContentLength when the handler writes past the declared length. This adds state and branches that most ETag middlewares don't need. It is correct, but harder to read.",
+      "evidence": "middleware/etag.go:43-60 (struct fields), :85-99 (Write length check), :101-109 declaredLength, :172-181 restoreLength"
+     },
+     {
+      "severity": "minor",
+      "what": "The wrapped writer does not implement io.ReaderFrom, so io.Copy falls back to Write. The result is still correct, but there is no fast path in passthrough mode.",
+      "evidence": "Probe: `_, ok := any(&etagResponseWriter{}).(io.ReaderFrom)` -> false; io.Copy body \"copied\" still produced 200 with correct ETag"
+     }
+    ],
+    "strengths": [
+     "Every spec behavior I probed is correct. GET and HEAD get a strong SHA-256 ETag. A matching If-None-Match returns 304 with no body and no Content-Length. Weak comparison works (W/ prefix in either the request or the handler tag). Lists work, malformed members (`garbage`, `\"x\" junk`) are skipped without blocking later matches, and a standalone `*` matches.",
+     "A handler-set ETag is kept and used for matching, including weak tags and non-canonical header keys. POST and non-200 responses (404 with If-None-Match: *, and a 206 range from ServeContent) pass through unchanged.",
+     "Careful writer semantics: 1xx responses are forwarded, the first status wins, and Flush is a no-op while the response is buffered but works in passthrough. Hijack sends the held response and then hands over the connection. Push and Unwrap are supported, so http.NewResponseController works.",
+     "A clear doc comment that warns about buffering and about ordering relative to Compress. The README table row and link are added in alphabetical order.",
+     "go build, go test, go vet all pass; gofmt -l clean; ETag tests run in ~0.3s."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 1390,
+     "test_cases": 47
+    },
+    "summary": "Build D meets the spec, and every edge case I probed was handled correctly (run in /tmp/inspect-chi-etag-D with throwaway tests in middleware/zz_probe_test.go). The tag is a strong SHA-256 of the body. 304 answers follow RFC 9110 weak comparison, handle lists, skip malformed members and accept a standalone `*`. Handler-set tags are respected, and POST and non-200 responses pass through untouched. Flush, Hijack, Push and Unwrap are handled carefully, and the doc comment and README row are good. The main concern is size: the 1227-line test file includes meta-tests on the doc comment and README layout, plus property and differential harnesses, which most chi maintainers would ask to cut. The writer also re-implements Content-Length enforcement, which adds complexity. A smaller behavioral gap: HEAD responses with no body (e.g. from http.ServeContent) get no ETag and never return 304, unlike GET. This is a solid, correct implementation that would need its tests slimmed before merge.",
+    "letter": "D"
+   },
+   {
+    "overall": 7,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 6,
+     "tests": 7,
+     "docs": 8,
+     "product": 6
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "The wrapper always advertises http.Flusher, http.Hijacker and http.Pusher, even when the writer it wraps has none of them. Code that type-asserts to pick a feature is misled: it finds Pusher on HTTP/1, and finds Flusher on GET 200 responses, where Flush does nothing.",
+      "evidence": "Throwaway test: inside ETag, `_, p := w.(http.Pusher)` printed `Flusher true Hijacker true Pusher true`. On an httptest HTTP/1 server, calling Push printed `push err: chi/middleware: http.Pusher is unavailable on the writer` (etag.go:99-137)."
+     },
+     {
+      "severity": "minor",
+      "what": "Flush on a GET/HEAD 200 does nothing, and the whole body is buffered without a size limit. Server-sent events or other streamed 200 responses behind ETag never reach the client until the handler returns. The doc comment states this, but nothing opts these responses out (for example by Content-Type or size).",
+      "evidence": "etag.go:107-109 `if !ew.streaming { return }`. The doc comment at etag.go:19-22 says so."
+     },
+     {
+      "severity": "minor",
+      "what": "One malformed If-None-Match member that contains a stray quote can hide a valid member after it. cutListMember toggles its in-quote state on every '\"', so the comma after it is swallowed. The behaviour is deliberate and tested, but a more lenient parser would still match the later tag.",
+      "evidence": "Throwaway test: If-None-Match `\"a,b\", junk\"x, <correct tag>` returned 200 with the body. The test case 'quote runs to next quote' at etag_test.go:~313 locks this in. Parser: etag.go:301-314."
+     },
+     {
+      "severity": "minor",
+      "what": "HEAD through http.ServeContent gets no ETag, because ServeContent writes no body on HEAD. GET gets one, so HEAD and GET differ, and If-None-Match on HEAD never yields 304.",
+      "evidence": "httptest server with ETag(ServeContent): `GET 200 ... Etag:[\"2cf24d...\"]`, `HEAD 200` with no Etag, and `HEAD INM 200`. etag.go:158 tags only when the method is GET or the body is non-empty."
+     },
+     {
+      "severity": "minor",
+      "what": "The wrapper does not implement io.ReaderFrom, so a non-200 response streamed through it loses the sendfile/ReadFrom fast path. A buffered 200 is unaffected.",
+      "evidence": "Throwaway test printed `ReaderFrom? false`."
+     },
+     {
+      "severity": "minor",
+      "what": "The code and tests are far larger than chi's usual middleware: 303 source lines covering trailers, 1xx responses, header snapshots and hijacking after buffering, plus a 1079-line test file with property, differential and over-the-wire tests. That is heavy to maintain, and a maintainer would probably ask for it to be trimmed.",
+      "evidence": "`grep -cv '^\\s*$'`: etag.go 303, etag_test.go 1079. For comparison, compress_test.go has 251 lines and get_head_test.go has 66. etag_test.go:1124 contains an odd process comment: `// Approved: a buffered 200 is not flushed early...`"
+     }
+    ],
+    "strengths": [
+     "Every spec requirement checked passed in throwaway tests. GET/HEAD 200 responses get a strong SHA-256 ETag, POST and non-200 responses pass through unchanged, and a handler-set ETag (including a weak one) is kept and matched. Weak comparison, lists, `*`, multiple If-None-Match lines and garbage members all behave correctly.",
+     "A 304 drops Content-Type, Content-Length and Content-Encoding but keeps ETag, Last-Modified and other headers. http.ServeContent works behind the middleware, including 304 and 206 Range responses.",
+     "Header handling is careful: header snapshots are taken at commit time, 1xx responses are forwarded, trailers are kept, a hijack on a buffered 200 is handled, a HEAD with no body gets no tag, and a Flush without a Flusher is safe.",
+     "The doc comment explains the buffering trade-off and the order to use relative to Compress. The README table row and its link are added in alphabetical order.",
+     "`go build`, `go test ./...` and `go vet` all pass, and the code is gofmt-clean. The tests include a differential test against an unwrapped writer and over-the-wire checks."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 1384,
+     "test_cases": 38
+    },
+    "summary": "Build E is functionally solid. It meets every spec requirement in my probes: GET, HEAD and POST, 200 and non-200, handler-set ETags, weak tags, lists, `*`, garbage members, http.ServeContent, Flush and Hijack. `go build`, `go test`, `go vet` and gofmt are all clean, and the README row and its link are present. The remaining problems are all minor: the wrapper always claims to support Flusher, Hijacker and Pusher; Flush does nothing on a buffered 200 (documented); one stray quote in If-None-Match can hide a later valid tag; HEAD through ServeContent gets no ETag; and ReaderFrom is not implemented. The main drawback is size. At 303 source lines plus a 1079-line test file with property and differential tests, it is far more machinery than chi's middleware usually carries, and a maintainer would likely ask for it to be trimmed before merging.",
+    "letter": "E"
+   },
+   {
+    "overall": 7.5,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 6,
+     "tests": 8,
+     "docs": 8,
+     "product": 6
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "The implementation is heavily over-engineered for a chi middleware. It reaches into Compress's private type (pendingCoding type-asserts *compressResponseWriter and calls isCompressible) and emulates net/http Content-Length refusal semantics with three extra fields (length, declared, written). This couples ETag to Compress internals and adds a lot of surface a maintainer would likely ask to trim.",
+      "evidence": "middleware/etag.go:54-60 (fields), :103-107, :155-164, :206-222 (pendingCoding walks the Unwrap chain looking for *compressResponseWriter)"
+     },
+     {
+      "severity": "minor",
+      "what": "The test file is 916 lines with 32 top-level tests, including fuzz-like differential loops, a 100 KB header test and a test that greps README.md. That is far beyond chi's terse test style. The README test is brittle and unusual for the repo.",
+      "evidence": "middleware/etag_test.go:608 TestETagDifferentialCallOrders, :681 (2000 random iterations), :905 TestETagDocumentedInReadme reads ../README.md"
+     },
+     {
+      "severity": "minor",
+      "what": "HEAD and GET get different validators when the handler writes no body on HEAD, as http.ServeContent does. GET receives a SHA-256 ETag and HEAD receives none. This is documented, but it gives HEAD/GET validator inconsistency for the most common file-serving path.",
+      "evidence": "Probe: http.ServeContent behind ETag: GET -> 200 ETag \"ed7002b4...\"; HEAD -> 200 ETag \"\" Content-Length 7 (etag.go:182 condition r.Method==GET || body.Len()>0)"
+     },
+     {
+      "severity": "minor",
+      "what": "A malformed If-None-Match member ends list parsing, so a valid tag after garbage is ignored. This mirrors net/http's behavior, so it is defensible, but it is stricter than a lenient reading of RFC 9110.",
+      "evidence": "Probe: If-None-Match `garbage, \"<tag>\"` -> 200; `\"<tag>\", garbage` -> 304 (etag.go:251-254)"
+     },
+     {
+      "severity": "minor",
+      "what": "For a buffered 200, headers mutated after WriteHeader(200) are still sent. net/http would ignore them. Only Content-Length gets special treatment.",
+      "evidence": "Probe: handler does WriteHeader(200); Header().Set(\"X-Late\",\"1\"); Write -> response has X-Late: 1"
+     },
+     {
+      "severity": "minor",
+      "what": "The wrapper always advertises http.Hijacker and http.Pusher and returns errors at runtime when the underlying writer lacks them, instead of exposing only the interfaces the underlying writer supports. It does not implement io.ReaderFrom (harmless since it buffers).",
+      "evidence": "etag.go:128-146; probe showed flusher=true hijacker=true readerfrom=false on an httptest.Recorder"
+     }
+    ],
+    "strengths": [
+     "All spec behaviors verified: a strong SHA-256 ETag on GET 200; the handler's own ETag is kept (including weak), and a weak If-None-Match matches; lists, *, and W/ are handled; POST and non-200 pass through untouched; the 304 drops the body and representation headers",
+     "go build, go test ./..., and go vet ./... pass, and gofmt -l is clean",
+     "Correct Flush and Hijack handling: a buffered flush is a no-op, a non-200 flush streams immediately, and Hijack commits the buffered data first and drops writes afterwards (verified with a real server)",
+     "Interplay with Compress (both orders) and with Recoverer on panic is handled and tested",
+     "If-None-Match parsing is checked differentially against net/http ServeContent across 2000 random inputs",
+     "README table row and link reference added in alphabetical order, with a clear doc comment that explains buffering and its limits"
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 1109,
+     "test_cases": 32
+    },
+    "summary": "Build F meets the spec. Everything I probed behaved correctly: GET, HEAD and POST; 200 and non-200 responses; a handler-set weak ETag; If-None-Match with lists, weak tags and *; Flush and Hijack through a real server; http.ServeContent behind the middleware; and HEAD with no body. Build, test, vet and gofmt are all clean. The main weakness is size and fit. The middleware is 269 non-blank lines and couples to Compress's private writer type. It emulates net/http Content-Length semantics with extra state. The 840-line test file includes randomized differential loops and a test that greps the README. That is much heavier than chi's usual middleware style, and a maintainer would likely ask for it to be slimmed down before merging. The remaining defects are minor: GET and HEAD get different validators when the handler writes no body on HEAD (as ServeContent does); a garbage member ends list parsing, as in net/http; headers set after WriteHeader(200) are still sent; and the wrapper always advertises Hijacker and Pusher.",
+    "letter": "F"
+   },
+   {
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 8,
+     "tests": 7,
+     "docs": 9,
+     "product": 7
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "Response trailers are lost. send() clears the live header map and replaces it with a copy taken at WriteHeader time, so trailer values set after the body is written are dropped. A declared Trailer arrives with an empty value, and a TrailerPrefix trailer disappears entirely.",
+      "evidence": "Throwaway test over httptest.NewServer: a handler that sets Trailer: X-T, writes, then sets X-T=v prints `trailer map[X-T:[]]`. A handler that sets http.TrailerPrefix+\"X-P\" after writing prints `prefix trailer map[]`. The cause is middleware/etag.go:121-123 (clear(h); maps.Copy(h, ew.header))."
+     },
+     {
+      "severity": "minor",
+      "what": "The If-None-Match parser is lenient beyond RFC 9110 syntax. Members without a comma between them are accepted, and a '*' anywhere in the list (even glued to a tag) matches everything.",
+      "evidence": "Throwaway test: If-None-Match `\"x\"\"<etag>\"` gives 304, `\"a\"*` gives 304 and `\"x\", *` gives 304 (middleware/etag.go:169-170, 179 never checks for a comma)."
+     },
+     {
+      "severity": "minor",
+      "what": "GET and HEAD for the same resource validate differently when the handler writes no body on HEAD (http.ServeContent does this). GET gets a computed ETag, but HEAD gets none, so a HEAD that sends the GET's ETag in If-None-Match gets 200 rather than 304. This is documented in the doc comment.",
+      "evidence": "Throwaway test with an http.ServeContent handler: `SC GET 200 \"b94d27b9...\"`, `SC HEAD 200 <no ETag>`, then HEAD with If-None-Match set to the GET's ETag gives `SC HEAD match 200`."
+     },
+     {
+      "severity": "minor",
+      "what": "The test file is heavy for chi's style: about 950 non-blank lines for about 190 lines of code. It includes a go/parser AST check that ETag has a doc comment, a test that parses README.md, random property tests and differential harnesses, which is far beyond the repo's usual small table tests.",
+      "evidence": "middleware/etag_test.go: TestETagSignatureAndDoc parses etag.go with go/parser, TestETagReadmeListsMiddleware reads ../README.md, and TestETagPropertyConditionalMatch uses math/rand."
+     },
+     {
+      "severity": "minor",
+      "what": "Flush is a silent no-op and io.ReaderFrom is not forwarded. Streaming or SSE handlers behind ETag are fully buffered. This is documented, but there is no opt-out, for example passing through text/event-stream.",
+      "evidence": "middleware/etag.go:86. The throwaway probe printed `ReaderFrom? false Flusher? true`, and io.Copy still produced the correct body and ETag."
+     }
+    ],
+    "strengths": [
+     "All of the core spec holds. GET and HEAD get a strong SHA-256-based ETag on 200; handler-set ETags are kept (weak ones too); weak comparison, lists, multiple header lines and * all give 304 with no body; POST and non-200 responses pass through (404 with matching If-None-Match stays 404).",
+     "The wrapper is faithful to net/http. The header snapshot is taken at the first WriteHeader, the first status wins, 1xx/103 Early Hints are forwarded immediately, ErrBodyNotAllowed is returned for 204/304, and Content-Type sniffing still works because the body goes out in one Write.",
+     "Hijack, Push and Unwrap are forwarded, and the error strings match compress.go's. After a successful hijack, nothing is written to the underlying writer.",
+     "304 responses drop Content-Type, Content-Length and Content-Encoding and keep Cache-Control, Vary, Expires and ETag.",
+     "If-None-Match is copied before the handler runs, and the doc comment explains the ordering with NoCache. The doc comment is clear and states the buffering and HEAD limitations.",
+     "The README row and link are placed alphabetically and aligned. go build, go test, go vet and gofmt -l are all clean."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 1143,
+     "test_cases": 21
+    },
+    "summary": "Build G is a solid, carefully engineered ETag middleware. In /tmp/inspect-chi-etag-G, go build, go test, go vet and gofmt -l are all clean (go 1.24.7). The throwaway probes confirmed every spec point: strong ETag on GET/HEAD 200, handler ETags kept, weak, list and * matching to 304 with an empty body, and POST and non-200 responses passed through. http.ServeContent works behind it, including Range (206 passes through) and its own 304 handling. No blocker or major defects were found. The remaining issues are minor. Trailers are dropped because send() clears and replaces the header map. The If-None-Match parser accepts members without commas and a stray '*' anywhere in the list. A HEAD with no body gets no ETag, so HEAD conditional requests are not validated (documented). Flush and streaming are fully buffered (documented). The test suite is thorough but over-engineered for chi's style: about 950 lines, including an AST doc-comment check and a README-parsing test. The README row and link are correct. CHANGELOG.md has no per-change entries, so leaving it untouched follows the repo's convention. A maintainer would likely merge it after trimming the tests.",
+    "letter": "G"
+   },
+   {
+    "overall": 7.5,
+    "scores": {
+     "correctness": 8,
+     "robustness": 8,
+     "code_quality": 7,
+     "tests": 8,
+     "docs": 7,
+     "product": 7
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "If-None-Match parsing stops at the first malformed member, so a garbage member placed before a matching tag stops the match. This copies net/http's checkIfNoneMatch, but it is stricter than ignoring bad list members.",
+      "evidence": "Throwaway test: `If-None-Match: garbage, \"<tag>\"` -> 200 body=\"hello\"; `\"x\" junk, \"<tag>\"` -> 200. The code is middleware/etag.go:218-221 (`if tag == \"\" { return false }`)."
+     },
+     {
+      "severity": "minor",
+      "what": "A HEAD handler that writes no body, such as http.ServeContent or a handler that only sets Content-Length, gets no ETag, while the same resource on GET does. HEAD then returns a different validator from GET. A HEAD request whose If-None-Match carries the GET tag gets 200, not 304. This is deliberate and commented, but it differs from GET.",
+      "evidence": "Probe: ServeContent GET -> ETag \"6aed04...\"; ServeContent HEAD -> 200 with an empty ETag. Code is middleware/etag.go:158-162."
+     },
+     {
+      "severity": "minor",
+      "what": "The wrapper always implements http.Hijacker and http.Pusher and returns an error at call time when the underlying writer lacks them. Type assertions therefore always succeed, so feature detection by callers breaks. It also does not implement io.ReaderFrom (io.Copy falls back to Write, which is harmless).",
+      "evidence": "Probe handler printed `flusher true hijacker true readerfrom false`. See middleware/etag.go:111-146."
+     },
+     {
+      "severity": "minor",
+      "what": "The Hijack path (sendForHijack, with flushed/flushedLen bookkeeping) and the forwarding of 1xx statuses add complexity well beyond what the spec asks. The test file is 852 lines, out of scale with the repo's other middleware tests.",
+      "evidence": "middleware/etag.go:36-50 and 109-139; `wc -l middleware/etag_test.go` -> 852."
+     },
+     {
+      "severity": "minor",
+      "what": "CHANGELOG.md is not updated. The repo has one, though chi maintainers usually write it at release time.",
+      "evidence": "`git status --short` shows only README.md, middleware/etag.go and middleware/etag_test.go."
+     }
+    ],
+    "strengths": [
+     "All spec behaviour works when probed: GET and HEAD get a strong SHA-256 ETag, POST passes through, non-200 passes through (a 404 with `*` stays 404), a handler's own ETag is kept and used for matching, and weak comparison, comma lists, combined header lines and `*` all match.",
+     "The 304 response clears headers the same way net/http's ServeContent does: Content-Type, Content-Length and Content-Encoding are removed, and Last-Modified is removed when an ETag is present. ServeContent's own Range and 304 paths keep working behind the middleware.",
+     "The entity-tag scanner follows the etagc grammar, including quoted commas, and rejects unterminated tags.",
+     "The wrapper is careful: the first final status wins, 1xx statuses are forwarded, a panic leaves nothing written, Hijack replays the flushed prefix, and Unwrap is provided.",
+     "The tests are thorough and meaningful. They include a differential test against the unwrapped handler for GET/HEAD/POST and tests over a real httptest.Server.",
+     "go build, go test, go vet and gofmt -l are all clean. The README row and its pkg.go.dev link are placed alphabetically and aligned."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 1037,
+     "test_cases": 19
+    },
+    "summary": "Build H meets the whole spec. go build, test and vet pass and the code is gofmt-clean. In throwaway probes, GET and HEAD got a strong ETag, POST and non-200 responses passed through, handler-set ETags were kept and matched, weak comparison, lists and `*` gave 304 with no body, and ServeContent worked behind the middleware. Hijack and Flush behaved sensibly. Two things a reviewer might question: the If-None-Match scan stops at the first garbage member (copying net/http), and HEAD responses with no body get no ETag, so they disagree with GET. The writer wrapper (Hijack replay, 1xx forwarding) and the 852-line test file are heavier than the repo usually is, and Hijacker and Pusher are always advertised even when the underlying writer lacks them. A maintainer would likely merge it after asking for some trimming.",
+    "letter": "H"
+   },
+   {
+    "letter": "I",
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 9,
+     "code_quality": 7,
+     "tests": 8,
+     "docs": 8,
+     "product": 7
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "A HEAD request whose handler writes no body gets no ETag, while the matching GET does get one. This avoids hashing an empty body, which is the right call, but the ETag doc comment does not mention it. The same applies to http.ServeContent on HEAD.",
+      "evidence": "middleware/etag.go:194 `if h.Get(\"ETag\") == \"\" && (!w.head || w.buf.Len() > 0)`. A throwaway test printed `HEAD nobody 200  5` (empty ETag) and `SC HEAD 200  12`, while the GET through ServeContent got an ETag."
+     },
+     {
+      "severity": "minor",
+      "what": "One malformed member makes the whole If-None-Match header ignored, so `garbage, \"v1\"` does not match. This is defensible because net/http behaves the same way, but it is not documented.",
+      "evidence": "middleware/etag.go:249-250 returns nil,false. A throwaway test printed `own INM [\"garbage, \\\"v1\\\"\"] -> 200`."
+     },
+     {
+      "severity": "minor",
+      "what": "The wrapper always advertises http.Flusher, http.Hijacker and http.Pusher, even when the underlying writer lacks them. chi's own wrap_writer only exposes them conditionally. Also, io.ReaderFrom is not implemented, so sendfile is lost on passthrough. That costs only performance.",
+      "evidence": "middleware/etag.go:80-112. A type assertion in a throwaway test printed `ifaces flusher true hijacker true readerfrom false`."
+     },
+     {
+      "severity": "minor",
+      "what": "The code is fairly heavy for the feature: it re-implements net/http's header snapshot and trailer semantics (restoreHeader, putTrailers, isTrailer). It is correct but adds complexity a maintainer may question. The test file is 884 non-blank lines against 269 for the source, and includes concurrency, raw-TCP differential and trailer suites.",
+      "evidence": "middleware/etag.go:131-181; middleware/etag_test.go has 948 lines"
+     }
+    ],
+    "strengths": [
+     "Every spec point verified: a SHA-256 strong ETag on GET/HEAD 200 responses; a handler-set ETag is respected and drives the 304; POST and non-200 responses pass through untouched (a 404 with If-None-Match: * stayed 404 with no ETag).",
+     "If-None-Match handling follows RFC 9110: weak comparison, comma lists including empty elements and multiple header lines, `*` (and `*, \"x\"` rejected as invalid), and quote-aware splitting.",
+     "A 304 has no body and drops Content-Length, Content-Type and Content-Encoding.",
+     "http.ServeContent works behind it: 200 with an ETag, 304 when that ETag is sent back, and a 206 Range response passes through without an ETag.",
+     "Flush switches to streaming correctly with no ETag and no 304, Hijack works against a real server, and 1xx informational responses are forwarded.",
+     "go build, go test, go vet and gofmt are all clean, and the README row and link are in alphabetical order.",
+     "Clear doc comment that covers the buffering cost, ordering relative to Compress and NoCache, and the Flush behaviour."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 269,
+     "test_cases": 24
+    },
+    "summary": "Build I meets every spec point. `go build`, `go test`, `go vet` and `gofmt -l` were all clean (copy at /tmp/inspect-chi-etag-I). Throwaway tests covered GET/HEAD/POST, 200 and 404 responses, a handler-set W/ ETag, If-None-Match with weak tags, lists, `*` and garbage members, ServeContent (200, 304 and Range 206), Flush, Hijack, io.Copy, HEAD with no body, and the README row. All behaved correctly or in a defensible way. Garbage members cause the whole header to be ignored, as net/http does, and a HEAD with no body gets no ETag. The remaining issues are minor: some behaviours are undocumented, the wrapper always advertises optional interfaces, ReadFrom is missing, and the code and tests are heavier than needed because they re-implement net/http's header-snapshot and trailer semantics. A maintainer would likely merge it, perhaps asking to trim some complexity."
+   },
+   {
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 8,
+     "tests": 9,
+     "docs": 8,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "A HEAD response that writes no body gets no ETag, so GET and HEAD on the same resource carry different headers. http.ServeContent writes no body for HEAD, so HEAD gets no ETag while GET does, and a HEAD with If-None-Match set to the GET's tag gets 200 instead of 304. This choice is explained only in an inline comment and is missing from the exported doc comment.",
+      "evidence": "Probe test against ServeContent: GET -> 200 etag=\"6aed04...\" cl=12; HEAD -> 200 etag=\"\" cl=12 (also over a real httptest.Server: 'real HEAD: 200 etag=\"\" cl=12'). middleware/etag.go:104-105 `if len(h.Values(\"ETag\")) == 0 && (!head || ew.buf.Len() > 0)`"
+     },
+     {
+      "severity": "minor",
+      "what": "The wrapper always exposes Flusher, Hijacker and Pusher whatever the underlying writer supports, and it does not expose io.ReaderFrom. Once a Flush switches it to streaming mode, io.Copy loses the sendfile fast path. Other chi wrappers (WrapResponseWriter) choose interfaces based on what the underlying writer supports.",
+      "evidence": "In the probe, a handler checking `w.(io.ReaderFrom)` got false. middleware/etag.go:194-219 defines Flush/Hijack/Push unconditionally."
+     },
+     {
+      "severity": "minor",
+      "what": "Write errors from the underlying writer are ignored when flushing the buffered body. Write calls made while buffering always report success, so the handler never sees a client disconnect.",
+      "evidence": "middleware/etag.go:90 and :119 `ew.ResponseWriter.Write(ew.buf.Bytes())` ignore the returned error"
+     }
+    ],
+    "strengths": [
+     "go build, go test ./..., and go vet ./... all pass, and gofmt -l prints nothing",
+     "The If-None-Match parser follows RFC 9110 correctly: weak comparison, lists spread over several header lines, commas inside quoted tags, '*', and garbage members that are skipped without losing a later match. In probes, `garbage, TAG` -> 304, `**` -> 200, `W/*` -> 200, `,,TAG,,` -> 304",
+     "On a 304 it strips Content-Length and Content-Type and keeps Cache-Control, Vary and Set-Cookie",
+     "Careful handling of the response writer: it forwards 1xx immediately and treats 101 as final, ignores a second WriteHeader, streams on Flush, sends the buffered body before Hijack, and sends nothing when Hijack happens before any write. It also has Unwrap",
+     "Works behind http.ServeContent: GET gets an ETag and a matching If-None-Match gets 304, Range requests (206) pass through, and real-server Content-Length is preserved",
+     "The tests are thorough and table-driven, with 27 test functions (59 runs including subtests), among them real TCP tests of hijack ordering and 101",
+     "The README row and link are added in alphabetical order with matching column alignment. The doc comment notes the memory cost and the ordering issue with NoCache"
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 730,
+     "test_cases": 59
+    },
+    "summary": "This is a solid ETag middleware that meets the spec. The build is clean, tests pass, vet and gofmt are clean, the RFC 9110 If-None-Match parsing is correct, and the writer handles Flush, Hijack and 1xx correctly. The tests are extensive and meaningful. I found no blocker or major defects, only three minor ones. A HEAD request with no body (including http.ServeContent's HEAD path) gets no ETag, so its headers don't match GET's. The wrapper always exposes Flusher, Hijacker and Pusher and does not expose ReaderFrom. Write errors are ignored when the buffered body is sent. A maintainer would likely merge it with small edits.",
+    "letter": "J"
+   },
+   {
+    "overall": 8,
+    "scores": {
+     "correctness": 8,
+     "robustness": 8,
+     "code_quality": 8,
+     "tests": 8,
+     "docs": 8,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "A HEAD handler that writes no body and sets no Content-Length gets the SHA-256-of-empty ETag. That tag differs from what GET returns for the same resource, so If-None-Match with the GET tag on HEAD gets 200 instead of 304. The declaresUnwrittenBody guard only covers the case where Content-Length is set.",
+      "evidence": "Throwaway probe test: a handler that only sets Content-Type, called with HEAD, gave code=200 etag=\"e3b0c44298fc1c149afbf4c8996fb924\" body=\"\". The guard is in middleware/etag.go, in declaresUnwrittenBody (it requires length != \"\")."
+     },
+     {
+      "severity": "minor",
+      "what": "http.ServeContent behind ETag on HEAD gets no ETag and never 304s, while GET gets a computed ETag. ServeContent sets Content-Length and writes nothing on HEAD, so GET and HEAD validators are inconsistent. This is conservative, not wrong.",
+      "evidence": "Probe: 'servecontent HEAD' gave code=200 etag=\"\", and 'servecontent HEAD INM' with the GET tag gave code=200. The GET with the same tag gave 304."
+     },
+     {
+      "severity": "minor",
+      "what": "The wrapper always advertises http.Hijacker, http.Pusher and http.Flusher, even when the underlying writer does not support them. It returns errors or no-ops at runtime, so type assertions on the writer stop being a reliable capability check. The wrapper has no io.ReaderFrom, which is harmless because the body is buffered anyway.",
+      "evidence": "middleware/etag.go: Hijack and Push are unconditional methods on etagResponseWriter. Probe printed 'ReaderFrom implemented: false'. io.Copy still works through Write."
+     },
+     {
+      "severity": "minor",
+      "what": "The test file is heavy for the feature: 484 non-blank lines, against 194 for the implementation. It includes raw-TCP hijack exchange tests with log capture, which add maintenance cost beyond chi's usual middleware test style.",
+      "evidence": "middleware/etag_test.go, etagRawExchange and the two TestETagHijack* tests."
+     }
+    ],
+    "strengths": [
+     "Spec requirements all verified. GET/HEAD 200 responses get a strong body-derived ETag ('\"<32 hex>\"'), a handler-set ETag is kept and used for matching, POST/PUT and the other methods pass through with the unwrapped writer, and non-200 responses are committed straight away and pass through unchanged.",
+     "If-None-Match matching follows RFC 9110. It uses weak comparison, handles comma-separated lists (respecting quotes) and multiple header lines, and treats '*' as standalone. Malformed members are ignored without blocking a valid member, and etagc characters are validated.",
+     "A 304 response drops Content-Type, Content-Length and Content-Encoding, keeps Cache-Control, Vary and Expires, and sends no body.",
+     "Flush and Hijack switch the writer to streaming and commit the headers already written. 1xx informational responses are forwarded without setting the final status. The writer supports Unwrap, so http.ResponseController works.",
+     "go build, go test ./..., go vet ./... all pass, and gofmt -l prints nothing. The README row and link are in alphabetical order. The doc comment describes the memory cost and how Flush and Hijack behave.",
+     "Thorough table-driven tests for etagMatches, plus real-server tests for HEAD, 1xx and hijack."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 680,
+     "test_cases": 21
+    },
+    "summary": "Build K is a careful, correct ETag middleware that matches the spec. It buffers GET/HEAD 200 responses, adds a truncated SHA-256 strong tag unless the handler set one, and answers RFC 9110 weak and list matches and '*' with a clean 304. Non-200 responses and other methods pass through untouched, and Flush, Hijack and 1xx are handled thoughtfully. Build, test, vet and gofmt are all clean, and the README row is in place. Only minor issues remain. HEAD responses without a body or Content-Length get an empty-body tag that disagrees with GET. ServeContent HEAD responses get no ETag. The wrapper always advertises the optional interfaces. The test file is somewhat oversized. A maintainer would likely merge it with small edits.",
+    "letter": "K"
+   },
+   {
+    "letter": "L",
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 9,
+     "code_quality": 7,
+     "tests": 8,
+     "docs": 8,
+     "product": 7
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "If-None-Match parsing stops at the first malformed member, so a valid tag after it is ignored. `*` is recognized only by its first byte, so a member like `*foo` also matches.",
+      "evidence": "Probe: handler sets W/\"v1\", If-None-Match `garbage, \"v1\"` -> 200 with body \"hi\". `foo, <computed tag>` -> 200. middleware/etag.go:235 (`rest[0] == '*'`) and :239-240 (`break` on a bad member). This matches net/http's checkIfNoneMatch, so it is defensible."
+     },
+     {
+      "severity": "minor",
+      "what": "A HEAD request whose handler writes no body gets no ETag (finish skips it when the method is HEAD and the body is empty). This is reasonable, because a hash of an empty body would differ from the GET tag, but the doc comment does not mention it.",
+      "evidence": "middleware/etag.go:162. Probe: a HEAD handler that only sets Content-Length: 5 returns 200 with an empty ETag."
+     },
+     {
+      "severity": "minor",
+      "what": "The implementation is heavy for a chi middleware: 251 non-blank lines covering header snapshots, 1xx forwarding, trailer re-forwarding, flush and hijack bookkeeping, and nil-Content-Type sniff suppression. It is correct, but a maintainer may ask for it to be simpler. One test is trivial: TestETagSignature only checks that the function type compiles.",
+      "evidence": "middleware/etag.go:44-222. middleware/etag_test.go:72-77."
+     },
+     {
+      "severity": "minor",
+      "what": "The wrapped writer does not implement io.ReaderFrom. io.Copy still works through Write, but there is no fast path.",
+      "evidence": "Probe: `any(&etagResponseWriter{}).(io.ReaderFrom)` -> false. Over a real server, io.Copy returns 200 with the correct ETag and a conditional 304."
+     }
+    ],
+    "strengths": [
+     "Meets every spec point. Probes confirmed: GET and HEAD get a strong ETag (truncated sha256), and a HEAD with If-None-Match gets a 304. POST passes through. 404 and 201 pass through and never 304, even with If-None-Match `*`. A handler-set ETag (including a weak one) is kept and matched. Weak comparison, comma lists, empty list members and `*` all work.",
+     "http.ServeContent behind it works: 200 with the computed ETag, 304 with Last-Modified removed, its own ETag honored, and Range 206 passed through.",
+     "Over a real httptest server, Flush mid-body still yields one buffered response with a tag. Hijack is forwarded and sends the buffered head first. A sniffed Content-Type is preserved on the 200, and the 304 drops Content-Type and Content-Length.",
+     "Thorough tests: 30 test functions, including a differential test against the plain handler, a chunking-invariance property test, Compress-ordering, trailer, early-hints and panic cases.",
+     "The doc comment explains the buffering, the Flush semantics and the ordering relative to Compress. The README row and link are added in alphabetical order.",
+     "go build, go vet and gofmt are clean. The ETag tests pass. go test ./... passes, except one run where the existing TestWrapWriterHTTP2 failed (connection refused on a fixed port). That test passes on its own (`go test ./middleware -run TestWrapWriterHTTP2 -count=3` -> ok) and on a full rerun, and nothing in the change touches it."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 1080,
+     "test_cases": 30
+    },
+    "summary": "Build L is a correct and well-tested ETag middleware for chi. It is located at /tmp/ffj/final5/chi-etag/L, and I worked in the copy at /tmp/inspect-chi-etag-L. middleware/etag.go adds 268 lines, middleware/etag_test.go adds 887 lines, and the README gets a table row and link.\n\nEvery spec requirement held in my throwaway tests: GET, HEAD and POST; 200 and non-200 responses; handler-set ETags (weak tags included); and If-None-Match with weak tags, lists and `*`. http.ServeContent works behind it, and Flush, Hijack and io.Copy behave correctly on a real server. Build, vet and gofmt are clean. The only failure in go test ./... was one run of the existing TestWrapWriterHTTP2, which passes when rerun.\n\nThere are no blocker or major defects. The minor ones:\n- If-None-Match parsing stops at the first malformed member, the same way net/http does.\n- `*foo` is accepted as `*`.\n- A HEAD request with no body gets no ETag, and the doc comment does not say so.\n- The writer wrapper is fairly heavy, which a maintainer may want simplified."
+   },
+   {
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 8,
+     "tests": 9,
+     "docs": 8,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "HEAD responses whose handler writes no body (e.g. http.ServeContent on HEAD) get no ETag, so HEAD and GET for the same resource disagree, and If-None-Match on HEAD never yields 304 for computed tags. This is documented as deliberate, but it is a behavioral gap.",
+      "evidence": "Probe test: ServeContent GET -> 200 etag=\"2cf24d...\"; ServeContent HEAD -> 200 etag=\"\" cl=5; HEAD with If-None-Match=<GET etag> -> 200 (no 304). Code at middleware/etag.go setETag: `if w.req.Method == http.MethodHead && w.body.Len() == 0 { return }`"
+     },
+     {
+      "severity": "minor",
+      "what": "The wrapped writer does not implement io.ReaderFrom, so io.Copy/sendfile optimizations are lost for GET/HEAD. Because everything is buffered anyway, this has little practical effect.",
+      "evidence": "Probe: `_, ok := w.(io.ReaderFrom)` inside an ETag-wrapped handler -> false"
+     },
+     {
+      "severity": "minor",
+      "what": "How a malformed If-None-Match list is handled depends on where the malformed member sits: a garbage member before a matching tag gives 200, but the same garbage after it gives 304, because scanning stops at the first malformed member.",
+      "evidence": "Probe: If-None-Match `garbage, \"<etag>\"` -> 200; `\"<etag>\", garbage` -> 304 (listMatches in middleware/etag.go)"
+     },
+     {
+      "severity": "minor",
+      "what": "HEAD from a handler that writes no body and sets no ETag still answers If-None-Match: * with 304, and that 304 carries no ETag.",
+      "evidence": "Probe: HEAD, empty handler, If-None-Match `*` -> 304 ETag=\"\""
+     }
+    ],
+    "strengths": [
+     "go build, go test, go vet and go test -race all pass, and gofmt -l reports nothing",
+     "The If-None-Match parser follows RFC 9110 closely: weak comparison, quoted tags that contain commas, empty list elements, OWS, * and multiple header lines",
+     "A handler-set ETag is kept and still used for 304s; non-200 responses and other methods pass through untouched (non-GET methods get the original writer)",
+     "The 304 response strips Content-Type, Content-Length and Content-Encoding the way ServeContent does, and keeps Cache-Control, Vary and ETag",
+     "Flush and Hijack switch the writer to streaming correctly. 1xx responses are forwarded, Push and Unwrap are supported, and writes after Hijack return ErrHijacked",
+     "The tests are thorough and meaningful: a table-driven If-None-Match matrix, real-server streaming, 103 Early Hints, and Hijack log checks",
+     "The README row is in alphabetical order and has its pkg.go.dev link, and the doc comment explains the edge-case behavior"
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 817,
+     "test_cases": 26
+    },
+    "summary": "This is a solid, spec-compliant ETag middleware. The checks I ran (build, test, vet, race, gofmt) are all clean. My probes confirmed the computed strong ETag and the 304s for weak tags, lists, * and handler-set tags. POST and non-200 responses pass through, Flush and Hijack switch to streaming, and http.ServeContent works on GET. The remaining issues are small edge cases. HEAD responses with no body get no ETag, so HEAD and GET disagree for ServeContent. The wrapper does not expose ReaderFrom. Whether a garbage list member blocks a match depends on its position. The tests are extensive, perhaps more than a maintainer needs, but they test meaningful behavior. The README row fits the repo's conventions; the changelog is only updated at release time, so no entry is needed.",
+    "letter": "M"
+   },
+   {
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 7,
+     "tests": 9,
+     "docs": 8,
+     "product": 7
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "Flush is swallowed while a 200 is buffered, so streaming or SSE handlers behind ETag deliver nothing until they return. This is documented and follows from the buffering the spec asks for, but nothing lets a streaming route opt out.",
+      "evidence": "middleware/etag.go:88-95. Probe: a handler that writes \"a\", calls Flush, then writes \"b\" gave 200 body \"ab\" with an ETag and rec.Flushed=false."
+     },
+     {
+      "severity": "minor",
+      "what": "The wrapper always has Hijack and Push methods, so a type assertion for http.Hijacker or http.Pusher succeeds even when the underlying writer has neither. The call then fails at runtime. This matches the existing compress.go pattern.",
+      "evidence": "middleware/etag.go:101-123; compare middleware/compress.go:380-384"
+     },
+     {
+      "severity": "minor",
+      "what": "The code is heavy for a small middleware: 270 non-blank source lines with a hand-rolled If-None-Match tokenizer, plus logic for header snapshots, trailer restore and sending on hijack. It is all correct, but it is more than a maintainer might expect, and the 881-line test file is hard to review.",
+      "evidence": "grep -cv '^\\s*$' gives middleware/etag.go:270 and middleware/etag_test.go:881"
+     },
+     {
+      "severity": "minor",
+      "what": "A HEAD request whose handler writes no body gets no ETag (a deliberate choice that is documented). With If-None-Match: * it still answers 304, and that 304 carries no validator.",
+      "evidence": "Probe: HEAD to an empty handler gave 200 with no ETag; HEAD to the same handler with If-None-Match * gave 304 with no ETag header."
+     }
+    ],
+    "strengths": [
+     "Every spec point passes. GET 200 gets a quoted SHA-256 strong ETag. HEAD gets the same ETag as GET and no body. POST and non-200 responses pass through unchanged. An ETag the handler set (weak or strong) is kept and honored. If-None-Match handles weak comparison, comma lists, `*`, empty members and garbage members (skipped up to the next comma). A lowercase `w/` prefix is correctly not treated as weak.",
+     "304 responses keep ETag, Cache-Control, Last-Modified and Accept-Ranges, and drop Content-Type, Content-Length and Content-Encoding. This held over a real httptest server, with an empty body.",
+     "Works behind http.ServeContent: it adds an ETag, answers 304 on a match, and lets a 206 Range response through.",
+     "It mirrors net/http semantics carefully: headers are snapshotted at WriteHeader(200), 1xx responses are forwarded, only the first status counts, trailers are preserved, and on Hijack the buffered response is sent as written. A differential test compares the wrapped handler with the bare one over a real server.",
+     "Follows the compress.go conventions for Push, Unwrap and error strings. The README row and link are added in the right places.",
+     "go build, go test ./..., go vet ./... pass and gofmt -l prints nothing. The ETag tests run in about 0.02s."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 1153,
+     "test_cases": 25
+    },
+    "summary": "Build N meets the spec fully, and I found no bug in its spec behavior. I copied it to /tmp/inspect-chi-etag-N. go build, go test ./..., go vet ./... pass and gofmt -l prints nothing. Throwaway probes covered GET/HEAD/POST, 200 and non-200, an ETag set by the handler, If-None-Match with weak tags, lists, `*` and garbage, http.ServeContent including Range, io.Copy over a real server, Flush, and the 304 headers; all behaved correctly. The wrapper has no ReadFrom, but io.Copy falls back to Write and works. middleware/etag.go also handles trailers, 1xx responses, hijacking a buffered response and header snapshots, with a solid 881-line test suite (/tmp/inspect-chi-etag-N/middleware/etag_test.go) that includes a differential test against a real server. The README row and link are correct. The remaining issues are minor: more code and test volume than a maintainer may want, Flush swallowed while buffering (documented), Hijacker and Pusher always advertised (as in compress.go), and a 304 without an ETag for HEAD with no body and If-None-Match: *. A maintainer would likely merge it, perhaps asking to trim it.",
+    "letter": "N"
+   },
+   {
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 9,
+     "code_quality": 8,
+     "tests": 8,
+     "docs": 8,
+     "product": 7
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "A garbage member in If-None-Match stops the scan, so a valid tag after it never matches. This copies net/http's checkIfNoneMatch, but a more lenient reading of RFC 9110 would skip the bad member and keep going.",
+      "evidence": "Throwaway test: GET with If-None-Match `garbage, \"<sha of hello>\"` returned 200 with len=5, while `\"<sha>\", garbage` returned 304. Code at middleware/etag.go:204-207 (`if tag == \"\" { return false }`)."
+     },
+     {
+      "severity": "minor",
+      "what": "A HEAD response whose handler writes no body (http.ServeContent on HEAD, for example) gets no ETag, but the GET for the same resource does. HEAD and GET headers therefore differ. The tests choose this on purpose, but the doc comment says ETags are added to 'GET and HEAD responses with a 200 status' and does not mention the exception.",
+      "evidence": "Probe: ServeContent GET returned ETag=\"2cf24d...\" and Content-Length 5. ServeContent HEAD returned 200 with etag=\"\" and Content-Length 5. Logic at middleware/etag.go:140; doc comment at middleware/etag.go:16-17."
+     },
+     {
+      "severity": "minor",
+      "what": "A comment is orphaned: the 'Trailers declared in the Trailer header ... reach the client' paragraph sits directly on top of etagWire's own doc comment, away from TestETagTrailersReachClient, the test it describes.",
+      "evidence": "middleware/etag_test.go around lines 755-760, above `func etagWire`."
+     },
+     {
+      "severity": "minor",
+      "what": "The test file is very large for chi's middleware style: 815 non-blank lines against 220 of implementation. It includes property and differential harnesses, raw-socket wire comparisons and a 200ms timing-based Flush probe (etagProbeFlush) that could be flaky on a slow CI machine. A maintainer would likely ask for it to be trimmed.",
+      "evidence": "wc: etag.go has 220 non-blank lines and etag_test.go has 815. etagProbeFlush uses time.After(200*time.Millisecond) at middleware/etag_test.go:~84."
+     },
+     {
+      "severity": "minor",
+      "what": "The wrapped writer does not implement io.ReaderFrom, so io.Copy falls back to plain Write calls. The result is still correct, and Unwrap is provided for ResponseController.",
+      "evidence": "Probe: `_, ok := w.(io.ReaderFrom)` gave false. io.Copy still produced 200 with the correct ETag."
+     }
+    ],
+    "strengths": [
+     "Every spec point checked passes: a strong sha256 ETag on GET/HEAD 200, a handler-set ETag is kept and used for matching, weak comparison, comma lists with whitespace, `*`, multiple If-None-Match header lines, 304 with no body that keeps the validator and cache headers and drops Content-Type, Content-Length and Content-Encoding, and POST and non-200 responses pass through.",
+     "Careful net/http fidelity: headers set after the 200 is committed are dropped, 1xx statuses (103 Early Hints) are forwarded immediately, trailers are kept, Hijack after a buffered write sends the buffered response first, and a panicking handler writes nothing, so Recoverer can still return 500.",
+     "Flush is a no-op while buffering and is forwarded once the response is in pass-through. Hijack and Push forward or return clear errors, and Unwrap lets ResponseController work.",
+     "go build, go test, go vet, `go test -race` and gofmt are all clean. The README table row and its link are added in alphabetical order with matching column width.",
+     "The If-None-Match parser follows net/http's scanETag rules, so a comma inside a quoted tag is handled correctly.",
+     "http.ServeContent behind the middleware works, including 304 on a matching tag and 206 Range responses passing through."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 1037,
+     "test_cases": 21
+    },
+    "summary": "Build O meets the spec and passes build, test, vet, race and gofmt. Throwaway probes covered GET/HEAD/POST, non-200 statuses, weak tags, lists, `*`, garbage members, ServeContent, Flush through ResponseController, io.Copy and HEAD with no body. All of them behaved correctly or as defensibly documented. The implementation (middleware/etag.go, 220 non-blank lines) is careful about net/http semantics: late headers, trailers, 1xx statuses, Hijack and panics. Remaining issues are minor: a garbage member ends If-None-Match matching (copied from net/http); a HEAD with no body gets no ETag while its GET does, and the doc comment doesn't say so; an orphaned test comment; and a very large test file with one timing-based probe that may be heavier than chi's usual style.",
+    "letter": "O"
+   },
+   {
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "If a malformed member appears before a valid tag in If-None-Match, the rest of the field line is ignored, so the matching tag after it never produces a 304. RFC 9110 lets a server ignore an invalid field, but a more lenient parser would skip just the bad member.",
+      "evidence": "Throwaway test: If-None-Match `garbage, \"<etag>\"` -> 200; `\"a\"junk, \"<etag>\"` -> 200; but `\"<etag>\", garbage` -> 304. Cause: middleware/etag.go:213-219 breaks out of the loop when scanMember fails."
+     },
+     {
+      "severity": "minor",
+      "what": "HEAD from a handler that writes no body (for example http.ServeContent) gets no ETag, while GET for the same resource does. The doc comment doesn't mention this, so clients see different validators for GET and HEAD.",
+      "evidence": "Throwaway test: ServeContent behind ETag, GET -> etag=\"b94d...\"; HEAD -> etag=\"\" with cl=11. Cause: middleware/etag.go:135 (`r.Method == http.MethodGet || ew.body.Len() > 0`)."
+     },
+     {
+      "severity": "minor",
+      "what": "The implementation is fairly heavy for a middleware: about 230 lines with header snapshotting, trailer reconstruction and 1xx passthrough. It is correct and well commented, but it is more machinery than other chi middlewares carry.",
+      "evidence": "middleware/etag.go:32-197 (snapshot/restoreHeader/trailers logic)"
+     }
+    ],
+    "letter": "P",
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 9,
+     "code_quality": 7,
+     "tests": 9,
+     "docs": 8,
+     "product": 7
+    },
+    "strengths": [
+     "go build, go test ./..., go vet ./... all pass; gofmt -l prints nothing",
+     "Correct RFC 9110 weak comparison across W/ on either side, comma-separated lists with empty elements and OWS, multiple field lines, and a lone *. Quoted commas and control characters are handled.",
+     "304 drops Content-Type, Content-Length, Content-Encoding and Last-Modified, and keeps the ETag and other headers",
+     "Non-200 responses stream through without buffering. POST bypasses the middleware entirely. 1xx informational responses pass through.",
+     "Flush is a no-op while buffering. Hijack sends the buffered 200 first, matching net/http, and this is tested against a raw connection. Trailers set after a write are preserved, and this is tested differentially against plain net/http.",
+     "Works correctly with http.ServeContent: 200 gets a computed ETag, a matching If-None-Match gets 304, and Range requests (206) pass through.",
+     "Extensive tests: a 30-case table for If-None-Match, a seeded property test over 1000 bodies split into random writes, and differential tests against an unwrapped handler",
+     "README row and link are added in alphabetical order"
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 894,
+     "test_cases": 55
+    },
+    "summary": "This build meets the spec. Build, test, vet and gofmt are all clean. My throwaway tests found correct behavior for GET, HEAD and POST, for 200 and non-200 responses, and for a handler that sets its own weak ETag (a strong If-None-Match still gets 304). Weak tags, lists and * are handled, along with Flush, Hijack, io.Copy (no ReaderFrom, which is fine), ServeContent including Range, and the README row. Remaining nits are minor. A malformed member before a valid tag stops matching for the rest of the line, which the RFC allows. A HEAD handler that writes no body gets no ETag, which is a reasonable choice but undocumented. The writer wrapper is heavier than typical chi middleware, though its header snapshot and trailer handling mirror net/http semantics and are tested differentially. The tests are unusually thorough."
+   },
+   {
+    "overall": 8,
+    "scores": {
+     "correctness": 8,
+     "robustness": 8,
+     "code_quality": 8,
+     "tests": 9,
+     "docs": 8,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "A HEAD response with no body bytes gets no ETag, and a HEAD whose If-None-Match holds the GET tag gets 200 rather than 304. This covers http.ServeContent and other handlers that skip the body on HEAD. The spec says HEAD responses get a body-derived ETag and a 304 on match. The deviation is deliberate and documented (it avoids sending the empty-body hash), but it means conditional HEADs through ServeContent never return 304.",
+      "evidence": "Throwaway test in middleware/: HEAD to http.ServeContent(\"hello\") printed `SC HEAD 200 etag=\"\" cl=\"5\"`. The same HEAD with If-None-Match set to the GET tag printed `SC HEAD INM 200`. GET returned the hash and a 304 on match. The code is at middleware/etag.go:129 (`r.Method == http.MethodGet || len(body) > 0`)."
+     },
+     {
+      "severity": "minor",
+      "what": "The wrapped writer does not implement io.ReaderFrom, so io.Copy into it uses the generic copy loop. Results are still correct because everything is buffered anyway.",
+      "evidence": "Probe printed `ReaderFrom=false`. io.Copy still produced the correct ETag."
+     },
+     {
+      "severity": "minor",
+      "what": "The wrapper always exposes Flush, Hijack and Push, even when the underlying writer lacks them. Hijack and Push return errors in that case. Flush still drops the ETag even when the underlying writer cannot flush. This matches what other chi wrappers do but is worth noting.",
+      "evidence": "middleware/etag.go:85-113"
+     }
+    ],
+    "strengths": [
+     "go build, go test ./..., and go vet ./... all pass, and gofmt -l prints nothing.",
+     "If-None-Match parsing is thorough and matches RFC 9110: weak comparison, lists spread over several header lines, commas inside quoted tags, *, junk members skipped, and the handler's malformed tags never match. Probes for all of these gave the expected 304 or 200.",
+     "Handler-set ETags (including weak ones) are respected and 304s are computed from them. A 304 keeps headers such as Cache-Control, Vary and Set-Cookie and drops the body headers, the same way ServeContent does.",
+     "Non-200 responses (404, and the 206 from a Range request) pass through without an ETag. POST and other methods get the raw writer with nothing wrapped.",
+     "Flush switches to streaming correctly, and a real server returned chunked \"ab\" with no ETag. After Hijack nothing is written to the connection. 1xx informational responses are forwarded right away, while 101 is treated as final. Unwrap is provided for http.ResponseController.",
+     "The doc comment is clear. It covers the memory cost of buffering, puts ETag before Compress in the chain, and warns against combining it with NoCache.",
+     "README row and link are added in alphabetical order, matching the table's format.",
+     "The 22 tests cover the behavior well, including a table-driven If-None-Match test with 27 cases and a real-server hijack test."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 664,
+     "test_cases": 22
+    },
+    "summary": "Build Q is a careful, well-documented ETag middleware. Build, test, vet and gofmt are all clean. The throwaway probes found GET, conditional GET, weak tags, lists, *, garbage members, handler-set ETags, pass-through for non-200 and other methods, Flush, Hijack, Push, io.Copy and ServeContent on GET all correct. The only real gap is a deliberate, documented one: a HEAD whose handler writes no body (including http.ServeContent) gets no ETag and never gets a 304, which falls short of the letter of the spec for HEAD. The wrapper also lacks ReaderFrom, which costs nothing in correctness. The code is somewhat heavier than strictly needed in the list parser but clear and well-commented. The tests are thorough and meaningful. A maintainer would likely merge it with small edits.",
+    "letter": "Q"
+   },
+   {
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "A HEAD request gets no ETag when the handler writes no body, so HEAD and GET for the same resource disagree. http.ServeContent on HEAD returns 200 with Content-Length 8 and no ETag, while GET returns a computed ETag. If-None-Match on HEAD therefore never produces a 304 for such handlers. This is a documented choice (etag.go:25, 131-133), but it means HEAD does not mirror GET.",
+      "evidence": "probe test: ETag(ServeContent handler) GET -> 200 ETag=\"15ce30...\"; HEAD -> 200 etag=\"\" cl=\"8\"; HEAD with If-None-Match: * on a bodiless handler -> 200"
+     },
+     {
+      "severity": "minor",
+      "what": "The test file is very large: 993 non-blank lines and 28 top-level tests for a 216-line middleware. It includes a test that reads ../README.md (TestETagReadmeListsMiddleware), which no other chi test does, and gated tests that wait on 1s timeouts. The ETag tests alone add about 10s to the package's test time.",
+      "evidence": "go test ./middleware -run ETag -count=1 -> ok 10.106s; middleware/etag_test.go:710 reads ../README.md"
+     },
+     {
+      "severity": "minor",
+      "what": "A malformed member stops If-None-Match parsing, so any valid tags after it are ignored. net/http's ServeContent behaves the same way, so this is defensible.",
+      "evidence": "If-None-Match: garbage, \"v1\" against handler ETag W/\"v1\" -> 200; \"v1\", garbage -> 304 (etag.go:196-199)"
+     },
+     {
+      "severity": "minor",
+      "what": "handlerETag scans for non-canonical header keys ('etag', 'ETAG') and sorts them to pick one. This is extra machinery for a rare misuse and adds complexity beyond chi's usual middleware style.",
+      "evidence": "middleware/etag.go:149-170"
+     }
+    ],
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 9,
+     "code_quality": 7,
+     "tests": 7,
+     "docs": 9,
+     "product": 7
+    },
+    "strengths": [
+     "Meets the spec. GET and HEAD are buffered, and a strong SHA-256 ETag is set only on 200 responses where the handler set none. A handler's own ETag is kept and still honored for 304. POST and non-200 responses pass through unchanged.",
+     "The If-None-Match parser follows RFC 9110 closely: weak comparison, W/ on either side, comma lists with empty members, multiple header lines, '*', and an etagc character check. The 304 response drops Content-Type, Content-Length and Content-Encoding and keeps Cache-Control, Vary and ETag.",
+     "Careful handling of the wrapped writer. 1xx responses are forwarded early, and Flush is a no-op while buffering but passes through once streaming. Hijack writes out the buffered response first, and Push and Unwrap are provided. No ReaderFrom is exposed, so io.Copy goes through the buffer. Non-200 responses switch to streaming.",
+     "The doc comment is thorough and explains where to mount ETag relative to Compress. The README row and its link are in alphabetical order.",
+     "build, test, vet and gofmt are all clean. http.ServeContent works behind it: 304 on a matching tag, and a 206 for a Range request passes through without an ETag."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 1211,
+     "test_cases": 136
+    },
+    "summary": "I ran build, test, vet and gofmt on a fresh copy, and all were clean. Throwaway probes covered GET, HEAD and POST; 404 responses; a handler that sets its own W/ ETag; If-None-Match with weak tags, lists, '*', empty and garbage members; io.Copy (ReadFrom); Flush; http.ServeContent including Range; and 304 headers. All behaved per the spec. The only gaps are documented design choices and size. A bodiless HEAD gets no ETag, so ServeContent HEAD and GET disagree on ETag. The test file is much larger than the code (about 1000 lines), reads the README, and adds about 10s to the test run. The implementation itself is careful, idiomatic and well documented, and a maintainer would likely merge it after trimming the tests.",
+    "letter": "R"
+   },
+   {
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 9,
+     "code_quality": 8,
+     "tests": 8,
+     "docs": 8,
+     "product": 7
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "For a HEAD request whose handler writes no body (for example http.ServeContent, or a handler that skips the body on HEAD), no ETag is set, so HEAD and GET for the same resource disagree, and If-None-Match on such a HEAD never yields 304 unless it is '*'. The doc comment does not mention this, and it is pinned by TestETagHeadEmptyBodyGetsNoETag.",
+      "evidence": "etag.go:152 `if h.Get(\"ETag\") == \"\" && (!ew.head || ew.body.Len() > 0)`. In a probe against a real httptest server with ServeContent: `real /sc GET 200 \"2cf24d...\"` / `real /sc HEAD 200  5` (no ETag) / `real inm /sc HEAD 200`, while GET with the same If-None-Match gives 304."
+     },
+     {
+      "severity": "minor",
+      "what": "Flush is a no-op while a 200 is being buffered, so streaming or SSE handlers under ETag lose incremental delivery. This is documented in the doc comment and follows from the buffering design, but nothing guards against it (for example, switching to passthrough on Flush).",
+      "evidence": "etag.go:87-97: Flush returns early when !passthrough. The doc comment at etag.go:19-20 says so."
+     },
+     {
+      "severity": "minor",
+      "what": "The test file is heavy for chi's conventions: 734 non-blank lines against 216 lines of source, 41 test functions, raw-socket hijack tests, randomized property and differential tests, and odd 'Triggered: invariant/differential' comment labels that appear nowhere else in the repo. A maintainer would probably ask for it to be trimmed.",
+      "evidence": "`grep -c Triggered middleware/etag_test.go` -> 4. `wc` of non-blank lines: etag.go 216, etag_test.go 734."
+     },
+     {
+      "severity": "minor",
+      "what": "When ETag wraps http.ServeContent, If-Range is evaluated before the middleware's ETag exists. A Range request whose If-Range carries the middleware's ETag therefore gets the full 200 instead of a 206. HTTP allows this, but the conditional is lost in practice.",
+      "evidence": "Probe: Range: bytes=0-1 plus If-Range set to the computed tag -> `range if-range 200 \"2cf24d...\" 5`."
+     }
+    ],
+    "strengths": [
+     "go build, go test ./... (all ok), go vet and gofmt -l all pass. The README row and its link are in alphabetical order, matching the existing table.",
+     "The If-None-Match parser follows RFC 9110 correctly: weak comparison, comma-separated lists (including commas inside opaque tags), '*', multiple header lines, and malformed members skipped up to the next comma without discarding later valid members. Probes `garbage, <tag>` and `\"a\" junk, <tag>` both give 304, and an unquoted tag gives 200.",
+     "The 304 response mirrors net/http's writeNotModified: Content-Type, Content-Length and Content-Encoding are dropped, and Last-Modified is dropped only when an ETag is present. Headers are snapshotted at commit, matching net/http semantics for header changes after WriteHeader.",
+     "Non-200 responses pass through immediately and stream, 1xx informational responses are forwarded, and a handler's own 304 is not touched.",
+     "Hijack, Push and Unwrap are delegated (so http.NewResponseController works). Hijacking after a write flushes the buffered 200 without an ETag, and real-server tests show the raw bytes match the unwrapped handler's.",
+     "Tests cover meaningful behavior, including a differential test against the unwrapped handler and checks on a real server."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 951,
+     "test_cases": 41
+    },
+    "summary": "Build S is a careful, correct implementation of middleware.ETag (/tmp/inspect-chi-etag-S/middleware/etag.go, 216 non-blank lines). It buffers GET and HEAD 200 responses, sets a strong SHA-256 ETag, does RFC 9110 weak If-None-Match matching (lists, '*', garbage members), returns a 304 that mirrors net/http, and passes everything else through. Hijack, Push and Unwrap are handled thoughtfully. All repo checks pass, and every throwaway probe behaved correctly: GET, HEAD and POST; 404; a handler that sets its own weak ETag; ServeContent; io.Copy plus Flush; and a real server with a hijack. No spec requirement fails. The remaining issues are minor. A HEAD from a handler that writes no body gets no ETag, so it disagrees with GET. Flush does nothing while buffering (documented). The 734-line test suite, with its unusual 'Triggered:' labels, is heavier than chi's style. A maintainer would likely merge it after trimming the tests.",
+    "letter": "S"
+   }
+  ],
+  "judge": {
+   "ranking": [
+    {
+     "letter": "A",
+     "score": 8.5,
+     "confirmed_defects": [
+      "A HEAD response with no body (including ServeContent HEAD) gets no ETag, so conditional HEAD does not return 304. Reproduced: scHEADetag=false. This is documented.",
+      "An empty-body HEAD with If-None-Match: * returns a 304 with no validator (reproduced)",
+      "A 304 keeps Content-Type and drops only Content-Length (minor, RFC SHOULD NOT)"
+     ],
+     "refuted_defects": [],
+     "rationale": "Passed every probe I ran: strong SHA-256 tag, weak and list matching, *, multiple header lines, garbage members skipped (garbage-first gives 304), handler W/ tag kept, POST and 404 pass through, ServeContent 304, 1 MB body. Flush switches the writer to streaming, which is the sensible choice for SSE. At 198 lines of code and 448 of tests it is the cleanest, most idiomatic code, and the tests are proportionate. A maintainer would merge it as is."
+    },
+    {
+     "letter": "J",
+     "score": 8.5,
+     "confirmed_defects": [
+      "A HEAD with no body gets no ETag, and this is not in the exported doc (reproduced)",
+      "Always advertises Flusher, Hijacker and Pusher, and has no ReaderFrom (minor)"
+     ],
+     "refuted_defects": [],
+     "rationale": "Passed every probe. Its lenient RFC parser skips garbage members (garbage-first gives 304). Flush switches the writer to streaming. The code is compact (223 lines) and the tests are proportionate and table-driven (604 lines)."
+    },
+    {
+     "letter": "Q",
+     "score": 8.5,
+     "confirmed_defects": [
+      "A HEAD with no body gets no ETag (documented, reproduced)",
+      "No ReaderFrom, and the optional interfaces are always advertised (minor)"
+     ],
+     "refuted_defects": [],
+     "rationale": "Passed every probe. It has a lenient parser, Flush switches it to streaming, and its doc covers the ordering with Compress and NoCache. The code (233 lines) and the 508-line test file are both lean."
+    },
+    {
+     "letter": "M",
+     "score": 8,
+     "confirmed_defects": [
+      "A HEAD with no body gets no ETag (reproduced)",
+      "Whether a garbage member blocks a match depends on its position (garbage-first gives 200, reproduced)",
+      "An empty HEAD with * returns a 304 with no ETag (reproduced)"
+     ],
+     "refuted_defects": [],
+     "rationale": "Passed every probe, Flush switches it to streaming, and the size is reasonable (225 lines of code, 673 of tests). Its parser is slightly stricter than A, J and Q."
+    },
+    {
+     "letter": "S",
+     "score": 8,
+     "confirmed_defects": [
+      "A HEAD with no body gets no ETag (reproduced)",
+      "Flush is a no-op while buffering (reproduced: no chunking, ETag added)",
+      "The test file is heavy and carries odd 'Triggered:' labels"
+     ],
+     "refuted_defects": [],
+     "rationale": "Passed every probe, its parser is lenient, and it mirrors net/http header-snapshot semantics. The tests are a bit oversized."
+    },
+    {
+     "letter": "P",
+     "score": 8,
+     "confirmed_defects": [
+      "Garbage-first stops the match (reproduced: 200)",
+      "A HEAD with no body gets no ETag, undocumented (reproduced)"
+     ],
+     "refuted_defects": [],
+     "rationale": "Correct on every probe, with careful trailer and header-snapshot handling. Its tests are thorough but within reason (702 lines)."
+    },
+    {
+     "letter": "K",
+     "score": 7.5,
+     "confirmed_defects": [
+      "A HEAD handler that writes nothing and sets no Content-Length gets the empty-body hash as its ETag (reproduced: \"e3b0c4...\"), so it disagrees with GET for handlers that skip the body on HEAD",
+      "ServeContent HEAD gets no ETag"
+     ],
+     "refuted_defects": [],
+     "rationale": "Compact and correct on the spec probes, its parser is lenient, and Flush switches it to streaming. It is the only build I found that emits an ETag which can be wrong on a bodiless HEAD."
+    },
+    {
+     "letter": "O",
+     "score": 7.5,
+     "confirmed_defects": [
+      "Garbage-first gives 200 (reproduced)",
+      "A HEAD with no body gets no ETag, and the doc does not say so",
+      "The test file is large, has a timing-based flush probe, and contains an orphaned comment"
+     ],
+     "refuted_defects": [],
+     "rationale": "Behaviourally correct and careful about net/http semantics. The test harness is heavier than it needs to be."
+    },
+    {
+     "letter": "N",
+     "score": 7.5,
+     "confirmed_defects": [
+      "Flush is swallowed while buffering (reproduced)",
+      "An empty HEAD with * returns a 304 with no ETag (reproduced)",
+      "Heavy code and tests (292 lines of code, 928 of tests)"
+     ],
+     "refuted_defects": [],
+     "rationale": "Correct, with a lenient parser, but the size goes well beyond what the spec needs."
+    },
+    {
+     "letter": "I",
+     "score": 7.5,
+     "confirmed_defects": [
+      "Garbage-first gives 200 (reproduced)",
+      "A HEAD with no body gets no ETag, undocumented",
+      "Re-implements net/http trailer and header-snapshot logic, which is heavy"
+     ],
+     "refuted_defects": [],
+     "rationale": "Correct, and Flush switches it to streaming, but there is more machinery than needed."
+    },
+    {
+     "letter": "L",
+     "score": 7.5,
+     "confirmed_defects": [
+      "Garbage-first gives 200 (reproduced)",
+      "A HEAD with no body gets no ETag, undocumented",
+      "Heavy wrapper, plus a trivial signature test"
+     ],
+     "refuted_defects": [],
+     "rationale": "Correct on every probe, but the code and tests (268 and 887 lines) are oversized."
+    },
+    {
+     "letter": "H",
+     "score": 7.5,
+     "confirmed_defects": [
+      "Garbage-first gives 200 (reproduced)",
+      "A HEAD with no body gets no ETag (reproduced)",
+      "Always advertises Hijacker and Pusher, and the hijack-replay bookkeeping is complex"
+     ],
+     "refuted_defects": [],
+     "rationale": "Correct, but heavier than needed."
+    },
+    {
+     "letter": "B",
+     "score": 7.5,
+     "confirmed_defects": [
+      "Garbage-first gives 200 (reproduced)",
+      "A HEAD with no body gets no ETag",
+      "Process jargon in the tests (AC10, TestETagApprovedDifferences), plus trailer machinery and a 906-line test file"
+     ],
+     "refuted_defects": [],
+     "rationale": "Correct and robust, and an empty HEAD with * correctly gives 200. The process-jargon comments and oversized tests would need cleanup."
+    },
+    {
+     "letter": "C",
+     "score": 7,
+     "confirmed_defects": [
+      "Garbage-first gives 200 (reproduced)",
+      "A 1108-line test file with 'ApprovedDifferencesInEveryCallOrder' naming",
+      "A HEAD with no body gets no ETag"
+     ],
+     "refuted_defects": [],
+     "rationale": "Correct, but the tests are far out of proportion to the change and carry process-flavoured naming."
+    },
+    {
+     "letter": "E",
+     "score": 7,
+     "confirmed_defects": [
+      "Always advertises Pusher, Hijacker and Flusher",
+      "A stray quote in If-None-Match can hide a later valid tag",
+      "The largest source file (328 lines) and a 1139-line test file"
+     ],
+     "refuted_defects": [],
+     "rationale": "Behaviourally correct on my probes, but it is the most code for the same behaviour, and its parser has a quote-toggling quirk."
+    },
+    {
+     "letter": "G",
+     "score": 7,
+     "confirmed_defects": [
+      "send() calls clear(h) and copies a snapshot over the live header map, which drops trailers set after the body (the code at etag.go:121-123 confirms this)",
+      "The parser is over-lenient: it accepts '\"a\"*' and members with no comma between them",
+      "Tests include a go/parser AST doc check and a README-parsing test"
+     ],
+     "refuted_defects": [],
+     "rationale": "Correct on the spec probes, but trailers are lost and the meta-tests are brittle."
+    },
+    {
+     "letter": "R",
+     "score": 7,
+     "confirmed_defects": [
+      "The ETag tests take about 11s (reproduced: 11.4s against about 1s for the other builds)",
+      "A test reads ../README.md",
+      "Garbage-first gives 200, and a HEAD with no body gets no ETag"
+     ],
+     "refuted_defects": [],
+     "rationale": "Correct implementation, but the slow, oversized tests with README coupling are a real maintenance cost."
+    },
+    {
+     "letter": "F",
+     "score": 6.5,
+     "confirmed_defects": [
+      "Couples to Compress's private *compressResponseWriter and isCompressible (etag.go:210-211)",
+      "Emulates net/http Content-Length refusal with extra state",
+      "A test that greps the README, and 2000-iteration random loops",
+      "Garbage-first gives 200, and late headers are still sent (reproduced: late=1)"
+     ],
+     "refuted_defects": [],
+     "rationale": "Behaviour is correct, but the coupling to another middleware's internals and the test bloat make it a poor fit for chi."
+    },
+    {
+     "letter": "D",
+     "score": 6.5,
+     "confirmed_defects": [
+      "MAJOR (confirmed): a 1227-line test file with meta-tests: TestETagDocComment parses etag.go for keywords, and TestETagReadmeRow checks where the README row sits; it also has property and differential harnesses",
+      "Re-implements Content-Length enforcement",
+      "A HEAD with no body gets no ETag (reproduced)"
+     ],
+     "refuted_defects": [],
+     "rationale": "Behaviour is correct (garbage-first gives 304), but its meta-tests make doc and README edits break the build, and it is the heaviest change overall."
+    }
+   ],
+   "verdict": "Every build passed build, test, vet and gofmt, and every build passed my shared spec probes: strong tag, weak, list, * and multi-line matching, handler-set W/ tags, POST and 404 pass-through, ServeContent 304, and a 1 MB body. Correctness therefore barely separates them. They all share the same bodiless-HEAD gap, and K alone emits an empty-body hash on such a HEAD. What separates them is proportionality and fit with chi. A, J and Q deliver identical behaviour in about 200 lines with proportionate tests and lenient If-None-Match parsing, and they switch to streaming on Flush. The lower-ranked builds (C, E, G, R, F, D) add large test harnesses, README and doc-comment meta-tests, 10-second test runs, trailer loss (G), or coupling to Compress internals (F), and a maintainer would ask for these to be cut."
+  },
+  "judges": [
+   {
+    "ranking": [
+     {
+      "letter": "A",
+      "score": 8.5,
+      "confirmed_defects": [
+       "A HEAD response with no body (including ServeContent HEAD) gets no ETag, so conditional HEAD does not return 304. Reproduced: scHEADetag=false. This is documented.",
+       "An empty-body HEAD with If-None-Match: * returns a 304 with no validator (reproduced)",
+       "A 304 keeps Content-Type and drops only Content-Length (minor, RFC SHOULD NOT)"
+      ],
+      "refuted_defects": [],
+      "rationale": "Passed every probe I ran: strong SHA-256 tag, weak and list matching, *, multiple header lines, garbage members skipped (garbage-first gives 304), handler W/ tag kept, POST and 404 pass through, ServeContent 304, 1 MB body. Flush switches the writer to streaming, which is the sensible choice for SSE. At 198 lines of code and 448 of tests it is the cleanest, most idiomatic code, and the tests are proportionate. A maintainer would merge it as is."
+     },
+     {
+      "letter": "J",
+      "score": 8.5,
+      "confirmed_defects": [
+       "A HEAD with no body gets no ETag, and this is not in the exported doc (reproduced)",
+       "Always advertises Flusher, Hijacker and Pusher, and has no ReaderFrom (minor)"
+      ],
+      "refuted_defects": [],
+      "rationale": "Passed every probe. Its lenient RFC parser skips garbage members (garbage-first gives 304). Flush switches the writer to streaming. The code is compact (223 lines) and the tests are proportionate and table-driven (604 lines)."
+     },
+     {
+      "letter": "Q",
+      "score": 8.5,
+      "confirmed_defects": [
+       "A HEAD with no body gets no ETag (documented, reproduced)",
+       "No ReaderFrom, and the optional interfaces are always advertised (minor)"
+      ],
+      "refuted_defects": [],
+      "rationale": "Passed every probe. It has a lenient parser, Flush switches it to streaming, and its doc covers the ordering with Compress and NoCache. The code (233 lines) and the 508-line test file are both lean."
+     },
+     {
+      "letter": "M",
+      "score": 8,
+      "confirmed_defects": [
+       "A HEAD with no body gets no ETag (reproduced)",
+       "Whether a garbage member blocks a match depends on its position (garbage-first gives 200, reproduced)",
+       "An empty HEAD with * returns a 304 with no ETag (reproduced)"
+      ],
+      "refuted_defects": [],
+      "rationale": "Passed every probe, Flush switches it to streaming, and the size is reasonable (225 lines of code, 673 of tests). Its parser is slightly stricter than A, J and Q."
+     },
+     {
+      "letter": "S",
+      "score": 8,
+      "confirmed_defects": [
+       "A HEAD with no body gets no ETag (reproduced)",
+       "Flush is a no-op while buffering (reproduced: no chunking, ETag added)",
+       "The test file is heavy and carries odd 'Triggered:' labels"
+      ],
+      "refuted_defects": [],
+      "rationale": "Passed every probe, its parser is lenient, and it mirrors net/http header-snapshot semantics. The tests are a bit oversized."
+     },
+     {
+      "letter": "P",
+      "score": 8,
+      "confirmed_defects": [
+       "Garbage-first stops the match (reproduced: 200)",
+       "A HEAD with no body gets no ETag, undocumented (reproduced)"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct on every probe, with careful trailer and header-snapshot handling. Its tests are thorough but within reason (702 lines)."
+     },
+     {
+      "letter": "K",
+      "score": 7.5,
+      "confirmed_defects": [
+       "A HEAD handler that writes nothing and sets no Content-Length gets the empty-body hash as its ETag (reproduced: \"e3b0c4...\"), so it disagrees with GET for handlers that skip the body on HEAD",
+       "ServeContent HEAD gets no ETag"
+      ],
+      "refuted_defects": [],
+      "rationale": "Compact and correct on the spec probes, its parser is lenient, and Flush switches it to streaming. It is the only build I found that emits an ETag which can be wrong on a bodiless HEAD."
+     },
+     {
+      "letter": "O",
+      "score": 7.5,
+      "confirmed_defects": [
+       "Garbage-first gives 200 (reproduced)",
+       "A HEAD with no body gets no ETag, and the doc does not say so",
+       "The test file is large, has a timing-based flush probe, and contains an orphaned comment"
+      ],
+      "refuted_defects": [],
+      "rationale": "Behaviourally correct and careful about net/http semantics. The test harness is heavier than it needs to be."
+     },
+     {
+      "letter": "N",
+      "score": 7.5,
+      "confirmed_defects": [
+       "Flush is swallowed while buffering (reproduced)",
+       "An empty HEAD with * returns a 304 with no ETag (reproduced)",
+       "Heavy code and tests (292 lines of code, 928 of tests)"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct, with a lenient parser, but the size goes well beyond what the spec needs."
+     },
+     {
+      "letter": "I",
+      "score": 7.5,
+      "confirmed_defects": [
+       "Garbage-first gives 200 (reproduced)",
+       "A HEAD with no body gets no ETag, undocumented",
+       "Re-implements net/http trailer and header-snapshot logic, which is heavy"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct, and Flush switches it to streaming, but there is more machinery than needed."
+     },
+     {
+      "letter": "L",
+      "score": 7.5,
+      "confirmed_defects": [
+       "Garbage-first gives 200 (reproduced)",
+       "A HEAD with no body gets no ETag, undocumented",
+       "Heavy wrapper, plus a trivial signature test"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct on every probe, but the code and tests (268 and 887 lines) are oversized."
+     },
+     {
+      "letter": "H",
+      "score": 7.5,
+      "confirmed_defects": [
+       "Garbage-first gives 200 (reproduced)",
+       "A HEAD with no body gets no ETag (reproduced)",
+       "Always advertises Hijacker and Pusher, and the hijack-replay bookkeeping is complex"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct, but heavier than needed."
+     },
+     {
+      "letter": "B",
+      "score": 7.5,
+      "confirmed_defects": [
+       "Garbage-first gives 200 (reproduced)",
+       "A HEAD with no body gets no ETag",
+       "Process jargon in the tests (AC10, TestETagApprovedDifferences), plus trailer machinery and a 906-line test file"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct and robust, and an empty HEAD with * correctly gives 200. The process-jargon comments and oversized tests would need cleanup."
+     },
+     {
+      "letter": "C",
+      "score": 7,
+      "confirmed_defects": [
+       "Garbage-first gives 200 (reproduced)",
+       "A 1108-line test file with 'ApprovedDifferencesInEveryCallOrder' naming",
+       "A HEAD with no body gets no ETag"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct, but the tests are far out of proportion to the change and carry process-flavoured naming."
+     },
+     {
+      "letter": "E",
+      "score": 7,
+      "confirmed_defects": [
+       "Always advertises Pusher, Hijacker and Flusher",
+       "A stray quote in If-None-Match can hide a later valid tag",
+       "The largest source file (328 lines) and a 1139-line test file"
+      ],
+      "refuted_defects": [],
+      "rationale": "Behaviourally correct on my probes, but it is the most code for the same behaviour, and its parser has a quote-toggling quirk."
+     },
+     {
+      "letter": "G",
+      "score": 7,
+      "confirmed_defects": [
+       "send() calls clear(h) and copies a snapshot over the live header map, which drops trailers set after the body (the code at etag.go:121-123 confirms this)",
+       "The parser is over-lenient: it accepts '\"a\"*' and members with no comma between them",
+       "Tests include a go/parser AST doc check and a README-parsing test"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct on the spec probes, but trailers are lost and the meta-tests are brittle."
+     },
+     {
+      "letter": "R",
+      "score": 7,
+      "confirmed_defects": [
+       "The ETag tests take about 11s (reproduced: 11.4s against about 1s for the other builds)",
+       "A test reads ../README.md",
+       "Garbage-first gives 200, and a HEAD with no body gets no ETag"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct implementation, but the slow, oversized tests with README coupling are a real maintenance cost."
+     },
+     {
+      "letter": "F",
+      "score": 6.5,
+      "confirmed_defects": [
+       "Couples to Compress's private *compressResponseWriter and isCompressible (etag.go:210-211)",
+       "Emulates net/http Content-Length refusal with extra state",
+       "A test that greps the README, and 2000-iteration random loops",
+       "Garbage-first gives 200, and late headers are still sent (reproduced: late=1)"
+      ],
+      "refuted_defects": [],
+      "rationale": "Behaviour is correct, but the coupling to another middleware's internals and the test bloat make it a poor fit for chi."
+     },
+     {
+      "letter": "D",
+      "score": 6.5,
+      "confirmed_defects": [
+       "MAJOR (confirmed): a 1227-line test file with meta-tests: TestETagDocComment parses etag.go for keywords, and TestETagReadmeRow checks where the README row sits; it also has property and differential harnesses",
+       "Re-implements Content-Length enforcement",
+       "A HEAD with no body gets no ETag (reproduced)"
+      ],
+      "refuted_defects": [],
+      "rationale": "Behaviour is correct (garbage-first gives 304), but its meta-tests make doc and README edits break the build, and it is the heaviest change overall."
+     }
+    ],
+    "verdict": "Every build passed build, test, vet and gofmt, and every build passed my shared spec probes: strong tag, weak, list, * and multi-line matching, handler-set W/ tags, POST and 404 pass-through, ServeContent 304, and a 1 MB body. Correctness therefore barely separates them. They all share the same bodiless-HEAD gap, and K alone emits an empty-body hash on such a HEAD. What separates them is proportionality and fit with chi. A, J and Q deliver identical behaviour in about 200 lines with proportionate tests and lenient If-None-Match parsing, and they switch to streaming on Flush. The lower-ranked builds (C, E, G, R, F, D) add large test harnesses, README and doc-comment meta-tests, 10-second test runs, trailer loss (G), or coupling to Compress internals (F), and a maintainer would ask for these to be cut."
+   },
+   {
+    "ranking": [
+     {
+      "letter": "A",
+      "score": 8.5,
+      "confirmed_defects": [
+       "HEAD with no body (ServeContent HEAD) gets no ETag; conditional HEAD returns 200. Reproduced: sc-head etag=\"\" and sc-head-match 200",
+       "Write errors from the underlying writer are ignored in startStreaming and finish (read in code)",
+       "Missed by inspector: a 304 keeps Content-Type (and Content-Encoding/Last-Modified). Only Content-Length is dropped; reproduced 304 with ct=\"text/plain\". Minor"
+      ],
+      "refuted_defects": [],
+      "rationale": "Smallest implementation (182 lines) and clean. Its If-None-Match parser is lenient and correct: garbage members are skipped and quoted commas are handled. Flush switches to streaming, so SSE works, as reproduced on a real server. Trailers survive, and non-200 responses stream. Tests are proportionate (424 lines) and fast. The only gaps are cosmetic header cleanup on 304 and the shared HEAD-without-body choice."
+     },
+     {
+      "letter": "J",
+      "score": 8,
+      "confirmed_defects": [
+       "HEAD with no body gets no ETag; ServeContent HEAD with If-None-Match returns 200",
+       "Always advertises Flusher/Hijacker/Pusher; no ReaderFrom",
+       "Write errors ignored on the buffered write",
+       "Missed by inspector: on HEAD it drops the buffered body before handing off, so net/http cannot compute Content-Length. Real-server HEAD shows cl=-1 where GET shows 5, so HEAD and GET headers differ. Minor"
+      ],
+      "refuted_defects": [],
+      "rationale": "Compact and clear. The parser is lenient, Flush streams, non-200 responses stream, and the tests are proportionate. One extra minor HEAD Content-Length inconsistency."
+     },
+     {
+      "letter": "M",
+      "score": 8,
+      "confirmed_defects": [
+       "HEAD with no body gets no ETag (sc-head-match 200)",
+       "How a garbage member is treated depends on where it sits: 'garbage, tag' gives 200 (reproduced)",
+       "If-None-Match * on a bodiless HEAD gives a 304 with no validator",
+       "No ReaderFrom"
+      ],
+      "refuted_defects": [],
+      "rationale": "Small, readable implementation that meets the spec. Flush streams and the test suite is moderate. The parser is net/http-strict, which is acceptable."
+     },
+     {
+      "letter": "I",
+      "score": 8,
+      "confirmed_defects": [
+       "HEAD with no body gets no ETag (not in the doc comment)",
+       "A garbage member before a valid tag stops matching (reproduced 200)",
+       "Always advertises the optional interfaces"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct, with careful header snapshots and trailer handling. Flush streams (reproduced). Heavier than needed but sound."
+     },
+     {
+      "letter": "O",
+      "score": 8,
+      "confirmed_defects": [
+       "A garbage member before a valid tag stops matching (reproduced)",
+       "HEAD with no body gets no ETag, and the doc comment does not say so",
+       "The test file is large and includes a timing-based Flush probe"
+      ],
+      "refuted_defects": [],
+      "rationale": "Faithful to net/http (late headers dropped, trailers kept, hijack handled). Correct on every probe. Flush is swallowed while buffering, which is documented."
+     },
+     {
+      "letter": "P",
+      "score": 8,
+      "confirmed_defects": [
+       "A garbage member stops matching (reproduced)",
+       "HEAD with no body gets no ETag (undocumented)",
+       "Header-snapshot and trailer machinery is somewhat heavy"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct on all probes, with trailers and late headers handled. Thorough but not absurd tests. Flush is swallowed while buffering."
+     },
+     {
+      "letter": "N",
+      "score": 8,
+      "confirmed_defects": [
+       "Flush is swallowed while a 200 is buffered (reproduced: first SSE byte only after 300ms)",
+       "Always advertises Hijacker/Pusher",
+       "A * on a bodiless HEAD gives a 304 with no ETag",
+       "Size is heavy"
+      ],
+      "refuted_defects": [],
+      "rationale": "Lenient parser and correct 304 headers. Trailers and late headers handled. Solid overall, somewhat heavy."
+     },
+     {
+      "letter": "Q",
+      "score": 7.5,
+      "confirmed_defects": [
+       "HEAD with no body gets no ETag; conditional HEAD with ServeContent returns 200",
+       "No ReaderFrom; always exposes Flush/Hijack/Push",
+       "Missed by inspector: it sets Content-Length explicitly on GET 200, so declared trailers are dropped entirely (real server showed trailer=map[] where A delivers X-T=v)",
+       "Missed by inspector: non-200 responses are buffered until the handler returns or calls Flush, not streamed immediately"
+      ],
+      "refuted_defects": [],
+      "rationale": "Compact and well documented. Lenient parser, and Flush streams. Trailer loss and buffering of non-200 responses are small fidelity gaps."
+     },
+     {
+      "letter": "K",
+      "score": 7.5,
+      "confirmed_defects": [
+       "A HEAD handler that writes no body and sets no Content-Length gets the SHA-256-of-empty ETag, which is a wrong validator (reproduced: empty-head and head-ctonly get a hash)",
+       "ServeContent HEAD gets no ETag",
+       "Always advertises the optional interfaces"
+      ],
+      "refuted_defects": [],
+      "rationale": "Compact, with a lenient parser and streaming on Flush. But it is the only build that emits an incorrect, empty-body ETag on bodiless HEAD responses."
+     },
+     {
+      "letter": "L",
+      "score": 7.5,
+      "confirmed_defects": [
+       "A garbage member stops matching (reproduced)",
+       "'*foo' is accepted as * (reproduced 304)",
+       "HEAD with no body gets no ETag",
+       "Heavy wrapper"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct on the spec. Parsing is sloppy on '*foo', and the implementation is heavy."
+     },
+     {
+      "letter": "S",
+      "score": 7.5,
+      "confirmed_defects": [
+       "HEAD with no body gets no ETag",
+       "Flush is a no-op while buffering",
+       "'Triggered:' process labels in the tests",
+       "Missed by inspector: trailer values set after the body are lost (real server showed X-T:[] where A delivers v)"
+      ],
+      "refuted_defects": [],
+      "rationale": "Lenient parser and a correct 304. Trailer values are dropped, and the tests carry odd labels."
+     },
+     {
+      "letter": "H",
+      "score": 7.5,
+      "confirmed_defects": [
+       "A garbage member stops matching (reproduced)",
+       "HEAD with no body gets no ETag",
+       "Always advertises Hijacker/Pusher",
+       "Missed by inspector: '*foo' and '\"x\", *' are accepted as * (304)"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct on the spec. Heavy hijack replay machinery, with looser handling of *."
+     },
+     {
+      "letter": "B",
+      "score": 7.5,
+      "confirmed_defects": [
+       "HEAD with no body gets no ETag",
+       "A garbage member stops matching (reproduced)",
+       "Process jargon in the tests ('AC10', 'ApprovedDifferences'; grep confirmed)",
+       "Flush is swallowed on a buffered 200 (reproduced)",
+       "Missed by inspector: '*foo' is treated as * (304)"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct core behavior. Trailer bookkeeping and tests are bloated, and the tests leak process jargon."
+     },
+     {
+      "letter": "R",
+      "score": 7.5,
+      "confirmed_defects": [
+       "ETag tests take about 10s (reproduced 10.4s; 11.9s with -race)",
+       "A test reads ../README.md",
+       "A garbage member stops matching (reproduced)",
+       "HEAD with no body gets no ETag"
+      ],
+      "refuted_defects": [],
+      "rationale": "Careful implementation. The test suite is slow and includes a README test, which is unusual for chi."
+     },
+     {
+      "letter": "C",
+      "score": 7.5,
+      "confirmed_defects": [
+       "HEAD with no body gets no ETag",
+       "A garbage member stops parsing (reproduced)",
+       "1026-line test file",
+       "No ReaderFrom"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct, with good net/http fidelity. Code and tests are heavy."
+     },
+     {
+      "letter": "D",
+      "score": 7,
+      "confirmed_defects": [
+       "Oversized test file with meta-tests that parse etag.go's doc comment with go/parser and check the README row position (confirmed at etag_test.go:119 and :862). This is real, but I downgrade it from major to minor-moderate: it is a maintainability cost, not a behavior bug",
+       "HEAD with no body gets no ETag",
+       "Reimplements Content-Length enforcement",
+       "No ReaderFrom"
+      ],
+      "refuted_defects": [
+       "'major' severity for the test bloat: the tests pass quickly (~0.3s) and the shipped behavior is correct, so this does not rise to major"
+      ],
+      "rationale": "Behavior is correct and the parser is lenient. Brittle meta-tests and extra Content-Length machinery hurt maintainability."
+     },
+     {
+      "letter": "F",
+      "score": 7,
+      "confirmed_defects": [
+       "Couples to Compress internals: it type-asserts *compressResponseWriter and calls isCompressible (etag.go:210-211)",
+       "A test greps README.md; 2000-iteration random loops",
+       "A garbage member stops matching (reproduced)",
+       "Late headers after WriteHeader(200) are still sent (reproduced)",
+       "Always advertises Hijacker/Pusher"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct on the spec. Coupling to another middleware's private type, plus test bloat, make it less mergeable."
+     },
+     {
+      "letter": "E",
+      "score": 7,
+      "confirmed_defects": [
+       "Always advertises Flusher/Hijacker/Pusher",
+       "Flush is a no-op on a buffered 200 (reproduced 300ms delay)",
+       "HEAD with no body gets no ETag",
+       "Largest implementation (303 lines) with a 1079-line test file",
+       "No ReaderFrom"
+      ],
+      "refuted_defects": [],
+      "rationale": "Lenient parser and correct behavior. The most code and test machinery of any build, for no user-visible gain."
+     },
+     {
+      "letter": "G",
+      "score": 6.5,
+      "confirmed_defects": [
+       "Trailers lost: send() clears the header map and replaces it with a snapshot (reproduced X-T:[])",
+       "Lenient beyond the grammar: '\"a\"*' and '*foo' match",
+       "HEAD with no body gets no ETag",
+       "Meta-tests: an AST doc-comment check and a README parse",
+       "Missed by inspector: non-200 responses are also fully buffered and Flush is a no-op for them. A flushed 500 stream delivered its first byte only after the handler returned (300ms), so non-200 responses do not stream through as the other builds do",
+       "Missed by inspector: Hijack after a buffered write discards the buffered output instead of sending it first"
+      ],
+      "refuted_defects": [],
+      "rationale": "Spec happy paths work, but it buffers everything, including non-200 responses, and has the most fidelity regressions (trailers, hijack, flush on errors)."
+     }
+    ],
+    "verdict": "All 19 builds pass build, vet, gofmt and their own tests, including under -race. Every one meets the core spec: strong ETag on GET/HEAD 200s, a handler-set ETag is kept, weak, list and * matching give 304, and other methods and non-200 statuses pass through. What separates them is fidelity at the edges and proportionality. A, J and M are compact, correct and stream on Flush, with A's lenient parser and small test suite the cleanest. The heaviest builds (D, E, F) add meta-tests, coupling to Compress's private type, or Content-Length emulation, which buys nothing for users. G ranks last because it buffers even non-200 responses, ignores Flush on them, loses trailers, and drops buffered output on Hijack."
+   }
+  ]
+ }
+]
