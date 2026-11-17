@@ -1,0 +1,58 @@
+
+######## rep-1
+-- 1. implementor: Implement Tabs/Dialog/Combobox
+-- 2. simplifier: Simplify component library
+-- 3. reviewer: Red-team component library
+    STATUS: fail
+    * - [blocking] Tabs T3: `TabList` measures enabled tabs only on its own render, so tabs added or removed by a child component that owns its own state leave `tabIndex` stale. Probe P1 removes the selected tab "a" through a child's state. Result: `P1 tabIndex: b=-1 c=-1`, and `expected false to be true` on the check that some tab has tabIndex 0. The tab list is then unreachable by Tab. Cause: `enabled` in `src/Tabs.tsx` is state set in a layout effect that has no trigger when TabList itself does not re-render.
+    * - [blocking] Dialog D6: nested dialogs that are both open on mount do not follow the topmost-first rule. Child effects run before parent effects, so `openDialogs` becomes `[inner, outer]` and the outer dialog is treated as top. Probe Q1 renders outer `<Dialog open>` containing inner `<Dialog open>` and presses Escape: `outer calls: 1 inner calls: 0`, and `expected "spy" to be called 1 times, but got 0 times`. The same ordering bug likely affects the Tab trap for that case (not separately probed).
+    * - [minor] Dialog: a drag that starts inside the content and ends on the backdrop fires a click on the backdrop and closes the dialog. Probe X2 shows `onOpenChange calls on drag-out: [[false]]`. The spec waives this ("does not need special handling"), so it is a note, not a failure.
+    * - [minor] Dialog: a pointer click on an element outside the dialog moves focus outside it (Q4: `Q4 active after outside click: outside`). Tab brings focus back. The trap only covers Tab, which matches the criteria, but programmatic or click focus can leave the dialog.
+    * - [minor] Combobox C2: when the parent changes `value` while the user is editing, the input keeps the typed text. Probe R7 shows `text while editing after parent value=b: "Applex"`. Not reproduced as a criterion break, since the draft is in progress.
+    * - [minor] Dialog: `description=""` still sets aria-describedby, which points at an empty `<p>` (Q8 found the id resolves). Not a criterion failure.
+-- 4. implementor: Fix round 1: Tabs + Dialog
+-- 5. reviewer: Incremental re-review of fixes
+    STATUS: fail
+    * - [blocking] Dialog D6: outer and inner dialogs mounted in the same click (`show && <Dialog open title="Outer"><Dialog open={inner} title="Inner">…`). Opener is captured as the "Go" button because it was focused at render, so closing the inner restores focus there, outside the open outer. Reproduced: after Escape, `document.activeElement` is `<button>Go</button>`. Tab then lands on "Outer action" only because focus was outside the trap. Breaks "closing the inner returns focus inside the outer".
+    * - [blocking] Dialog D2/D3: `<input type="hidden" name="x" />` as the first child, then a `First` button. The focusables filter (`tabIndex >= 0`, `:disabled`, not hidden) keeps the hidden input, and `focus()` on it is a no-op. Reproduced: after open, `document.activeElement` is `<body>`, and `user.tab()` does not reach "First". Realistic in forms (CSRF tokens). Fix is to exclude non-focusable inputs such as `type=hidden`.
+    * - [minor] Dialog description="" renders an empty `<p>` and sets aria-describedby to it. Not reproduced as a failure; a judgment call.
+    * - [minor] Tabs TabPanel `aria-labelledby` points at a tab id that doesn't exist when a panel has no matching Tab. Not probed further.
+-- 6. implementor: Fix round 2: Dialog focus
+
+######## rep-2
+-- 1. implementor: Build Tabs, Dialog, Combobox
+-- 2. simplifier: Simplify component library
+-- 3. reviewer: Red-team component library
+    STATUS: fail
+    * - [blocking] Tabs, controlled `value` matching no tab. Probe: `<Tabs value="ghost" onValueChange={()=>{}}>` with tabs a and b, then `await u.tab()` twice. Output: `P1 tabindex ['-1','-1']`, then `expect(document.querySelectorAll('[role=tab][tabindex="0"]').length).toBe(1)` fails with `expected +0 to be 1`. Focus ends on body; both panels are hidden. T3 (exactly one tabIndex=0) fails and the tablist is unreachable. The README documents only defaultValue's fallback, not controlled.
+    * - [blocking] Tabs, controlled `value` pointing at a disabled tab: tabIndex is `['-1','0']`, so the one tab with tabIndex 0 cannot be focused. Tab from before the tablist lands on the panel `pb`, not a tab.
+    * - [blocking] Combobox C8, parent changes `value` while the user is typing (no blur). Probe: render with value="a", click input, `keyboard('x')`, then `rerender(... value="c" ...)`, expect input.value "Cherry". Output: `expected 'Applex' to be 'Cherry'`. The input keeps the typed query, so the displayed selection is stale. Clicking a button elsewhere blurs first, which hides this, so it only shows up when the parent updates without a blur.
+    * - [minor] Combobox option ids are positional within the filtered list (`optionId(index)` over `visible`), so the same option's id changes when filtering. aria-activedescendant does match the highlighted option (typing "ap" with Apricot active, then Enter, committed 'apricot'). Id stability is not a stated criterion, so it is only a note.
+    * - [minor] Clicking the Combobox input does not open the listbox (only typing or ArrowDown do). Not in the criteria; not reproduced as a defect.
+    * - [minor] Dialog spreads `...rest` onto the inner role=dialog element, not the backdrop root. Arguable under G1's "root element" wording.
+-- 4. implementor: Fix round 1: review findings
+-- 5. reviewer: Incremental re-review of fixes
+    STATUS: fail
+    * - [blocking] Tabs: tab stop goes stale when a Tab's disabled state or existence changes without TabList re-rendering. TabList's layout effect only runs when TabList re-renders, so a leaf `<Tab>` that toggles its own `disabled` leaves the tab stop on the now-disabled tab. Repro: `function LeafTab(){ const [off,setOff]=useState(false); toggle=()=>setOff(v=>!v); return <Tab value="a" disabled={off}>a</Tab>; }` inside `<Tabs value="a">` with a second tab `b`, then `act(()=>toggle())`. Failing line: `expected [ 'a' ] to deeply equal [ 'b' ]`. Same with removal: an uncontrolled `<Tabs defaultValue="a">` whose tab "a" is a leaf that returns null after a state change leaves zero tabIndex=0 tabs (`expected [] to have a length of 1 but got +0`). Fix idea: have Tab report its enabled state through a layout effect, or compute focusable from the DOM in a way that does not depend on TabList rendering.
+    * - [blocking] Combobox: duplicate option objects give duplicate DOM ids. `optionId` uses `options.indexOf(option)`, which returns the first index for both entries of `const dup={value:'a',label:'Apple'}; options=[dup,dup]`. Failing line: `expected 1 to be 2 // Object.is equality` (the set of option ids has size 1). Fix idea: use the index from `visible.map((option, i) => ...)` or `options.map((_, i))` instead of `indexOf`.
+    * - [minor] Combobox `key={option.value}` gives React's duplicate-key warning for duplicate values. This is pre-existing, not from this round, and not reproduced as a correctness issue.
+    * - [minor] Combobox `options.indexOf` runs once per option per render, which is O(n²). Not reproduced as a slowdown.
+-- 6. implementor: Fix round 2: tab stop, dup ids
+
+######## rep-3
+-- 1. implementor: Implement Tabs, Dialog, Combobox
+-- 2. simplifier: Simplify component library
+-- 3. reviewer: Red-team component library
+    STATUS: fail
+    * - [blocking] Dialog + Combobox: Escape with the list open calls `onOpenChange(false)`. Combobox's `onKeyDown` calls `preventDefault` but never stops propagation, and `Dialog.onKeyDown` does not check `event.defaultPrevented`, so the event bubbles to the dialog and closes it. Expected per the brief: the list closes first and the dialog stays open. Probe output: `onOpenChange false`, `dialog after Esc: CLOSED`, `expanded after true connected false`. Fix direction: in Dialog, return early when `event.defaultPrevented`, or have Combobox call `stopPropagation` on handled Escape.
+    * - [minor] Combobox: whitespace-only text followed by blur commits `onChange(null)` (the code uses `query.trim() === ""`). The README says "cleared", so this is a judgment call. Not a bug, but the README should say that whitespace counts as cleared.
+    * - [minor] Tab: `rest` is spread before `onClick`/`onKeyDown`, so a consumer's `onClick` is silently dropped, and a consumer's `tabIndex` or `aria-selected` overrides the roving tab stop. Not reproduced as a criteria failure; it's an API hygiene issue.
+    * - [minor] Dialog `tabbables` only checks the `hidden` attribute and `inert`, not CSS `display:none`, and not disabled `fieldset` descendants. Not reproduced.
+-- 4. implementor: Fix round 1 for components
+-- 5. reviewer: Incremental review of fix round
+    STATUS: fail
+    * - [blocking] Focus trap leaks when focus is lost inside the dialog. Remove the focused button (e.g. a "remove" button that unmounts itself on click), then Tab: focus leaves the modal. Reproduced: after the click `document.activeElement` is BODY, and after `user.tab()` it is the page's `outside` button. The trap is an onKeyDown on the dialog, so keys sent to body never reach it. Probe: render `<><button>outside</button><Dialog open onOpenChange={()=>{}} title="L">{items.includes("remove") && <button onClick={()=>setItems([])}>remove</button>}<button>keep</button></Dialog></>`, `await user.click(remove)`, `await user.tab()`, expect `dialog.contains(document.activeElement)` true. Got false. Fix direction: a document-level keydown or focusin listener that pulls focus back into the dialog.
+    * - [blocking] Combobox filter trims the query, so it is not a literal substring match (C3). Reproduced: options `[{value:"x",label:"Ab"}]`, `user.type(input, " b")` shows `<li role="option">` where "No results" is expected. Cause: `needle = (query ?? "").trim()` in src/Combobox.tsx line 36. The README does not mention trimming, and the README line 137 says text is matched by label containment.
+    * - [minor] README line 153 says onChange(null) is called "only if an option was selected", but the code calls it whenever `value !== null`, including a value that matches no option. Not reproduced as a failure; it is a wording mismatch.
+    * - [minor] Dialog's FOCUSABLE list omits some natively focusable elements (`iframe`, `summary`, `[contenteditable=""]`) and the disabled check ignores a disabled `<fieldset>` ancestor. Not reproduced against the criteria; a small gap.
+-- 6. implementor: Fix round 2 for components
