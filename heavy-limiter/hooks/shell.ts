@@ -1,8 +1,8 @@
 // A shell command split into words and sub-commands, for the limiter to find
-// the heavy commands in a Bash call. A copy of feature-flow-lite's parser
-// (feature-flow-lite/hooks/check-cache.ts, from `Token` through `segments`),
-// kept identical so both mods read a command the same way; heavy.test.sh
-// checks that the copies still match.
+// the heavy commands in a Bash call. A copy of feature-flow-lite 0.4's parser
+// (feature-flow-lite/hooks/check-cache.ts at 482e182, from `Token` through
+// `segments`). feature-flow-lite 0.5 dropped its check cache, so heavy.test.sh's
+// comparison skips when that file isn't there.
 
 // `subs`: the inner text of each `$( ... )` in the word, as offsets into the command.
 export type Token = { kind: 'word' | 'op'; raw: string; value: string; start: number; end: number; dollar: boolean; subs?: Sub[] }

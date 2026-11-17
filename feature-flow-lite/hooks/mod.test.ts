@@ -4,7 +4,6 @@ import type { On } from 'claude-code'
 const BLOCK = ['ACCEPTANCE CRITERIA:', '- Adds the flag.', '- Rejects an empty name.'].join('\n')
 const IMPLEMENTOR = 'feature-flow-lite:implementor'
 const REVIEWER = 'feature-flow-lite:reviewer'
-const GATEKEEPER = 'feature-flow-lite:gatekeeper'
 const AGENT_CALL = { tool: 'Agent', description: 'Build', prompt: 'GOAL: x' } as const
 
 type GitStub = { exitCode: number; stdout: string } | 'reject'
@@ -19,6 +18,7 @@ function world(on: On, git: GitStub = { exitCode: 0, stdout: '' }, clash = false
   const agent: { result: unknown; context?: string[] } = { result: completed('agent-9') }
   let sessionSeen = false
   let gitState = git
+  let root = '/work/repo'
 
   on('skill.prompt', ($, e) => ({ text: e.text }))
   on('agent.spawn', async ($, e) => {
@@ -36,6 +36,12 @@ function world(on: On, git: GitStub = { exitCode: 0, stdout: '' }, clash = false
     return { value: { command: e.name } }
   })
   on('process.run', async ($, e) => {
+    if (e.argv.includes('rev-parse')) {
+      if (gitState === 'reject') throw new Error('spawn git ENOENT')
+      return root === ''
+        ? { value: { exitCode: 128, stdout: '', stderr: 'not a git repository', isStdoutTruncated: false, isStderrTruncated: false } }
+        : { value: { exitCode: 0, stdout: `${root}\n`, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    }
     gitCalls.push([...e.argv])
     if (gitState === 'reject') throw new Error('spawn git ENOENT')
     const { exitCode, stdout } = gitState
@@ -55,6 +61,9 @@ function world(on: On, git: GitStub = { exitCode: 0, stdout: '' }, clash = false
     agent,
     setGit(next: GitStub) {
       gitState = next
+    },
+    setRoot(next: string) {
+      root = next
     },
     get sessionSeen() {
       return sessionSeen
@@ -141,15 +150,6 @@ test('handoff: a reviewer\'s PROJECT CHECKLIST ends the saved block', async ($, 
   await $.agent.spawn({ prompt: 'GOAL: b', subagentType: IMPLEMENTOR })
 
   expect(w.spawned[1]).toBe(`GOAL: b\n\n${BLOCK}`)
-})
-
-test('handoff: a gatekeeper missing the block gets it, and its REQUEST and BASE end a saved block', async ($, on) => {
-  const w = world(on)
-  await $.skill.prompt({ skill: 'feature-flow-lite', text: '' })
-  await $.agent.spawn({ prompt: `GOAL: a\n${BLOCK}\nREQUEST: add the flag\nBASE: abc1234`, subagentType: GATEKEEPER })
-  await $.agent.spawn({ prompt: 'GOAL: b\nREQUEST: add the flag\nBASE: abc1234', subagentType: GATEKEEPER })
-
-  expect(w.spawned[1]).toBe(`GOAL: b\nREQUEST: add the flag\nBASE: abc1234\n\n${BLOCK}`)
 })
 
 test('handoff: a prompt with the header is left alone, even when its block differs', async ($, on) => {
@@ -270,8 +270,9 @@ test('tests check: test-file names and folders are recognised, look-alikes are n
     ['src/testimony.md', false],
   ]
   const w = world(on)
-  await $.skill.prompt({ skill: 'feature-flow-lite', text: '' })
   for (const [path, isTest] of cases) {
+    // a fresh run per case, so the fix-round cap's note never mixes in
+    await $.skill.prompt({ skill: 'feature-flow-lite', text: '' })
     w.setGit({ exitCode: 0, stdout: ` M ${path}\n` })
     const out = await ran($, IMPLEMENTOR)
     expect([path, out.context === undefined]).toEqual([path, isTest])
@@ -426,3 +427,355 @@ function usage(input: number, output: number, cacheRead = 0, cacheWrite = 0) {
 function presentation() {
   return { isFullscreen: false, width: 80 } as never
 }
+
+// ---- candidate-0.5c additions -------------------------------------------------
+
+const CHECKS_MD = [
+  '# Triggered checks',
+  '',
+  'Intro text.',
+  '',
+  '## Shared state',
+  '',
+  '- **Trigger:** state kept between calls.',
+  '- **Check:** 8 threads on one key.',
+  '',
+  '## Invariants, round trips and equivalence',
+  '',
+  '- **Trigger:** something must always hold.',
+  '- **Check:** a property test.',
+  '',
+  '## Command output',
+  '',
+  '- **Trigger:** a CLI flag.',
+  '- **Check:** write to /dev/full.',
+].join('\n')
+
+const SHARED = '## Shared state\n\n- **Trigger:** state kept between calls.\n- **Check:** 8 threads on one key.'
+const INVARIANTS = '## Invariants, round trips and equivalence\n\n- **Trigger:** something must always hold.\n- **Check:** a property test.'
+
+function withChecks(on: On, md: string | 'missing' = CHECKS_MD) {
+  const reads: string[] = []
+  on('fs.read', ($, e) => {
+    reads.push(e.path)
+    if (md === 'missing') throw new Error('ENOENT')
+    return { value: md }
+  })
+  return reads
+}
+
+function reviewed(text: string, agentId = 'agent-r') {
+  return { status: 'completed', agentId, content: [{ type: 'text', text }], prompt: '' }
+}
+
+test('checks: a paraphrased TRIGGERED CHECKS block gets the exact words of checks.md added, and keeps its own', async ($, on) => {
+  const w = world(on)
+  const reads = withChecks(on)
+  await $.skill.prompt({ skill: 'feature-flow-lite', text: '' })
+  await $.agent.spawn({
+    prompt: `GOAL: a\n${BLOCK}\nTRIGGERED CHECKS:\n- Shared state: hammer it with threads.\n- Invariants: property test the cap.\nCHECKS: npm test`,
+    subagentType: IMPLEMENTOR,
+  })
+
+  expect(w.spawned[0]).toBe(
+    `GOAL: a\n${BLOCK}\nTRIGGERED CHECKS:\n\n${SHARED}\n\n${INVARIANTS}\n\n- Shared state: hammer it with threads.\n- Invariants: property test the cap.\nCHECKS: npm test`,
+  )
+  expect(reads[0]).toMatch(/references\/checks\.md$/)
+  expect(w.logs.some(line => line.includes('added the exact words of references/checks.md'))).toBe(true)
+})
+
+test('checks: an exact block is left alone, and a dropped one is restored in fix rounds and re-reviews', async ($, on) => {
+  const w = world(on)
+  withChecks(on)
+  await $.skill.prompt({ skill: 'feature-flow-lite', text: '' })
+  const exact = `TRIGGERED CHECKS:\n\n${SHARED}`
+  await $.agent.spawn({ prompt: `GOAL: a\n${BLOCK}\n${exact}`, subagentType: IMPLEMENTOR })
+  await $.agent.spawn({ prompt: `GOAL: fix\n${BLOCK}`, subagentType: IMPLEMENTOR })
+  await $.agent.spawn({ prompt: `GOAL: re-review\n${BLOCK}`, subagentType: REVIEWER })
+
+  expect(w.spawned[0]).toBe(`GOAL: a\n${BLOCK}\n${exact}`)
+  expect(w.spawned[1]).toBe(`GOAL: fix\n${BLOCK}\n\n${exact}`)
+  expect(w.spawned[2]).toBe(`GOAL: re-review\n${BLOCK}\n\n${exact}`)
+  expect(w.logs.filter(line => line.includes('restored the TRIGGERED CHECKS'))).toHaveLength(2)
+})
+
+test('checks: a block naming no known check is kept as written', async ($, on) => {
+  const w = world(on)
+  withChecks(on)
+  await $.skill.prompt({ skill: 'feature-flow-lite', text: '' })
+  const prompt = `GOAL: a\n${BLOCK}\nTRIGGERED CHECKS: none`
+  await $.agent.spawn({ prompt, subagentType: IMPLEMENTOR })
+  await $.agent.spawn({ prompt: `GOAL: b\n${BLOCK}`, subagentType: REVIEWER })
+
+  expect(w.spawned[0]).toBe(prompt)
+  expect(w.spawned[1]).toBe(`GOAL: b\n${BLOCK}\n\nTRIGGERED CHECKS: none`)
+})
+
+test('checks: an unreadable checks.md keeps the block as written and logs once', async ($, on) => {
+  const w = world(on)
+  withChecks(on, 'missing')
+  await $.skill.prompt({ skill: 'feature-flow-lite', text: '' })
+  const prompt = `GOAL: a\n${BLOCK}\nTRIGGERED CHECKS:\n- Shared state: threads.`
+  await $.agent.spawn({ prompt, subagentType: IMPLEMENTOR })
+  await $.agent.spawn({ prompt, subagentType: REVIEWER })
+
+  expect(w.spawned).toEqual([prompt, prompt])
+  expect(w.logs.filter(line => line.includes('could not read references/checks.md'))).toHaveLength(1)
+})
+
+test('checks: investigator and simplifier handoffs never get the block', async ($, on) => {
+  const w = world(on)
+  withChecks(on)
+  await $.skill.prompt({ skill: 'feature-flow-lite', text: '' })
+  await $.agent.spawn({ prompt: `GOAL: a\n${BLOCK}\nTRIGGERED CHECKS:\n\n${SHARED}`, subagentType: IMPLEMENTOR })
+  await $.agent.spawn({ prompt: 'GOAL: simplify', subagentType: 'feature-flow-lite:simplifier' })
+
+  expect(w.spawned[1]).toBe('GOAL: simplify')
+})
+
+const REVIEW = [
+  'STATUS: fail',
+  'FINDINGS:',
+  '- [blocking] refund() races: 2 of 8 threads over-refund (probe: python3 /tmp/p/race.py -> total 40.00 > 31.77).',
+  "- [minor] TEST THAT CAN'T FAIL: test_ids_unique passes with the lock removed.",
+  '- [minor] unhashable key gives TypeError.',
+  "- [minor] check.sh doesn't fail when ruff is missing.",
+  'CHECKS: python3 race.py -> fail',
+].join('\n')
+
+test('findings: a [minor] test-that-can\'t-fail gets a note, and other minors do not', async ($, on) => {
+  const w = world(on)
+  w.agent.result = reviewed(REVIEW)
+  await $.skill.prompt({ skill: 'feature-flow-lite', text: '' })
+  const out = await ran($, REVIEWER)
+
+  expect(out.context).toHaveLength(1)
+  expect(out.context?.[0]).toMatch(/1 finding\(s\) \[minor\] that say a test can't fail/)
+  expect(out.context?.[0]).toContain('test_ids_unique passes with the lock removed')
+  expect(out.context?.[0]).not.toContain('unhashable')
+  expect(out.context?.[0]).not.toContain('ruff')
+})
+
+test('findings: the reviewer\'s blocking findings, escalated ones included, go into the next implementor handoff once', async ($, on) => {
+  const w = world(on)
+  w.agent.result = reviewed(REVIEW)
+  await $.skill.prompt({ skill: 'feature-flow-lite', text: '' })
+  await ran($, REVIEWER)
+  await $.agent.spawn({ prompt: `GOAL: fix the race\n${BLOCK}`, subagentType: IMPLEMENTOR })
+  await $.agent.spawn({ prompt: `GOAL: again\n${BLOCK}`, subagentType: IMPLEMENTOR })
+
+  expect(w.spawned[0]).toBe(
+    `GOAL: fix the race\n${BLOCK}\n\nREVIEWER'S BLOCKING FINDINGS: (the reviewer's own words; fix each one)\n` +
+      '- [blocking] refund() races: 2 of 8 threads over-refund (probe: python3 /tmp/p/race.py -> total 40.00 > 31.77).\n' +
+      "- [minor] TEST THAT CAN'T FAIL: test_ids_unique passes with the lock removed.",
+  )
+  expect(w.spawned[1]).toBe(`GOAL: again\n${BLOCK}`)
+})
+
+test('findings: a handoff that already has the section is left alone, and a reviewer handoff never gets it', async ($, on) => {
+  const w = world(on)
+  w.agent.result = reviewed(REVIEW)
+  await $.skill.prompt({ skill: 'feature-flow-lite', text: '' })
+  await ran($, REVIEWER)
+  await $.agent.spawn({ prompt: `GOAL: re-review\n${BLOCK}`, subagentType: REVIEWER })
+  const own = `GOAL: fix\n${BLOCK}\nREVIEWER'S BLOCKING FINDINGS:\n- the race`
+  await $.agent.spawn({ prompt: own, subagentType: IMPLEMENTOR })
+
+  expect(w.spawned[0]).toBe(`GOAL: re-review\n${BLOCK}`)
+  expect(w.spawned[1]).toBe(own)
+})
+
+test('findings: a clean review carries nothing', async ($, on) => {
+  const w = world(on)
+  w.agent.result = reviewed('STATUS: pass\nFINDINGS:\n- [minor] naming nit.\nCHECKS: all pass')
+  await $.skill.prompt({ skill: 'feature-flow-lite', text: '' })
+  const out = await ran($, REVIEWER)
+  await $.agent.spawn({ prompt: `GOAL: polish\n${BLOCK}`, subagentType: IMPLEMENTOR })
+
+  expect(out.context ?? []).toEqual([])
+  expect(w.spawned[0]).toBe(`GOAL: polish\n${BLOCK}`)
+})
+
+test('rounds: the third implementor spawn is the last fix round, a fourth is past the cap, and a new run resets', async ($, on) => {
+  world(on, { exitCode: 0, stdout: ' M tests/test_a.py\n' })
+  await $.skill.prompt({ skill: 'feature-flow-lite', text: '' })
+  const notes: (readonly string[] | undefined)[] = []
+  for (let i = 0; i < 4; i++) {
+    await $.agent.spawn({ prompt: `GOAL: ${i}`, subagentType: IMPLEMENTOR })
+    notes.push((await ran($, IMPLEMENTOR)).context)
+  }
+  await $.skill.prompt({ skill: 'feature-flow-lite', text: '' })
+  await $.agent.spawn({ prompt: 'GOAL: next run', subagentType: IMPLEMENTOR })
+  const nextRun = await ran($, IMPLEMENTOR)
+
+  expect(notes[0] ?? []).toEqual([])
+  expect(notes[1] ?? []).toEqual([])
+  expect(notes[2]?.[0]).toMatch(/second fix round, the last one/)
+  expect(notes[3]?.[0]).toMatch(/implementor call 4, past the two-fix-round cap/)
+  expect(nextRun.context ?? []).toEqual([])
+})
+
+test('rounds: a background launch still carries the last-round note', async ($, on) => {
+  const w = world(on)
+  await $.skill.prompt({ skill: 'feature-flow-lite', text: '' })
+  for (let i = 0; i < 3; i++) await $.agent.spawn({ prompt: `GOAL: ${i}`, subagentType: IMPLEMENTOR })
+  w.agent.result = { status: 'async_launched', agentId: 'agent-3', prompt: '', description: 'x', outputFile: '/tmp/o' }
+  const out = await ran($, IMPLEMENTOR)
+
+  expect(out.context?.[0]).toMatch(/second fix round, the last one/)
+})
+
+test('rounds: the round note and the no-tests note can both apply', async ($, on) => {
+  world(on, { exitCode: 0, stdout: ' M src/a.py\n' })
+  await $.skill.prompt({ skill: 'feature-flow-lite', text: '' })
+  for (let i = 0; i < 3; i++) await $.agent.spawn({ prompt: `GOAL: ${i}`, subagentType: IMPLEMENTOR })
+  const third = await ran($, IMPLEMENTOR)
+
+  expect(third.context).toHaveLength(2)
+  expect(third.context?.[0]).toMatch(/last one/)
+  expect(third.context?.[1]).toMatch(/no test files/)
+})
+
+test('findings: a background reviewer is read from its own final turn, and the note rides the next main tool result', async ($, on) => {
+  const w = world(on)
+  editTools(on)
+  await $.skill.prompt({ skill: 'feature-flow-lite', text: '' })
+  await $.agent.spawn({ prompt: `GOAL: review\n${BLOCK}`, subagentType: REVIEWER })
+  await $.turn.complete({ agentId: 'agent-1', answer: 'working on it', durationMs: 1, isAborted: false, turnId: 't0', reason: 'answer' } as never)
+  await $.turn.complete({ agentId: 'agent-1', answer: REVIEW, durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' } as never)
+  const next = await $.tool.call({ tool: 'Write', file_path: '/work/repo/FEATURE_FLOW.md', content: 'x' } as never)
+  await $.agent.spawn({ prompt: `GOAL: fix\n${BLOCK}`, subagentType: IMPLEMENTOR })
+
+  expect(next.context?.[0]).toMatch(/1 finding\(s\) \[minor\] that say a test can't fail/)
+  expect(w.spawned[1]).toContain("REVIEWER'S BLOCKING FINDINGS:")
+  expect(w.spawned[1]).toContain('test_ids_unique passes with the lock removed')
+})
+
+test('findings: a reviewer read from its turn is not read again from its tool result', async ($, on) => {
+  const w = world(on)
+  await $.skill.prompt({ skill: 'feature-flow-lite', text: '' })
+  await $.agent.spawn({ prompt: `GOAL: review\n${BLOCK}`, subagentType: REVIEWER })
+  await $.turn.complete({ agentId: 'agent-1', answer: REVIEW, durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' } as never)
+  w.agent.result = reviewed(REVIEW, 'agent-1')
+  const out = await ran($, REVIEWER)
+
+  expect(out.context).toHaveLength(1)
+})
+
+function editTools(on: On) {
+  for (const tool of ['Edit', 'Write'] as const) on('tool.call', { tool }, async () => ({ result: { ok: true } }) as never)
+}
+
+test('edits: the main conversation editing a repo file during a run gets a note', async ($, on) => {
+  world(on)
+  editTools(on)
+  await $.skill.prompt({ skill: 'feature-flow-lite', text: '' })
+  const out = await $.tool.call({ tool: 'Edit', file_path: '/work/repo/src/etag.go', old_string: 'a', new_string: 'b' } as never)
+
+  expect(out.context?.[0]).toMatch(/edited \/work\/repo\/src\/etag\.go itself/)
+})
+
+test('edits: the project file, the scratchpad and temp files are fine, and nothing is noted before the skill runs', async ($, on) => {
+  world(on)
+  editTools(on)
+  const before = await $.tool.call({ tool: 'Write', file_path: '/work/repo/src/a.go', content: 'x' } as never)
+  await $.skill.prompt({ skill: 'feature-flow-lite', text: '' })
+  const outs = await Promise.all(
+    ['/work/repo/FEATURE_FLOW.md', '/tmp/claude-0/x/scratchpad/criteria.md', '/tmp/probe/race.py', '/root/.claude/notes.md'].map(
+      file_path => $.tool.call({ tool: 'Write', file_path, content: 'x' } as never),
+    ),
+  )
+
+  expect(before.context ?? []).toEqual([])
+  for (const out of outs) expect(out.context ?? []).toEqual([])
+})
+
+test('checks: the exact text with different blank lines is not rewritten or logged', async ($, on) => {
+  const w = world(on)
+  withChecks(on)
+  await $.skill.prompt({ skill: 'feature-flow-lite', text: '' })
+  const prompt = `GOAL: a\n${BLOCK}\nTRIGGERED CHECKS:\n${SHARED}\n\n\n${INVARIANTS}`
+  await $.agent.spawn({ prompt, subagentType: IMPLEMENTOR })
+
+  expect(w.spawned[0]).toBe(prompt)
+  expect(w.logs.some(line => line.includes('exact words'))).toBe(false)
+})
+
+test('edits: a repo under /tmp is still the repo, and paths outside it are fine', async ($, on) => {
+  const w = world(on)
+  w.setRoot('/tmp/ff-eval-x/workspace')
+  editTools(on)
+  await $.skill.prompt({ skill: 'feature-flow-lite', text: '' })
+  const inside = await $.tool.call({ tool: 'Edit', file_path: '/tmp/ff-eval-x/workspace/tests/test_orders.py', old_string: 'a', new_string: 'b' } as never)
+  const outside = await $.tool.call({ tool: 'Write', file_path: '/tmp/probe/race.py', content: 'x' } as never)
+  const sibling = await $.tool.call({ tool: 'Write', file_path: '/tmp/ff-eval-x/workspace2/a.py', content: 'x' } as never)
+
+  expect(inside.context?.[0]).toMatch(/edited \/tmp\/ff-eval-x\/workspace\/tests\/test_orders\.py itself/)
+  expect(outside.context ?? []).toEqual([])
+  expect(sibling.context ?? []).toEqual([])
+})
+
+test('edits: with no repo root, only the project file, scratchpad and .claude are exempt', async ($, on) => {
+  const w = world(on)
+  w.setRoot('')
+  editTools(on)
+  await $.skill.prompt({ skill: 'feature-flow-lite', text: '' })
+  const code = await $.tool.call({ tool: 'Edit', file_path: '/tmp/ws/src/a.py', old_string: 'a', new_string: 'b' } as never)
+  const scratch = await $.tool.call({ tool: 'Write', file_path: '/tmp/claude-0/s/scratchpad/criteria.md', content: 'x' } as never)
+
+  expect(code.context?.[0]).toMatch(/itself/)
+  expect(scratch.context ?? []).toEqual([])
+  expect(w.logs.filter(line => !line.includes('delivered a note'))).toEqual([])
+})
+
+test('checks: the orchestrator\'s own text after the checks is kept, and reordered exact checks are left alone', async ($, on) => {
+  const w = world(on)
+  withChecks(on)
+  await $.skill.prompt({ skill: 'feature-flow-lite', text: '' })
+  const extra = 'Work tests first. Also property-test the matcher against the stdlib on 1000 random headers.'
+  const reordered = `GOAL: a\n${BLOCK}\nTRIGGERED CHECKS:\n\n${INVARIANTS}\n\n${SHARED}\n\n${extra}`
+  await $.agent.spawn({ prompt: reordered, subagentType: IMPLEMENTOR })
+  const partial = `GOAL: b\n${BLOCK}\nTRIGGERED CHECKS:\n\n${SHARED}\n- Invariants: property test it.\n\n${extra}`
+  await $.agent.spawn({ prompt: partial, subagentType: REVIEWER })
+
+  expect(w.spawned[0]).toBe(reordered)
+  expect(w.spawned[1]).toContain(extra)
+  expect(w.spawned[1]).toContain(INVARIANTS)
+  expect(w.spawned[1]).toContain('- Invariants: property test it.')
+  expect(w.spawned[1].split(SHARED)).toHaveLength(2)
+})
+
+test('findings: "cannot see the bug" and "would pass with the bug" count as a test that can\'t fail', async ($, on) => {
+  const w = world(on)
+  w.agent.result = reviewed(
+    [
+      'FINDINGS:',
+      '- [minor] `TestETagTrailersReachClient` checks only resp.Trailer, so it cannot see the duplicate header. It would pass with the bug above.',
+      '- [minor] TestHead would still pass with the mutant applied.',
+    ].join('\n'),
+  )
+  await $.skill.prompt({ skill: 'feature-flow-lite', text: '' })
+  const out = await ran($, REVIEWER)
+
+  expect(out.context?.[0]).toMatch(/2 finding\(s\) \[minor\] that say a test can't fail/)
+})
+
+test('notes: each delivered note is also logged, so a trace shows it', async ($, on) => {
+  const w = world(on)
+  await $.skill.prompt({ skill: 'feature-flow-lite', text: '' })
+  for (let i = 0; i < 3; i++) await $.agent.spawn({ prompt: `GOAL: ${i}`, subagentType: IMPLEMENTOR })
+  await ran($, IMPLEMENTOR)
+
+  expect(w.logs.some(line => /delivered a note with the Agent result: .*second fix round/.test(line))).toBe(true)
+})
+
+test('findings: a handoff with the orchestrator\'s own FINDINGS TO FIX section gets no second copy', async ($, on) => {
+  const w = world(on)
+  w.agent.result = reviewed(REVIEW)
+  await $.skill.prompt({ skill: 'feature-flow-lite', text: '' })
+  await ran($, REVIEWER)
+  const own = `GOAL: fix\n${BLOCK}\nFINDINGS TO FIX:\n1. [blocking] refund() races.`
+  await $.agent.spawn({ prompt: own, subagentType: IMPLEMENTOR })
+
+  expect(w.spawned[0]).toBe(own)
+})
