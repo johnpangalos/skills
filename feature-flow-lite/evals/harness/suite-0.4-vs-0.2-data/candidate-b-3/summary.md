@@ -1,0 +1,28 @@
+| scenario | arm | runs | process | outcome | cost $ | opus share | main tool calls | spawns (role:model/effort) |
+|---|---|---|---|---|---|---|---|---|
+| risky-inventory | lite-candidate-b | 3 | 0.76 | 1.0 | 0.96 | 0.94 | 16.0 | investigator:haiku/fm, implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm, implementor:haiku/fm, reviewer:haiku/fm; investigator:haiku/fm, implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm, implementor:haiku/fm, reviewer:haiku/fm; investigator:haiku/fm, implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm, implementor:haiku/fm, reviewer:haiku/fm, implementor:haiku/fm |
+| risky-refunds | lite-candidate-b | 3 | 0.78 | 1.0 | 0.85 | 0.95 | 13.67 | investigator:haiku/fm, implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm, implementor:haiku/fm, reviewer:haiku/fm, implementor:haiku/fm; investigator:haiku/fm, implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm; investigator:haiku/fm, implementor:haiku/fm, simplifier:haiku/fm, reviewer:haiku/fm |
+
+## Failed checks
+
+- risky-refunds / lite-candidate-b rep: [process] handoff prompts use the template — investigator missing GOAL; simplifier missing GOAL; reviewer missing GOAL
+- risky-refunds / lite-candidate-b rep: [process] stages announced before the first spawn — stage words before first spawn: none
+- risky-refunds / lite-candidate-b rep: [process] reviewer models (for the record) — reviewer models: ['haiku', 'haiku']
+- risky-refunds / lite-candidate-b rep: [process] handoff prompts use the template — investigator missing GOAL; simplifier missing GOAL
+- risky-refunds / lite-candidate-b rep: [process] stages announced before the first spawn — stage words before first spawn: none
+- risky-refunds / lite-candidate-b rep: [process] main conversation leaves edits to subagents — main conversation edited ['/tmp/claude-0/-tmp-ff-eval-f7tk-qq4-workspace/ff0f08b8-12ba-44f4-bb3d-f35959569005/scratchpad/criteria.md']
+- risky-refunds / lite-candidate-b rep: [process] reviewer models (for the record) — reviewer models: ['haiku']
+- risky-refunds / lite-candidate-b rep: [process] handoff prompts use the template — investigator missing GOAL; simplifier missing GOAL
+- risky-refunds / lite-candidate-b rep: [process] stages announced before the first spawn — stage words before first spawn: none
+- risky-refunds / lite-candidate-b rep: [process] reviewer models (for the record) — reviewer models: ['haiku']
+- risky-inventory / lite-candidate-b rep: [process] handoff prompts use the template — investigator missing GOAL; simplifier missing GOAL; reviewer missing GOAL
+- risky-inventory / lite-candidate-b rep: [process] stages announced before the first spawn — stage words before first spawn: none
+- risky-inventory / lite-candidate-b rep: [process] reviewer models (for the record) — reviewer models: ['haiku', 'haiku']
+- risky-inventory / lite-candidate-b rep: [process] handoff prompts use the template — investigator missing GOAL; simplifier missing GOAL; reviewer missing GOAL
+- risky-inventory / lite-candidate-b rep: [process] stages announced before the first spawn — stage words before first spawn: ['inves']
+- risky-inventory / lite-candidate-b rep: [process] main conversation leaves edits to subagents — main conversation edited ['/tmp/claude-0/-tmp-ff-eval-2juxmw---workspace/d274e9ea-3a54-4ab7-a0b5-d93cb909764a/scratchpad/criteria.md']
+- risky-inventory / lite-candidate-b rep: [process] reviewer models (for the record) — reviewer models: ['haiku', 'haiku']
+- risky-inventory / lite-candidate-b rep: [process] handoff prompts use the template — investigator missing GOAL; simplifier missing GOAL; reviewer missing GOAL
+- risky-inventory / lite-candidate-b rep: [process] stages announced before the first spawn — stage words before first spawn: none
+- risky-inventory / lite-candidate-b rep: [process] main conversation leaves edits to subagents — main conversation edited ['/tmp/ff-eval-ubs3kxx2/workspace/tests/test_inventory.py']
+- risky-inventory / lite-candidate-b rep: [process] reviewer models (for the record) — reviewer models: ['haiku', 'haiku']
