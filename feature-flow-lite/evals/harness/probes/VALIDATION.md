@@ -107,3 +107,64 @@ and M (judge 0). Hand checks agreed with the probe in each case.
   `no_partial_count_on_interrupt` is timing-based, and no key depends on it.
 
 No key was skipped.
+
+## Stress flakiness (risky-auth, risky-refunds)
+
+Each pool build's hidden stress test was run 10 times, each time on a fresh copy, 4 builds at a time. Every build is 0/10 or 10/10, so nothing needed fixing.
+
+**risky-auth**
+
+| Letter | Arm | Rep | Passes |
+|---|---|---|---|
+| A | lite-shipped-0.2 | 1 | 10/10 |
+| B | lite-shipped-0.2 | 3 | 10/10 |
+| C | lite-reviewer-plus | 5 | 10/10 |
+| D | lite-shipped-0.4 | 5 | 0/10 |
+| E | lite-tests-first | 2 | 0/10 |
+| F | lite-shipped-0.2 | 4 | 0/10 |
+| G | lite-tests-first | 1 | 0/10 |
+| H | lite-reviewer-plus | 2 | 10/10 |
+| I | lite-shipped-0.4 | 1 | 0/10 |
+| J | lite-reviewer-plus | 1 | 10/10 |
+| K | lite-tests-first | 3 | 0/10 |
+| L | lite-shipped-0.4 | 4 | 0/10 |
+| M | lite-0.2-criteria | 2 | 0/10 |
+| N | lite-shipped-0.4 | 2 | 0/10 |
+| O | lite-reviewer-plus | 3 | 10/10 |
+| P | lite-0.2-criteria | 3 | 0/10 |
+| Q | lite-tests-first | 4 | 0/10 |
+| R | lite-shipped-0.2 | 5 | 0/10 |
+| S | lite-tests-first | 5 | 0/10 |
+| T | lite-shipped-0.4 | 3 | 10/10 |
+| U | lite-shipped-0.2 | 2 | 0/10 |
+| V | lite-0.2-criteria | 1 | 10/10 |
+| W | lite-reviewer-plus | 4 | 10/10 |
+
+**risky-refunds**
+
+| Letter | Arm | Rep | Passes |
+|---|---|---|---|
+| A | lite-shipped-0.2 | 3 | 10/10 |
+| B | lite-tests-first | 1 | 10/10 |
+| C | lite-0.2-criteria | 1 | 10/10 |
+| D | lite-reviewer-plus | 2 | 0/10 |
+| E | lite-0.2-criteria | 2 | 10/10 |
+| F | lite-reviewer-plus | 5 | 10/10 |
+| G | lite-reviewer-plus | 1 | 10/10 |
+| H | lite-shipped-0.4 | 1 | 0/10 |
+| I | lite-0.2-criteria | 3 | 0/10 |
+| J | lite-shipped-0.4 | 3 | 0/10 |
+| K | lite-shipped-0.2 | 2 | 0/10 |
+| L | lite-shipped-0.4 | 2 | 0/10 |
+| M | lite-reviewer-plus | 3 | 10/10 |
+| N | lite-tests-first | 4 | 10/10 |
+| O | lite-shipped-0.2 | 4 | 10/10 |
+| P | lite-tests-first | 2 | 10/10 |
+| Q | lite-shipped-0.4 | 4 | 0/10 |
+| R | lite-shipped-0.2 | 5 | 10/10 |
+| S | lite-shipped-0.2 | 1 | 10/10 |
+| T | lite-tests-first | 3 | 10/10 |
+| U | lite-shipped-0.4 | 5 | 10/10 |
+| V | lite-reviewer-plus | 4 | 0/10 |
+| W | lite-tests-first | 5 | 0/10 |
+
