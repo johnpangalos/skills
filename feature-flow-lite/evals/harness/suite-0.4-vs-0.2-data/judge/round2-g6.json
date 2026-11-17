@@ -1,0 +1,1798 @@
+[
+ {
+  "id": "risky-refunds",
+  "reports": [
+   {
+    "overall": 8.5,
+    "scores": {
+     "correctness": 9.5,
+     "robustness": 9,
+     "code_quality": 8,
+     "tests": 9,
+     "docs": 8,
+     "product": 8.5
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "Idempotency key is not validated. None is accepted as a key, and an unhashable key raises a bare TypeError, not RefundError.",
+      "evidence": "python3 -c \"...refund(o,D('1.00'),None)\" printed Refund(order_id=1, amount=Decimal('1.00'), key=None); with key ['x'] it printed 'TypeError unhashable type: 'list'' (shop/orders.py:72 order.refunds.get(key))"
+     },
+     {
+      "severity": "minor",
+      "what": "One module-level lock serializes refunds across all orders. Order.refunds is a public mutable dict that callers can change directly, bypassing the cap and the lock.",
+      "evidence": "shop/orders.py:12 _REFUND_LOCK global; shop/orders.py:31 refunds: dict = field(default_factory=dict)"
+     },
+     {
+      "severity": "minor",
+      "what": "The code is somewhat over-defensive for a small shop module: a MAX_PREC/MAX_EMAX decimal context, a re-wrap to guard against Decimal subclasses, and tests with 5000-digit inputs. This adds complexity a maintainer might push back on.",
+      "evidence": "shop/orders.py:7,14,64; tests/test_orders.py test_decimal_subclass_cannot_bypass_checks, test_five_thousand_digit_*"
+     }
+    ],
+    "strengths": [
+     "Meets every spec point: Order total is a snapshot of the cart total, an empty cart raises ValueError, amounts must be positive whole-cent Decimals, the cap is enforced atomically, and idempotency keys are scoped per order, with a mismatched amount raising RefundError.",
+     "Validation is strict. It rejects float, int, str, bool, None, zero, -0, negative, sub-cent, NaN, sNaN and Infinity, and it accepts whole-cent values at other scales (Decimal('5'), Decimal('5.000'), Decimal('1E+1')).",
+     "Thread safety works: 50 threads retrying the same key produced exactly one Refund; the included 8-thread test lets only one full refund through.",
+     "Failed refunds leave the order unchanged (tested), and a key whose refund failed can be used again.",
+     "Results do not depend on a low-precision caller decimal context, and huge exponents give RefundError, not a decimal exception.",
+     "28 focused tests in the repo's unittest style. ./check.sh passes (37 tests OK), and the README is updated in the existing prose style."
+    ],
+    "stats": {
+     "files": 2,
+     "source_lines": 271,
+     "test_cases": 28
+    },
+    "summary": "Build A adds shop/orders.py (60 non-blank lines) and tests/test_orders.py (28 tests), and adds a README paragraph. ./check.sh passes with 37 tests OK. My extra probes found no spec failures. These covered key types, 50 concurrent retries of the same key, whole-cent values in exponent form, tiny exponents, and the ValueError subclass. Idempotency, the atomic cap, rejecting invalid input, and leaving the order unchanged after a failure all behave correctly. The only issues are minor: keys are not validated (None is accepted, and unhashable keys raise TypeError), one global lock covers all orders while the refunds dict is public, and some defensive code goes further than this small codebase needs.",
+    "letter": "A"
+   },
+   {
+    "letter": "B",
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 8,
+     "tests": 9,
+     "docs": 7,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "The idempotency key is never validated. None, 1 and '' are accepted as keys, and an unhashable key raises TypeError rather than RefundError.",
+      "evidence": "python3 -c \"...refund(o,D('0.01'),['l'])\" -> TypeError unhashable type: 'list'; refund(o,D('0.01'),None) -> Refund(..., key=None). Code: shop/orders.py refund() calls order.refunds.get(key) with no type check."
+     },
+     {
+      "severity": "minor",
+      "what": "Order is a mutable dataclass whose public `refunds` dict and `total` can be changed directly, which skips the cap check and the lock. Only Refund is frozen.",
+      "evidence": "shop/orders.py: `@dataclass class Order: id; total; refunds: dict = field(default_factory=dict)`. `order.refunds['x'] = Refund(...)` or `order.total = ...` is not guarded."
+     },
+     {
+      "severity": "minor",
+      "what": "Checks run in an order that gives misleading messages. Replaying a used key with an invalid sub-cent amount reports 'key already used for a different amount', not a whole-cents error. The cap check also runs before the whole-cents check.",
+      "evidence": "refund(o, D('0.015'), '') after key '' was used -> RefundError 'key already used for a different amount' (shop/orders.py: the key lookup comes before the quantize check)."
+     },
+     {
+      "severity": "minor",
+      "what": "The low-precision machinery (MAX_PREC context, plus a whole LowPrecisionTest class) adds weight beyond what the task needs, though it is defensible.",
+      "evidence": "shop/orders.py _EXACT = Context(prec=MAX_PREC); tests/test_orders.py LowPrecisionTest has 6 tests."
+     }
+    ],
+    "strengths": [
+     "Meets every spec point: RefundError subclasses ValueError, unique uuid ids, the total is a snapshot of the cart total, an empty cart raises ValueError, positive whole-cent Decimal amounts are enforced, partial refunds are capped at the total, and idempotency is scoped to each order.",
+     "Thread-safe: the key lookup, cap check and record happen under one lock. The concurrency test with 20 threads and a reader confirms exactly 10 successes on a $1.00 order.",
+     "A failed refund changes nothing, and a cap failure does not use up the key (tested).",
+     "Handles NaN, sNaN, Infinity, -0, huge exponents (1E+999999999) and low caller precision correctly and quickly.",
+     "Thorough, meaningful tests (32 new) that check messages and that state is unchanged. ./check.sh passes with ruff (41 tests OK).",
+     "README updated to mention orders and refunds; style follows the existing module docstrings."
+    ],
+    "stats": {
+     "files": 14,
+     "source_lines": 514,
+     "test_cases": 41
+    },
+    "summary": "Build B is solid and meets the spec. shop/orders.py (57 lines) is correct on every boundary I probed: zero, negative, non-finite, sub-cent, non-Decimal, huge amounts, an exact full refund, one cent over, replay after a full refund, and the same key with a different amount. It is also safe under concurrent use from threads. ./check.sh passes, with 32 new focused tests. The remaining issues are minor: keys are not validated (an unhashable key gives TypeError), Order's refunds and total can be mutated directly, some error messages depend on check order, and the exact-precision handling is somewhat heavier than needed."
+   },
+   {
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 8,
+     "tests": 9,
+     "docs": 7,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "Very large whole-cent amounts are rejected with a misleading 'whole cents' message, because quantize overflows the 28-digit context and the resulting InvalidOperation is mapped to 'not whole'.",
+      "evidence": "refund(o, Decimal('1E+30'), k) -> RefundError 'amount must be in whole cents' (probe /tmp/claude-0/probeE/p.py); shop/orders.py:53-58. Rejecting it is right (it exceeds any total), but the message is wrong."
+     },
+     {
+      "severity": "minor",
+      "what": "Refund.amount is stored in whatever form the caller used rather than normalized to cents, so records show Decimal('5') or Decimal('1E+1') instead of 5.00 / 10.00.",
+      "evidence": "refund(order, Decimal('5'), 'x').amount -> Decimal('5'); Decimal('1e1') is recorded as Decimal('1E+1'). See shop/orders.py:59,75."
+     },
+     {
+      "severity": "minor",
+      "what": "Order and Refund are mutable dataclasses and Order.refunds is a public dict, so callers can change total or the refunds directly and get around the invariants. One module-wide lock also serializes refunds across every order.",
+      "evidence": "shop/orders.py:18-29 (no frozen=True, refunds is a public dict) and :11 (_LOCK is global)."
+     },
+     {
+      "severity": "minor",
+      "what": "No docstrings on Order, Refund, refunded() or refundable(), and the README gives only one phrase to orders and refunds, with no word on idempotency keys or refund rules.",
+      "evidence": "shop/orders.py:18-35; README.md:3-4"
+     }
+    ],
+    "strengths": [
+     "Every spec point is met: RefundError subclasses ValueError, the total is snapshotted when the order is placed, an empty cart raises ValueError, amounts must be positive, whole-cent Decimals, over-refunds are rejected with nothing changed, and idempotency keys are scoped to their order.",
+     "Validation is careful. bool, int, float, str, NaN, sNaN, infinities, -0 and extreme exponents are all rejected, and Decimal subclasses are copied to plain Decimal so they cannot override comparisons.",
+     "A lock makes the check-then-record step atomic. Probes passed: 50 threads using different keys never over-refund, 50 threads using the same key get one shared Refund and one charge, and 200 orders placed concurrently get unique ids.",
+     "The tests are thorough and meaningful: hostile inputs as subTests, exact-total boundaries, replay after a full refund, equal amounts written differently, key independence across orders, a stressed concurrency test, and checks that a failure leaves nothing changed.",
+     "Small, readable module that reuses money.to_cents and follows the codebase's unittest style; ./check.sh passes (31 tests)."
+    ],
+    "stats": {
+     "files": 15,
+     "source_lines": 425,
+     "test_cases": 31
+    },
+    "summary": "Build C (copied to /tmp/inspect-risky-refunds-C) is a solid, spec-complete build. ./check.sh passes 31 unittest tests (pytest isn't installed). shop/orders.py meets every requirement, and my probes found no blocker or major bug: invalid inputs, the exact-total boundary, idempotent replays (also under concurrent same-key calls), concurrent over-refund attempts and partial failures all behave correctly. The defects are minor: very large amounts like Decimal('1E+30') fail with a misleading 'whole cents' message, refund amounts are recorded un-normalized (Decimal('5'), Decimal('1E+1')), the dataclasses are mutable with a public refunds dict, one global lock covers all orders, and docstrings and README coverage are thin. The tests are strong and fit the repo's unittest style.",
+    "letter": "C"
+   },
+   {
+    "letter": "D",
+    "overall": 7,
+    "scores": {
+     "correctness": 8,
+     "robustness": 5,
+     "code_quality": 8,
+     "tests": 8,
+     "docs": 7,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "major",
+      "what": "refund() is check-then-act with no lock. Under concurrent calls on the same order, the balance check and the idempotency-key lookup race, so the order can be over-refunded and the same key can be refunded more than once. For money handling, a reviewer would block on this.",
+      "evidence": "shop/orders.py:47-58 has no threading.Lock. A probe ran 8 threads per order, each refunding 30.00 of a 54.77 order with distinct keys. A 1 ms sleep was injected in Order.refundable to widen the window. Result: 'over-refunded orders 50 /50'. With 8 threads using the same key 'same' at 10.00: 'duplicate same-key refunds 50 /50'. Without the injected delay the run was 0/300, so the race window is narrow but real."
+     },
+     {
+      "severity": "minor",
+      "what": "Amount validation depends on the ambient decimal context. With a low precision, quantize raises decimal.InvalidOperation instead of returning a Refund or raising RefundError.",
+      "evidence": "Inside localcontext() with prec=3, refund(order, Decimal('12.34'), 'p') printed 'prec3 InvalidOperation' (shop/orders.py:55 amount.quantize(CENT))."
+     },
+     {
+      "severity": "minor",
+      "what": "The key is not validated. An unhashable key raises TypeError instead of RefundError. None is accepted as a key, and the tests explicitly endorse that.",
+      "evidence": "refund(o, Decimal('1'), ['unhashable']) -> 'TypeError unhashable type: list'. tests/test_orders.py test_none_key_is_usable_and_replays."
+     },
+     {
+      "severity": "minor",
+      "what": "Order is a mutable dataclass that exposes the refunds list, the refunds_by_key dict and a reassignable total. Callers can corrupt refund state or change the snapshot total.",
+      "evidence": "shop/orders.py:21-26. Setting o.total = Decimal('0') makes o.refundable() print 0.00."
+     }
+    ],
+    "strengths": [
+     "The implementation is small and readable (47 lines). Validation runs in the right order, so an over-balance check rejects huge amounts like 1E+999999 before quantize can overflow, and a comment explains why.",
+     "Every failure path leaves state unchanged. A key that failed on an invalid amount or over-refund stays free for a valid retry, and a replay after a full refund returns the original Refund.",
+     "Replays compare amounts by value (5.0 vs 5.00), and keys are correctly scoped per order.",
+     "The tests are thorough: 18 order tests covering NaN, sNaN, infinities, -0, 0, negatives, float, int, bool, str, None, sub-cent amounts, the exact-total boundary plus one cent, and the replay and conflict cases, each asserting that nothing changed.",
+     "The README is updated to mention orders and refunds, and the tests follow the existing unittest style. ./check.sh passes with 27 tests OK."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 191,
+     "test_cases": 18
+    },
+    "summary": "Build D meets every spec requirement, and ./check.sh passes (27 tests). Edge-case probes confirm that invalid, zero, negative, non-Decimal, sub-cent and very large amounts are rejected with RefundError and change nothing. Idempotent replay and the same-key-different-amount conflict both behave correctly. The main gap is thread safety: refund() has no lock, and a probe with an injected delay over-refunded 50 of 50 orders and refunded duplicate same-key requests 50 of 50 times. Smaller issues: amount validation depends on the ambient decimal context, keys are not validated, and Order's state is mutable from outside. The code is clean, the tests are strong, and the README was updated."
+   },
+   {
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 8,
+     "tests": 9,
+     "docs": 7,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "Order is a plain mutable dataclass: total, id and the public refunds dict can all be reassigned or mutated directly, which bypasses the cap and the lock. Order(total=...) can also be built directly with no validation.",
+      "evidence": "shop/orders.py:25-29; probe: o.total=Decimal('0'); o.refundable() -> Decimal('-3.00') after $3 of refunds"
+     },
+     {
+      "severity": "minor",
+      "what": "Refund.amount is stored as the caller passed it and is not quantized to cents, so a record can hold Decimal('1') or Decimal('1.230'). A replay with an equal amount in a different representation ('5.00' vs '5') returns the record with the original representation.",
+      "evidence": "tests/test_orders.py test_whole_cents_accepted asserts amount Decimal('1.230'); probe refund(o, Decimal('1'), 1) -> Refund(amount=Decimal('1'))"
+     },
+     {
+      "severity": "minor",
+      "what": "Keys are not validated. An unhashable key raises TypeError instead of RefundError, and None works as a key. Keys that hash equal, like 1 and 1.0, collide.",
+      "evidence": "probe: refund(o, Decimal('1.00'), ['x']) -> TypeError: unhashable type: 'list'; refund(o, Decimal('1'), 1.0) returned the Refund with key=1"
+     },
+     {
+      "severity": "minor",
+      "what": "A single global lock serializes refunds across every order. This is correct, but it is coarser than it needs to be (a per-order lock would do).",
+      "evidence": "shop/orders.py:9 _REFUND_LOCK"
+     }
+    ],
+    "strengths": [
+     "Meets every spec point. RefundError subclasses ValueError, an empty cart raises ValueError, the total is fixed at the moment the order is placed, the cap is checked under a lock, and a replay with the same key and amount returns the identical Refund object.",
+     "Validation is careful: non-Decimal values (including bool and float), NaN/sNaN/Infinity, zero and -0, and fractional cents are all rejected. The whole-cents check works on the digit tuple, so Decimal('1E+1000000') cannot raise InvalidOperation.",
+     "Sums run in a MAX_PREC context, so a caller's low-precision context cannot corrupt the cap. Tests cover this case.",
+     "Thread safety is real. The test suite includes burst tests that use a barrier and a tiny switch interval. My stress test (8 threads, 8000 one-cent refunds across 3000 keys, 50 rounds) never let refunds exceed the total.",
+     "Failed refunds change nothing, and every rejection test asserts that order.refunds is unchanged. A key whose refund was rejected can be reused.",
+     "The tests follow the repo's unittest style and use the existing cart fixture (54.77), and the README is updated. ./check.sh passes (38 tests)."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 305,
+     "test_cases": 29
+    },
+    "summary": "Build E adds shop/orders.py (57 non-blank lines), tests/test_orders.py (29 tests) and a one-line README update. ./check.sh passes with 38 tests in total. The implementation is correct against every requirement in the task: validation, a cap on the total refunded, per-order idempotency keys, and nothing changed when a refund fails. It is also safe across threads (a global lock, plus exact-precision sums that ignore the caller's Decimal context), and my probes with huge, tiny, non-finite, odd-exponent and concurrent inputs found no spec violations. The remaining issues are all minor: Order stays mutable and exposes its internals (assigning a new total can make refundable() negative), refund amounts are not normalized to cents, keys are not validated (an unhashable key raises TypeError instead of RefundError), and the lock is global rather than per order. The tests are thorough and meaningful.",
+    "letter": "E"
+   },
+   {
+    "letter": "F",
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 8,
+     "tests": 9,
+     "docs": 7,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "Idempotency keys that compare equal collide: 1, 1.0 and True are all the same key, so a refund under key True replays the refund made under key 1.",
+      "evidence": "refund(o,D('1'),1); refund(o,D('1'),True) returned the key=1 Refund; refund(o,D('2'),1.0) raised 'key reused with a different amount' (python probe in copy)"
+     },
+     {
+      "severity": "minor",
+      "what": "The stored Refund.amount keeps the caller's exponent instead of being normalized to cents, so a refund can record an amount like 1E+1. refunded() still sums correctly.",
+      "evidence": "refund(o, Decimal('1E+1'), 'a').amount printed '1E+1'; shop/orders.py:62 returns the amount without quantizing"
+     },
+     {
+      "severity": "minor",
+      "what": "Under a low-precision caller decimal context, InvalidOperation can escape from refund() as a raw decimal error, not a RefundError. This is contrived.",
+      "evidence": "with localcontext() as c: c.prec=3; refund(place_order(cart), Decimal('31.77'), 'p') -> decimal.InvalidOperation"
+     },
+     {
+      "severity": "minor",
+      "what": "One module-level lock serializes refunds across every order rather than locking per order. The result is correct but coarser than it needs to be.",
+      "evidence": "shop/orders.py:10 _refund_lock = threading.Lock()"
+     }
+    ],
+    "strengths": [
+     "Meets every spec point. A replay is checked before the cap, so it works even after a full refund. A rejected over-cap refund leaves no record and its key can be reused.",
+     "The check-and-write is atomic under a lock. 50 threads making 1.00 refunds against a 31.77 order gave exactly 31 refunds, and 20 threads using the same key all got one shared record.",
+     "Amount validation is thorough: it rejects non-Decimal values (including bool and float), NaN and sNaN, infinity, zero and -0, sub-cent amounts and amounts too large for the context, and strips Decimal subclasses.",
+     "The 24 focused tests cover the boundaries (a full refund and one cent over), replay, key scoping, immutability and concurrency, and they assert on the error messages.",
+     "Small and readable, follows the repo's style (module docstrings, use of to_cents), and the README was updated. ./check.sh passes (33 tests)."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 281,
+     "test_cases": 24
+    },
+    "summary": "Build F adds shop/orders.py (73 lines) and tests/test_orders.py (24 tests), and updates the README. ./check.sh passes (33 tests in total). It meets every requirement: order ids are unique, the total is captured when the order is placed, an empty cart raises ValueError, amounts are strictly validated as positive whole-cent Decimals, the refund cap leaves nothing changed when it fails, and idempotency keys are scoped to their order (same amount replays the original, a different amount raises). Thread-safety holds under contention. Probing found only minor issues: keys that compare equal collide (1, 1.0 and True), stored amounts are not normalized (1E+1), a contrived low-precision decimal context lets InvalidOperation escape, and one global lock covers all orders. This is solid, mergeable work."
+   },
+   {
+    "letter": "G",
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 9,
+     "code_quality": 7,
+     "tests": 9,
+     "docs": 7,
+     "product": 7
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "Refund.amount keeps the caller's exponent instead of normalizing to cents, so a refund of Decimal('1E+0') records amount Decimal('1') and Decimal('5.000') records '5.000'. This is inconsistent with the rest of the money handling, which uses to_cents.",
+      "evidence": "python3 -c \"...refund(o,D('1E+0'),'e').amount\" printed 1; test_decimal_with_trailing_zeros_accepted asserts refunded()==Decimal('5.000')"
+     },
+     {
+      "severity": "minor",
+      "what": "Order is a mutable dataclass, so total and id can be reassigned after placement. Setting total below the amount already refunded makes refundable() negative, which breaks the never-over-refunded invariant.",
+      "evidence": "o.total=D('0'); o.refundable() -> -2.00 (shop/orders.py:27-31, @dataclass not frozen)"
+     },
+     {
+      "severity": "minor",
+      "what": "Idempotency keys use dict equality, so keys of different types that compare equal collide (1, True, 1.0, Decimal(1)). A refund keyed True silently returns the refund that was keyed 1.",
+      "evidence": "refund(o,D('1.00'),1); refund(o,D('1.00'),True) is r -> True"
+     },
+     {
+      "severity": "minor",
+      "what": "Very large amounts that are valid whole cents but have more than 28 digits (e.g. Decimal('1E+26')) get the generic 'positive whole-cent Decimal' error instead of 'exceeds refundable amount', because quantize raises InvalidOperation under DefaultContext.",
+      "evidence": "refund(o,D('1E+26'),'big') -> RefundError: amount must be a positive whole-cent Decimal"
+     },
+     {
+      "severity": "minor",
+      "what": "The validation is very defensive (it guards against MagicMock spec=Decimal, Decimal subclasses overriding __gt__, NaN keys, and the caller's decimal context in every method). That adds complexity and test bulk beyond what the codebase's simple style calls for. The refund() function also reaches into order._refunds and order._lock instead of the logic living on Order.",
+      "evidence": "shop/orders.py:53-81; tests/test_orders.py test_fake_decimal_amount_rejected, test_decimal_subclass_cannot_bypass_checks"
+     }
+    ],
+    "strengths": [
+     "Meets every spec point: RefundError subclasses ValueError, the order total is frozen when the order is placed, an empty cart is rejected, amounts must be whole cents and greater than zero, an over-refund changes nothing, and keys are scoped per order with same-amount replay and different-amount rejection.",
+     "Thread-safe: an RLock on each order guards check-and-insert. 200 threads refunding $1 on a $54.77 order give exactly 54 refunds, and 100 threads sharing one key give one Refund and $3.00 refunded.",
+     "Validation runs before any state change, so a rejected key can be reused afterwards with a valid amount. Tests cover this.",
+     "The tests are thorough and meaningful: boundaries (exact total, plus one cent), a hostile-amount table, idempotent replay after a full refund, independence across orders, concurrency, and isolation from the caller's decimal context.",
+     "./check.sh passes (33 tests OK). The README now mentions orders and refunds."
+    ],
+    "stats": {
+     "files": 14,
+     "source_lines": 423,
+     "test_cases": 33
+    },
+    "summary": "Build G is a correct, thread-safe implementation, and every spec requirement holds under probing: boundaries, invalid, zero, negative and non-numeric amounts, repeated keys, concurrency, and failed refunds leaving nothing changed. ./check.sh passes with 33 tests, and the new tests are strong and meaningful. I found no blockers or majors. The minor issues are that refund amounts aren't normalized to cents, Order is mutable, keys that compare equal across types (1 and True) collide, and over-28-digit amounts get the generic error message. The code also guards against cases the rest of this simple codebase doesn't (mock Decimals, Decimal subclasses, decimal context), which makes orders.py and its tests heavier than the house style."
+   },
+   {
+    "overall": 7,
+    "scores": {
+     "correctness": 8,
+     "robustness": 6,
+     "code_quality": 8,
+     "tests": 8,
+     "docs": 4,
+     "product": 7
+    },
+    "defects": [
+     {
+      "severity": "major",
+      "what": "refund() is not thread-safe. The over-refund check and the idempotency-key scan are check-then-act steps with no lock, so concurrent refunds can push an order past its total, and concurrent calls with the same key can each record a separate refund.",
+      "evidence": "In the probe at /tmp/claude-0/-home-user-skills/81e0a659-724e-5a17-9f08-92ce13e1b5c2/scratchpad/probe.py, Order.refundable was wrapped with a 1ms sleep to widen the race window. 20 threads each refunding 10.00 under distinct keys printed 'distinct keys refunded 150.00 of 95.26'. 10 threads refunding 5.00 with the key 'same' printed 'same key refunds 10 50.00'. The cause is shop/orders.py refund(): the loop over order.refunds, then 'if amount > order.refundable()', then order.refunds.append(made), with no lock around them."
+     },
+     {
+      "severity": "minor",
+      "what": "Order is a mutable dataclass with a public refunds list and a mutable total, so callers can change refund history directly and skip the invariant.",
+      "evidence": "shop/orders.py: '@dataclass class Order' is not frozen and declares 'refunds: list = field(default_factory=list)'."
+     },
+     {
+      "severity": "minor",
+      "what": "The key is not validated, so None, a list or any other object is accepted as an idempotency key.",
+      "evidence": "The probe printed 'list key ok' and 'None key accepted'; the stored order showed Refund(..., key=['unhashable'])."
+     },
+     {
+      "severity": "minor",
+      "what": "The README was not updated to mention orders and refunds, even though it lists the package's features.",
+      "evidence": "README.md still says 'catalog, cart totals, receipts, and password-reset tokens'."
+     },
+     {
+      "severity": "minor",
+      "what": "The public functions and classes have no docstrings, although the existing modules document their helpers (for example money.py).",
+      "evidence": "place_order, refund, Order, Refund and RefundError in shop/orders.py have no docstrings; shop/money.py has a docstring on to_cents and format_money."
+     }
+    ],
+    "strengths": [
+     "Every single-threaded spec requirement holds: unique ids, a total snapshot, refunded() and refundable(), rejection of an empty cart, RefundError as a ValueError subclass, the over-refund guard that changes nothing, and per-order idempotency (a replay returns the same object; a different amount raises).",
+     "Amount validation is careful: it rejects non-Decimal values (including bool and float), NaN and sNaN, infinities, zero and -0, negatives and sub-cent amounts. It accepts trailing zeros such as 1.0000000, and it is independent of the caller's decimal context because comparisons run in a fixed prec=100 context.",
+     "Stored refund amounts are normalized to cents, and a replay with a numerically equal amount (5 vs 5.00) is treated as the same.",
+     "The tests are thorough and meaningful: a table of hostile inputs, exact-boundary and one-cent-over cases, a hostile caller decimal context, very large exponents, replay after a full refund and per-order key scoping.",
+     "The code is compact and readable and fits the codebase's Decimal and CENT conventions; ./check.sh passes with 32 tests."
+    ],
+    "stats": {
+     "files": 2,
+     "source_lines": 249,
+     "test_cases": 21
+    },
+    "summary": "Build H meets the spec in single-threaded use. Validation is thorough and context-independent, idempotency is right, the over-refund guard changes nothing on failure, and the tests are strong (./check.sh passes, 32 tests). The main gap: refund() has no lock, so concurrent calls can over-refund or record duplicate refunds for one key (shown with a sleep injected to widen the race). Smaller issues: the README is not updated, there are no docstrings, Order is mutable, and keys are not validated.",
+    "letter": "H"
+   },
+   {
+    "overall": 7,
+    "scores": {
+     "correctness": 7,
+     "robustness": 5,
+     "code_quality": 8,
+     "tests": 8,
+     "docs": 6,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "major",
+      "what": "refund() is not thread-safe. The check-then-insert on order.refunds has no lock, so concurrent refunds can push the total refunded past the order total, the same idempotency key can produce several distinct Refund records, and refunded() can crash with 'dictionary changed size during iteration'.",
+      "evidence": "shop/orders.py:59-70 has no locking. The probe (sys.setswitchinterval(1e-6), 8 threads behind a Barrier, 300 trials) printed 'over-refund trials 44 dup same-key distinct records 55' and also raised many 'RuntimeError: dictionary changed size during iteration' at shop/orders.py:30 (refunded) via refundable() at :66."
+     },
+     {
+      "severity": "minor",
+      "what": "The key is never validated. None, '', ints and tuples are all accepted as keys. Because 1 == True as dict keys, refund(order, 1, key=True) replays a refund made with key=1. An unhashable key raises TypeError instead of RefundError.",
+      "evidence": "Probe output: \"None Refund(... key=None)\", \"'' Refund(... key='')\", \"True key replay: Refund(order_id=602, amount=Decimal('1.00'), key=1)\", \"list key TypeError unhashable type: 'list'\"."
+     },
+     {
+      "severity": "minor",
+      "what": "Order is a mutable dataclass that exposes total and the refunds dict. A caller can change total or add to refunds directly and get around the over-refund guard.",
+      "evidence": "shop/orders.py:23-27. The probe set order.total=Decimal('1000') and then refund(order, Decimal('500'), 'x') succeeded."
+     },
+     {
+      "severity": "minor",
+      "what": "The new API has no docstrings on Order, Refund or RefundError, and the README mentions orders and refunds in only one phrase, with no usage notes on refunds or idempotency.",
+      "evidence": "README.md line 3; shop/orders.py:12-33."
+     }
+    ],
+    "strengths": [
+     "The module is small and easy to read: amount validation is exact and works without a decimal context (as_tuple instead of quantize), and it handles NaN, sNaN, Infinity, -0, 1E-1000000 and very large values correctly.",
+     "A refund that fails changes nothing, and the failed key stays unused (this is tested).",
+     "Replay returns the identical Refund object, the same key with a different amount raises RefundError, and keys are scoped per order.",
+     "It follows the codebase's conventions: the in-memory store style from auth.py, the to_cents helper and unittest style. ./check.sh passes and all 27 tests run.",
+     "The tests are thorough and meaningful: boundary at the exact remaining amount, one cent over, subTest tables of invalid inputs that also check messages and that state is unchanged, snapshot of the total after the cart changes, and Decimal subclasses."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 220,
+     "test_cases": 18
+    },
+    "summary": "Build I is clean and close to the spec. In single-threaded use every requirement I probed holds: unique ids, a snapshot of the total, an empty cart raises ValueError, strict Decimal whole-cent validation (including very large and very small amounts and NaN or Infinity), the over-refund guard leaves nothing changed, and idempotent replay returns the original Refund while a mismatched amount raises RefundError. ./check.sh passes with 27 tests, 18 of them new and meaningful. The main defect is that nothing guards concurrent use. In a thread stress probe (300 trials, 8 threads each), 44 trials refunded more than the order total, 55 created duplicate refunds for the same key, and some threads crashed with a RuntimeError from iterating the dict while it changed. That breaks the money invariant as soon as two refunds run at once. Smaller gaps: keys are not validated (None, empty string, and 1 matching True), Order is mutable from outside, and docs are thin.",
+    "letter": "I"
+   },
+   {
+    "overall": 7,
+    "scores": {
+     "correctness": 8,
+     "robustness": 5,
+     "code_quality": 8,
+     "tests": 8,
+     "docs": 4,
+     "product": 7
+    },
+    "defects": [
+     {
+      "severity": "major",
+      "what": "refund() is a non-atomic check-then-act with no lock. Concurrent refunds can push an order past its total, and concurrent calls with the same key can record duplicate refunds. That breaks the 'never more than total' and idempotency guarantees in a money path.",
+      "evidence": "shop/orders.py:58-71 (key lookup, then refundable() check, then append, with no synchronization). Probe: 20 threads behind a Barrier, each refunding Decimal('10.00') with its own key on a 55.58 order, over 200 trials, with sys.setswitchinterval(1e-6). It printed 'over-refunded trials: 16'. 20 threads with the same key 'same' printed 'duplicate same-key trials: 18' (len(order.refunds)>1)."
+     },
+     {
+      "severity": "minor",
+      "what": "README not updated. It still describes the package as catalog, cart, receipts and reset tokens, and says nothing about orders and refunds.",
+      "evidence": "README.md lines 1-4 are unchanged and orders.py is not mentioned anywhere."
+     },
+     {
+      "severity": "minor",
+      "what": "Very large whole-cent amounts are reported as an invalid amount instead of an over-refund, because quantize overflows the default context.",
+      "evidence": "refund(order, Decimal('1E+30'), 'x') raises RefundError('amount must be a Decimal greater than zero in whole cents'), while Decimal('12345678901234567890123456.78') gives 'refund exceeds the order's refundable amount'. A RefundError is raised either way, so the spec still holds."
+     },
+     {
+      "severity": "minor",
+      "what": "Order exposes mutable internals (the refunds list and the refund_keys dict) as public dataclass fields, and Refund is mutable. Callers can corrupt the state that the invariants depend on.",
+      "evidence": "shop/orders.py:19-31: @dataclass without frozen=True, and refund_keys is a public dict."
+     },
+     {
+      "severity": "minor",
+      "what": "The new public functions and classes have no docstrings, unlike the existing shop/money.py helpers.",
+      "evidence": "shop/orders.py: place_order, refund, Order.refunded and Order.refundable have no docstrings, while money.py's to_cents and format_money do."
+     }
+    ],
+    "strengths": [
+     "Every spec point is implemented: unique ids, a snapshot of total, refunded() and refundable(), an empty cart raising ValueError, RefundError as a subclass of ValueError, whole-cent validation, an over-refund rejected with nothing changed, and idempotency scoped per order.",
+     "Amount validation is careful: it rejects int, float, str, bool, None, NaN, sNaN, Infinity, zero, -0 and sub-cent values, and accepts 5, 5.0 and 5.000 as whole cents.",
+     "A replay is compared by value, and a replay on a fully refunded order returns the original refund.",
+     "An unhashable key becomes a RefundError and nothing changes.",
+     "23 focused tests cover the boundaries: refunding exactly the total, one cent over, partials that sum past the total, a rejected key reused afterwards, the same key on another order, and order-id uniqueness.",
+     "The module is small and clear (52 non-blank lines), reuses shop.money.CENT, and follows the codebase's unittest style.",
+     "./check.sh passes, with ruff installed, running 32 tests."
+    ],
+    "stats": {
+     "files": 2,
+     "source_lines": 218,
+     "test_cases": 23
+    },
+    "summary": "Build J meets the spec in single-threaded use. Validation, partial refunds, the over-refund guard (which leaves nothing changed) and per-order idempotency all work, and the tests are meaningful and cover the boundaries. ./check.sh passes. The main defect is that refund() has no lock: a probe with concurrent threads over-refunded orders in 16 of 200 trials and recorded duplicate refunds for one idempotency key in 18 of 200. The minor issues are that the README was not updated, the new functions have no docstrings, the order's internal state is public and mutable, and very large amounts are reported as an invalid amount rather than an over-refund.",
+    "letter": "J"
+   },
+   {
+    "overall": 7,
+    "scores": {
+     "correctness": 8,
+     "robustness": 6,
+     "code_quality": 8,
+     "tests": 8,
+     "docs": 7,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "major",
+      "what": "refund() is not thread-safe. It checks refunded()+amount <= total and the idempotency key, then writes to order._refunds, with no lock around the two steps. Concurrent refunds can push the total refunded past the order total, and concurrent calls with the same key could each record a refund.",
+      "evidence": "The race is in shop/orders.py refund(): the check `if order.refunded() + amount > order.total` comes before the write `order._refunds[key] = record`. To reproduce, widen the window by monkeypatching Order.refunded to sleep 10ms, then run 4 threads, each refunding Decimal('20.00') with a distinct key against a 27.98 order. It printed 'total 27.98 refunded 80.00 refundable -52.02'. Without the patch, 300 GIL-scheduled trials did not trigger it."
+     },
+     {
+      "severity": "minor",
+      "what": "Large whole-dollar amounts get the wrong error message. quantize overflows the 28-digit context, so they are reported as 'not whole cents' when they are really over the order total. They are still rejected, so no money is affected.",
+      "evidence": "refund(o, Decimal('1E+26'), 'x') raised RefundError 'amount must be whole cents'. The existing test test_invalid_amounts_rejected locks in this message for Decimal('1E+30')."
+     },
+     {
+      "severity": "minor",
+      "what": "The key is not validated. An unhashable key raises TypeError, not RefundError, and None is accepted as a key.",
+      "evidence": "refund(o, Decimal('1.00'), [1]) raised 'TypeError unhashable type: list'. refund(o, Decimal('1.00'), None) returned Refund(..., key=None)."
+     },
+     {
+      "severity": "minor",
+      "what": "The refund function and the Order class have no docstrings, and RefundError is a bare class. The README gets only a one-line mention.",
+      "evidence": "shop/orders.py: the Order class and RefundError have no docstrings. README.md, last line."
+     }
+    ],
+    "strengths": [
+     "Validation is thorough: non-Decimal, bool, NaN, sNaN, Infinity, zero, -0.00, negative and sub-cent amounts are all rejected before any state changes.",
+     "Decimal arithmetic runs in an isolated default context, so a caller's precision setting or traps (prec=2, an Inexact trap) cannot corrupt the sums. The tests cover this.",
+     "Idempotency is correct: the key is scoped to its order, a replay returns the same object, a replay after a full refund works, a changed amount is rejected, and a failed over-limit refund does not consume its key.",
+     "Refund is a frozen dataclass, and the order total is fixed when the order is placed.",
+     "The tests are focused and meaningful (21 cases plus subTests), follow the repo's unittest style, and ./check.sh passes."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 205,
+     "test_cases": 21
+    },
+    "summary": "Build K meets every functional point of the spec in single-threaded use. Validation is strong, the Decimal context is handled carefully, and idempotency is correct. ./check.sh passes (29 tests). The main gap is that refund() has no lock: it checks the limit and the key, then records the refund, so concurrent calls can refund more than the order total. Forcing the race produced refunded 80.00 against a 27.98 total. Smaller issues: huge whole amounts are reported with a misleading 'whole cents' error, keys are not validated, and doc comments are sparse.",
+    "letter": "K"
+   },
+   {
+    "overall": 6.5,
+    "scores": {
+     "correctness": 7,
+     "robustness": 5,
+     "code_quality": 8,
+     "tests": 7,
+     "docs": 7,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "major",
+      "what": "No locking around the check-then-act in refund(): concurrent refunds on the same order can push total refunds past the order total, which breaks the spec's 'never add up to more than its total'.",
+      "evidence": "shop/orders.py:57-67 (key lookup, then refundable() check, then dict insert, with no lock). Probe: 8 threads x 300 trials, each thread calling refund(o, Decimal('54.77'), f'k{i}') on a 54.77 order with sys.setswitchinterval(1e-6), printed 'over-refunded trials: 35 /300'."
+     },
+     {
+      "severity": "major",
+      "what": "Idempotency fails under concurrency: threads that use the same key at the same time can each record a refund, so the order is refunded twice and callers get different Refund objects.",
+      "evidence": "Same probe, 8 threads calling refund(o, Decimal('5.00'), 'same'), printed 'same-key distinct objects: 54' out of 300 trials."
+     },
+     {
+      "severity": "major",
+      "what": "Concurrent refunds can raise a raw RuntimeError instead of RefundError, because refunded() iterates the dict while another thread inserts into it.",
+      "evidence": "Probe tracebacks: shop/orders.py:38 refunded() -> 'RuntimeError: dictionary changed size during iteration' (seen many times)."
+     },
+     {
+      "severity": "minor",
+      "what": "A huge whole-cent amount such as Decimal('1E+2000') is rejected with the misleading message 'amount must be whole cents', because the quantize under prec=1000 fails.",
+      "evidence": "Probe: refund(o, Decimal('1E+2000'), ...) -> RefundError amount must be whole cents (shop/orders.py:76-78)."
+     },
+     {
+      "severity": "minor",
+      "what": "Keys are compared by hash and equality, so the keys 1 and True (or 1 and 1.0) count as the same idempotency key.",
+      "evidence": "Probe: r=refund(o,Decimal('1'),1); refund(o,Decimal('1'),True) is r -> True."
+     },
+     {
+      "severity": "minor",
+      "what": "Order is a plain mutable class with a public constructor that takes any id. Tests build Order(1,...) and Order(99,...) by hand, which can clash with ids from the global counter, and total can be reassigned after placement.",
+      "evidence": "shop/orders.py:27-31; tests/test_orders.py uses Order(99, ...), Order(1, ...), Order(2, ...), Order(3, ...)."
+     }
+    ],
+    "strengths": [
+     "Validation is thorough: it rejects non-Decimal input (including int, float, str and bool), NaN, sNaN, Infinity, zero and negatives, and sub-cent amounts. Valid amounts such as 1.5 are normalized to 1.50.",
+     "Arithmetic runs in a private wide Decimal context, so a low-precision or Inexact-trapping caller context cannot round or break the cap check, and tests cover this.",
+     "A rejected refund leaves no trace: the key is not consumed and refunded() is unchanged, and tests check both.",
+     "Idempotent replay returns the exact original object, works after a full refund, and keys are scoped to their order.",
+     "The module is small and readable with clear error messages. The README is updated to match the existing style, and ./check.sh passes (36 tests)."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 262,
+     "test_cases": 27
+    },
+    "summary": "Build L meets every single-threaded part of the spec, with careful validation, isolation from the caller's Decimal context, and focused tests: 27 new test cases, and ./check.sh passes with 36 tests. The main gap is thread safety, because refund() checks and then writes with no lock. Under concurrent calls (probe with 8 threads and 300 trials), the order was refunded past its total in 35 trials, a shared idempotency key created duplicate refunds in 54 trials, and some calls raised a raw RuntimeError from iterating the dict while it changed. Smaller issues: a misleading error message for astronomically large amounts, the keys 1 and True being treated as the same key, and a public Order constructor that allows id clashes. Fixing it needs a per-order lock (or one module lock) around the lookup, check and insert in refund().",
+    "letter": "L"
+   },
+   {
+    "letter": "M",
+    "overall": 7.5,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 7,
+     "tests": 8,
+     "docs": 7,
+     "product": 7
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "Order is a frozen dataclass but holds a threading.Lock and a mutable _refunds dict, so 'frozen' is misleading. The order also cannot be deep-copied or pickled.",
+      "evidence": "python3 -c \"...copy.deepcopy(place_order(c))\" -> TypeError (cannot pickle '_thread.lock'); shop/orders.py:27-33"
+     },
+     {
+      "severity": "minor",
+      "what": "A cart total too large for the 28-digit money context raises decimal.InvalidOperation from place_order, not ValueError. This comes from the existing cart code, which place_order does not wrap.",
+      "evidence": "Cart().add('MUG',10**27); place_order(c) -> InvalidOperation, isinstance ValueError False"
+     },
+     {
+      "severity": "minor",
+      "what": "The code guards against unlikely threats: a Decimal subclass that overrides as_tuple, an object that fakes __class__, and a custom money Context applied to every operation. The tests cover each of these. This adds complexity and test bulk that do not fit the small codebase.",
+      "evidence": "shop/orders.py:10-11,71-80; tests/test_orders.py DecimalSubclassTest, FakeDecimalTest, LowPrecisionTest"
+     },
+     {
+      "severity": "minor",
+      "what": "Whitespace-only keys such as ' ' are accepted while '' is rejected. The key check goes beyond the spec and is not consistent.",
+      "evidence": "refund(o, D('1'), ' ') -> Refund(order_id=1, amount=Decimal('1.00'), key=' ')"
+     },
+     {
+      "severity": "minor",
+      "what": "refunded() reads _refunds without taking the lock. Under CPython the list() snapshot makes this safe, but the code relies on that implicitly.",
+      "evidence": "shop/orders.py:35-38"
+     }
+    ],
+    "strengths": [
+     "Meets every spec point: RefundError subclasses ValueError, order ids are unique and come from a thread-safe counter, order totals are snapshots, and an empty cart raises ValueError",
+     "Exact whole-cents check that never rounds; NaN, Infinity, zero, negative and non-Decimal amounts are all rejected",
+     "Idempotency is scoped to the order and compares amounts by value (5 == 5.00). A failed refund does not use up its key.",
+     "A per-order lock makes the check and the insert atomic; concurrency tests confirm no over-refund and a single record for concurrent retries",
+     "Thorough tests: 33 cases (42 counting subtests) that check exact messages and that state is unchanged after each failure; ./check.sh passes",
+     "README updated to mention orders and partial refunds"
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 358,
+     "test_cases": 33
+    },
+    "summary": "Build M meets the spec, edge cases included. My probes found no spec failures. Amount checks are exact, idempotency works per order, failed refunds leave state untouched, and refunds stay safe under threads; ./check.sh passes 42 tests. The defects are minor. Order is a frozen dataclass that holds mutable state and a lock, so it cannot be copied or pickled. A cart total too large for the 28-digit context raises decimal.InvalidOperation instead of ValueError. The code also guards against unlikely threats (Decimal subclasses, objects that fake __class__, a custom money context), which adds complexity and test bulk that are out of step with the small codebase. The work is solid overall, though somewhat over-built for the repo."
+   },
+   {
+    "letter": "N",
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 8,
+     "tests": 9,
+     "docs": 7,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "Large whole-cent amounts are rejected with a misleading message. When quantize overflows the 28-digit context, the error says the amount is not a positive whole number of cents, but the real problem is that it exceeds the refundable amount. It still raises RefundError, so the spec is met.",
+      "evidence": "refund(order, Decimal('1E+26'), 'k') -> RefundError 'refund amount must be a positive whole number of cents' (shop/orders.py:55-59); Decimal('99999999999999999999999999.99') gives 'refund exceeds refundable amount'"
+     },
+     {
+      "severity": "minor",
+      "what": "Refund.amount keeps the caller's exponent instead of being normalized to cents, so stored amounts come out as Decimal('0.010'), Decimal('1E+2') and so on. This is inconsistent with the cents convention in money.py. Equality-based idempotency is unaffected.",
+      "evidence": "refund(o, Decimal('0.010'), 'k') -> Refund(amount=Decimal('0.010')); shop/orders.py:72"
+     },
+     {
+      "severity": "minor",
+      "what": "Keys are not validated. None, int and '' are accepted, and an unhashable key raises TypeError instead of RefundError.",
+      "evidence": "refund(o, Decimal('1'), ['x']) -> TypeError: unhashable type: 'list'; refund(o, Decimal('1'), None) succeeds"
+     },
+     {
+      "severity": "minor",
+      "what": "The module-level refund() reaches into the private order._lock, order._refunds and order._refunded, and the tests assert on order._refunds and mock orders.Order. This couples the code and tests to internals; a method on Order would be cleaner.",
+      "evidence": "shop/orders.py:64-73; tests/test_orders.py test_tiny_amounts_that_round_to_zero_are_rejected and test_empty_cart_raises_and_creates_no_order"
+     },
+     {
+      "severity": "minor",
+      "what": "RefundError, Refund, Order and refundable() have no docstrings, unlike the other helpers in the package, and the README gives no refund rules (unlike its notes on shipping and tax).",
+      "evidence": "shop/orders.py:13-40; README.md only adds 'orders, refunds' to the description line"
+     }
+    ],
+    "strengths": [
+     "All of the spec is met: ValueError on an empty cart, RefundError subclasses ValueError, the amount validation is strict (rejects int, float, str, bool, NaN, sNaN, Infinity, sub-cent amounts, zero and negatives), and the over-refund boundary is exact.",
+     "Check-and-insert happens under a per-order lock. In my 16-thread stress test with mixed keys the refunds never exceeded the total, and replaying the same key concurrently returns the identical Refund object.",
+     "A rejected refund changes nothing and leaves the key unused, and the tests check this.",
+     "The order total is a snapshot taken when the order is placed, so later cart changes do not affect it.",
+     "The tests are thorough and meaningful (24 cases): exact boundaries, invalid inputs, replay after a full refund, keys scoped per order, and barrier-based concurrency tests with a reduced switch interval.",
+     "Small, idiomatic module that reuses money.CENT; ./check.sh passes."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 288,
+     "test_cases": 24
+    },
+    "summary": "I found no spec failures in this build. ./check.sh passes (33 tests, 24 of them new in tests/test_orders.py). My probes covered invalid, zero, negative, tiny and huge amounts, replays with the same amount at a different scale, a different amount after a full refund, keys reused on another order, and 16 threads refunding with mixed keys. In every case it behaved correctly, and the locking keeps refunds from ever exceeding the total. The defects are all minor: a misleading error message for very large amounts, amounts stored without being normalized to cents, no validation of the key's type, refund() reaching into Order's private fields, and thin docstrings and README notes. Solid, close to mergeable as is."
+   },
+   {
+    "letter": "O",
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 8,
+     "tests": 9,
+     "docs": 8,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "Keys that compare equal across types collide: refund key 1 and key True are treated as the same idempotency key, because the store is a plain dict and 1 == True.",
+      "evidence": "refund(o, Decimal('1'), 1) and then refund(o, Decimal('2'), True) raised RefundError 'key already used for a different amount'."
+     },
+     {
+      "severity": "minor",
+      "what": "When the order total is above about 1e26 (28-digit precision), refund lets decimal.InvalidOperation escape from amount.quantize(CENT) instead of raising RefundError. A normal cart cannot reach this, but Order.total is a public mutable attribute.",
+      "evidence": "o.total = Decimal('1E+40'); refund(o, Decimal('1E+35'), 'h') -> InvalidOperation [<class 'decimal.InvalidOperation'>] (shop/orders.py:76)"
+     },
+     {
+      "severity": "minor",
+      "what": "Order.total is a plain mutable attribute, and refunds are reached through the private order._refunds and order._lock from module-level code. Nothing stops callers from changing the locked-in total after placement.",
+      "evidence": "shop/orders.py:30-33. Setting o.total = ... after placement is accepted silently."
+     },
+     {
+      "severity": "minor",
+      "what": "Some defensive code goes further than the rest of this small codebase: a custom Decimal Context with traps, re-wrapping Decimal subclasses, and a hash() probe on keys. It is reasonable but adds complexity, and it means place_order computes cart.total() under a different context than callers do.",
+      "evidence": "shop/orders.py:10-15, 47-48, 58-62"
+     }
+    ],
+    "strengths": [
+     "Every spec requirement is met. RefundError subclasses ValueError. Order ids are unique, including under 8 threads x 1000 place_order calls (8000 unique ids). The empty cart raises ValueError. Partial refunds are capped, and a rejected refund changes nothing.",
+     "Refunds are idempotent per order: a replay returns the identical Refund object, and the same key with a different amount raises RefundError. Equal values such as 5.000 and 5.00 count as the same amount.",
+     "Validation is thorough. It rejects non-Decimal, NaN, sNaN, Infinity, zero, -0, negative and sub-cent amounts, and huge amounts (1E+999999) raise RefundError rather than an exception from the decimal module.",
+     "A per-order RLock makes the check-and-record step atomic, and threaded tests show that 60 concurrent refunds of $1 accept exactly 54 and that 50 concurrent calls with the same key record the refund once.",
+     "Tests are meaningful and in the existing unittest style: subTests, checks that the refunded balance is unchanged after every rejection, and isolation from the caller's decimal context.",
+     "The README is updated in the codebase's existing voice, and ./check.sh passes with ruff (32 tests OK)."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 284,
+     "test_cases": 23
+    },
+    "summary": "Build O meets every requirement of the task, edge cases included, and I found no blockers or majors. ./check.sh passes with ruff, and all 32 tests in the suite pass. My throwaway probes covered invalid, zero, negative, sub-cent and very large amounts, repeated keys and threaded use, and they confirmed that refunds stay capped at the order total, that a rejected refund changes nothing, and that refunds with the same key are stored once. The defects are minor: keys of different types that compare equal collide (1 and True), and decimal.InvalidOperation escapes refund when an order total is too large for 28 digits of precision, which a normal cart cannot reach. Also, Order.total can be changed after placement, and some of the defensive code (custom decimal context, re-wrapping Decimal subclasses) is heavier than the rest of this small codebase. The 23 new test cases are thorough and follow the codebase's unittest style, and the README was updated in its existing voice."
+   },
+   {
+    "letter": "P",
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 9,
+     "code_quality": 7,
+     "tests": 8,
+     "docs": 7,
+     "product": 7
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "Idempotency keys are compared by hash/==, so 1 and True (or 1 and 1.0) are the same key. A refund with key True replays the earlier refund made with key 1. The code comments on this, but the behaviour may surprise callers.",
+      "evidence": "probe: refund(o, D('0.01'), 1) then refund(o, D('0.01'), True) -> Refund(..., key=1) (the same record returned); comment at shop/orders.py:22"
+     },
+     {
+      "severity": "minor",
+      "what": "Over-defensive code and tests. Amounts are re-wrapped to defend against Decimal subclasses that override __le__/__ne__/is_finite, and against objects that spoof __class__. Tests also check that the module docstring is one line and that README paragraph 2 contains certain words. This adds complexity and brittle meta-tests that a maintainer would probably trim.",
+      "evidence": "shop/orders.py:61-66 (Decimal(amount) re-wrap); tests/test_orders.py LyingDecimal/NanFiniteDecimal/Spoof classes, ModuleTest.test_module_docstring_is_one_line, test_readme_opening_paragraph_mentions_orders_and_refunds"
+     },
+     {
+      "severity": "minor",
+      "what": "The module-level refund() reaches into the Order's private _lock and _refunds instead of the Order owning the mutation. Order also has a public constructor that accepts any total without validation.",
+      "evidence": "shop/orders.py:85-96 (order._lock, order._refunds); Order.__init__ at shop/orders.py:26"
+     },
+     {
+      "severity": "minor",
+      "what": "place_order(None) or another non-cart input raises AttributeError rather than a clear error. This is acceptable, but nothing documents it.",
+      "evidence": "probe: place_order(None) -> AttributeError"
+     }
+    ],
+    "strengths": [
+     "Every spec requirement holds under probing: ValueError subclass, unique ids, frozen total, refunded/refundable, whole-cent positive Decimal validation, cap at total with no state change, per-order idempotency, and a same-key different-amount rejection",
+     "Thread-safe. A stress test of 16 threads making 3200 attempts with 0.37 refunds accepted exactly 800 (296.00 <= 1190.75), and concurrent same-key calls produce a single record",
+     "Refund math runs in a fixed local Decimal context, so a low-precision caller context cannot corrupt the cap check",
+     "Rejects NaN, Infinity, -0, sub-cent amounts, floats, ints, strings, bools and huge values as RefundError, with the order unchanged; stored amounts are normalised to 2dp",
+     "Thorough unittest suite in the repo's existing style (36 tests); ./check.sh passes with ruff",
+     "README updated to mention orders and refunds"
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 397,
+     "test_cases": 36
+    },
+    "summary": "Build P adds shop/orders.py (77 non-blank lines), 36 unittest tests and a one-line README update, and ./check.sh passes (45 tests, ruff clean). I probed boundaries (0.01, the exact remaining balance, one cent over it, -0.00, 1E+20, a 29-significant-digit near-integer, 10**30, NaN), keys (None, tuples, 1 vs True) and concurrency with a 16-thread stress test and same-key races. All spec requirements held and the order never changed after a failed refund. The only real oddity is that keys 1 and True are the same key, which the code comments on. The other issues are about quality: anti-subclass defensiveness beyond what the task needs, meta-tests on the README and docstring text, and the module function reaching into Order's private lock and refunds. Overall it is solid and close to production-ready, though a maintainer would likely trim the extra defensiveness before merging."
+   },
+   {
+    "letter": "Q",
+    "overall": 7,
+    "scores": {
+     "correctness": 8,
+     "robustness": 5,
+     "code_quality": 8,
+     "tests": 8,
+     "docs": 7,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "major",
+      "what": "refund() is not thread-safe. The check-then-append on order.refunds (orders.py:53-61) has no lock, so concurrent refunds can push an order past its total, and concurrent calls with the same key can create duplicate refunds. That breaks the spec's 'never add up to more than its total' rule and the idempotency guarantee.",
+      "evidence": "Scratchpad probe p2.py: an order with total 31.77, 8 threads behind a barrier, each calling refund(order, Decimal('31.77'), f'k{i}'), with sys.setswitchinterval(1e-6) and no code patched. It printed 'trials with over-refund: 11 /200'. With a 1 ms delay injected into refundable(), 100 threads refunding 1.00 each gave 'refunded 39.00 total 31.77', and 20 threads using the same key 'same' gave 'same-key refunds 11 55.00'."
+     },
+     {
+      "severity": "minor",
+      "what": "Order is a mutable dataclass with a public refunds list and a writable total. Callers can change total or append to refunds directly, which skips every invariant refund() enforces.",
+      "evidence": "orders.py:21-25. Probe: setting order3.total = Decimal('1000') made refundable() return 998.99. Nothing stops order.refunds.append(...) either."
+     },
+     {
+      "severity": "minor",
+      "what": "A whole-cent amount too large for the 28-digit context is rejected with the 'whole cents' message instead of 'exceeds refundable'. quantize raises InvalidOperation, and the code treats that as a fractional amount.",
+      "evidence": "orders.py:46-49. Probe: refund(order, Decimal('1E+26'), ...) raised 'RefundError amount must be a positive Decimal in whole cents'."
+     },
+     {
+      "severity": "minor",
+      "what": "key is not validated, so None or any other object is accepted as an idempotency key.",
+      "evidence": "Probe: refund(order3, Decimal('1.00'), None) returned Refund(..., key=None)."
+     },
+     {
+      "severity": "minor",
+      "what": "No test covers concurrent use, so the race above goes unnoticed and ./check.sh still passes.",
+      "evidence": "tests/test_orders.py contains no threading tests."
+     }
+    ],
+    "strengths": [
+     "Clean, short implementation that follows the codebase's existing idioms: the CENT constant from shop.money, secrets.token_urlsafe as in auth.py, dataclasses, and a module docstring",
+     "Amount validation is thorough: it rejects int, float, str, None, bool, zero, negatives, sub-cent values, NaN, sNaN and Infinity, and it normalises equivalent spellings such as 5 and 5.000 so replays with the same key are compared correctly",
+     "Failed refunds leave nothing changed (validation runs before the append). A key whose refund was rejected can be used again, and replaying a key after the order is fully refunded returns the original Refund",
+     "Idempotency is scoped to each order, and a replay returns the same Refund instance",
+     "The tests are meaningful and use the existing unittest style, with subTests over hostile amounts and checks of exact error messages, exact boundaries and the no-change guarantee",
+     "The README gains a single line in its existing tone"
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 192,
+     "test_cases": 18
+    },
+    "summary": "Build Q meets every functional spec requirement in single-threaded use. ./check.sh passes, with 28 tests in total and 18 of them new. The code is idiomatic, its amount validation is strong, and the tests check real behaviour. The main weakness is that refund() has no lock: concurrent calls over-refund orders in about 5% of trials without any code patched, and they duplicate refunds for the same key. Smaller issues are that Order is mutable, a large amount gets a misleading error, and key is not validated. In the build, the refund logic is in /tmp/inspect-risky-refunds-Q/shop/orders.py and the new tests are in /tmp/inspect-risky-refunds-Q/tests/test_orders.py."
+   },
+   {
+    "letter": "R",
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 8,
+     "tests": 9,
+     "docs": 8,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "refund() records the idempotency key before it updates the refunded total. If the to_cents() quantize then raises, the order is left half-changed: the key is stored, refunded() does not include the amount, and a replay returns a Refund that was never counted. This can only happen under a caller-lowered Decimal context precision. With the default precision of 28 it does not occur for realistic amounts.",
+      "evidence": "shop/orders.py:65-67 (`order._refunds[key] = made` before `order._refunded = to_cents(...)`). Repro: Order(D('99999.99')); with localcontext() prec=3: refund(o, D('12345.67'), 'a') raises InvalidOperation. Afterwards o._refunds == {'a': Refund(...)}, o.refunded() == 0.00, and refund(o, D('12345.67'), 'a') returns that Refund while refundable() is still 99999.99."
+     },
+     {
+      "severity": "minor",
+      "what": "An unhashable idempotency key (list or dict) raises a bare TypeError instead of a RefundError or a documented error. The task does not define key types, so this is a small gap rather than a spec failure.",
+      "evidence": "refund(Order(D('10.00')), D('1'), [1]) -> TypeError: unhashable type: 'list'"
+     },
+     {
+      "severity": "minor",
+      "what": "The over-refund comparison `amount > order.total - order._refunded` runs under the ambient Decimal context. Under a reduced-precision context the subtraction can round and give a wrong comparison. Quantizing or comparing `_refunded + amount > total` would avoid this.",
+      "evidence": "shop/orders.py:62"
+     }
+    ],
+    "strengths": [
+     "Every spec point is implemented: RefundError subclasses ValueError, unique uuid ids, total is snapshotted from the cart, empty carts are rejected, validation requires a positive whole-cent Decimal, the refund cap is enforced, and idempotency keys are scoped to their order.",
+     "A per-order lock makes check-and-record atomic. The concurrency tests confirm 50 threads produce exactly 10 refunds and that a shared key yields a single Refund.",
+     "_is_whole_cents works on the digit tuple, so very large or very long Decimals do not hit InvalidOperation. It also handles NaN, sNaN, Infinity and -0.",
+     "The tests are thorough and meaningful: boundaries at one cent over, an exact full refund, 100 small refunds, replay at a different scale (5.0 vs 5.00), a failed refund leaving its key unrecorded, cross-order key independence, Decimal subclasses and non-string keys.",
+     "The README gains a concise Orders and refunds section in the existing style. The code follows the codebase's patterns (to_cents, a module docstring, unittest style), and ./check.sh passes with ruff: 39 tests OK."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 277,
+     "test_cases": 26
+    },
+    "summary": "Build R is a clean, compact solution that meets the spec. ./check.sh passes (ruff plus 39 unittest tests). My probes found no spec failures at the default Decimal context. The value checks reject every non-Decimal type, non-finite values, zero, -0, negative amounts and amounts finer than one cent, and very large values are rejected as over-refunds instead of crashing. Idempotent replay and rejecting a reused key with a different amount both work, and the locking holds under threads. The only weakness is in edge cases under a caller-modified Decimal context. The key is stored before the total is updated, so if quantize raises at very low precision the order is left half-changed. The cap check also runs under the ambient context precision. Unhashable keys leak a TypeError. The tests are strong and the README is updated to match. A maintainer would likely merge it with at most a small reordering of the mutation in refund()."
+   },
+   {
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 9,
+     "code_quality": 8,
+     "tests": 8,
+     "docs": 8,
+     "product": 7
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "The key must be a non-empty str. The spec puts no type on the key, so int, tuple and UUID keys are rejected even though they would work fine as dict keys.",
+      "evidence": "shop/orders.py:61-62; probe refund(o, Decimal('0.01'), 1) -> RefundError 'key must be a non-empty string'"
+     },
+     {
+      "severity": "minor",
+      "what": "The module calls the private Order._refund from outside the class. Order.total is a plain mutable public attribute, so a caller can reassign it after placement and change the refund ceiling.",
+      "evidence": "shop/orders.py:23-26, 63"
+     },
+     {
+      "severity": "minor",
+      "what": "Some tests and code go further than the task needs. They guard against Decimal subclasses that override __ne__ and against trapped Inexact/Rounded context signals. This adds a re-coercion step and an extra error message that a maintainer may find excessive for a small shop package.",
+      "evidence": "shop/orders.py:69 'amount = Decimal(amount)  # plain Decimal, so subclass comparisons can't interfere'; tests/test_orders.py test_decimal_subclass_cannot_bypass_whole_cent_check, test_trapped_decimal_signals_become_refund_error"
+     },
+     {
+      "severity": "minor",
+      "what": "The public classes and functions (Order, Refund, place_order, refund) have no docstrings. Only the module docstring exists.",
+      "evidence": "shop/orders.py (no docstrings beyond line 1)"
+     }
+    ],
+    "strengths": [
+     "Every spec requirement checks out: an empty cart raises ValueError, RefundError subclasses ValueError, amounts must be whole-cent positive Decimals, over-refunds are rejected atomically, and idempotency keys are scoped to their order.",
+     "A per-order lock covers both the idempotency lookup and the balance check. A probe with 50 threads sending the same key produced exactly one Refund and refunded 10.00. The bundled test with 100 distinct keys stops at 54 successful refunds.",
+     "Invalid input is handled thoroughly: NaN, sNaN, Infinity, int, float, str, bool, 0, -0, sub-cent and 1E+1000 all raise RefundError, and none of them leaves the key recorded.",
+     "Comparison is done after normalizing to cents, so Decimal('1.1') and Decimal('1.10') count as the same amount for idempotency.",
+     "The README gains a concise paragraph that matches the existing doc style, and ./check.sh passes (33 tests OK)."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 251,
+     "test_cases": 24
+    },
+    "summary": "Build S's orders module is compact and correct: shop/orders.py is 60 lines, guarded by a per-order lock, with a thorough suite of 24 unittest cases in tests/test_orders.py and a README update. ./check.sh passes. My probes found no spec failures: large amounts, negative amounts, 0.01, equivalent Decimal forms, concurrent calls with the same key, and over-refunds all behaved correctly. The issues are minor: keys are restricted to str beyond what the spec asks, the module calls a private method from outside the class, some hardening (Decimal subclasses, trapped context signals) goes further than needed, and the public API has no docstrings.",
+    "letter": "S"
+   },
+   {
+    "letter": "T",
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 8,
+     "tests": 9,
+     "docs": 7,
+     "product": 8
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "Idempotency lookup is a linear scan over order.refunds, so each refund costs O(n) and a long run of refunds costs O(n^2) in total. A dict keyed by key would avoid this, and it also means keys only need __eq__. Unhashable keys such as lists are accepted silently.",
+      "evidence": "shop/orders.py:52 `next((record for record in order.refunds if record.key == key), None)`; probe: 5000 refunds of 0.01 on one order took about 1.04s; refund(o, D('1.00'), ['unhashable']) succeeded"
+     },
+     {
+      "severity": "minor",
+      "what": "Keys are compared with ==, so keys that are equal but of different types collide: key 1 and key True are treated as the same idempotency key.",
+      "evidence": "probe: refund(o,D('1'),1); refund(o,D('1'),True) returned the original Refund(key=1), len(o.refunds)==1"
+     },
+     {
+      "severity": "minor",
+      "what": "Order is a mutable dataclass that exposes the `refunds` list and `total`. Callers can append to the list or change the total directly, which skips the lock and the cap invariant. A single module-global lock also serializes refunds on unrelated orders.",
+      "evidence": "shop/orders.py:20-24 (@dataclass Order with public refunds list), shop/orders.py:11 global _REFUND_LOCK"
+     },
+     {
+      "severity": "minor",
+      "what": "The amount validation is more elaborate than the task needs: an exact MAX_PREC context plus hand-written digit-tuple inspection where a simpler check would do. It is correct but heavy for a small codebase. Order.refunded and Order.refundable have no docstrings, while the module's functions do.",
+      "evidence": "shop/orders.py:6,13-14,26-32,74-82"
+     }
+    ],
+    "strengths": [
+     "Every spec requirement holds under probing. Non-Decimal values (int, float, str, bool, None), zero, -0, negatives, NaN, sNaN, Infinity, sub-cent and enormous amounts are all rejected with RefundError, and the order is left unchanged.",
+     "A lock makes the key lookup, cap check and append atomic. 400 threads with mixed keys refunded exactly 31.00 of 31.77 and never over-refunded.",
+     "Cap arithmetic stays exact under a low ambient decimal precision, and the test suite covers this.",
+     "Idempotent replay returns the same Refund instance and compares amounts numerically (5 vs 5.00). A failed over-refund does not use up the key.",
+     "The tests are thorough and meaningful: 30 cases including threaded races, low-precision contexts and extreme exponents. They follow the existing unittest style, and ./check.sh passes (39 tests OK).",
+     "The README description now mentions orders and refunds."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 337,
+     "test_cases": 30
+    },
+    "summary": "Build T adds shop/orders.py (66 non-blank lines), whose amount validation and concurrency handling are careful and correct, plus 30 tests in tests/test_orders.py. ./check.sh passes. I found no spec violations. Probes covered boundary, invalid, zero, negative, non-numeric, huge and sub-cent amounts, replays, cross-order keys, partial failure and threaded races, and all behaved correctly. The remaining issues are minor: an O(n) linear key scan, key equality that treats 1 and True as the same key, a mutable Order whose public refunds list can bypass the lock, a single global lock, and validation more elaborate than the task needs. A maintainer would likely merge it with small comments."
+   },
+   {
+    "letter": "U",
+    "overall": 8,
+    "scores": {
+     "correctness": 9,
+     "robustness": 8,
+     "code_quality": 8,
+     "tests": 9,
+     "docs": 7,
+     "product": 7
+    },
+    "defects": [
+     {
+      "severity": "minor",
+      "what": "Refund amounts are stored with whatever exponent the caller passes, so refunded()/refundable() can come back with more than two decimal places instead of being normalized to cents",
+      "evidence": "o=Order(Decimal('10.00')); refund(o,Decimal('1.0'),'a'); refund(o,Decimal('1.000'),'b'); print(o.refunded(), o.refundable()) -> '2.000 8.000'"
+     },
+     {
+      "severity": "minor",
+      "what": "An unhashable idempotency key raises a bare TypeError, not RefundError. The key type is never validated, so None is accepted as a key",
+      "evidence": "refund(o, Decimal('0.01'), ['x']) -> TypeError: unhashable type: 'list'; refund(o, Decimal('0.01'), None) succeeds with key=None"
+     },
+     {
+      "severity": "minor",
+      "what": "Order.total is a plain mutable attribute. Reassigning it silently changes refundable() and the cap on refunds",
+      "evidence": "o.total = Decimal('1000'); o.refundable() -> 999.970 (shop/orders.py:35)"
+     },
+     {
+      "severity": "minor",
+      "what": "A whole-cent amount that needs more than 28 digits after quantizing is rejected with the misleading message 'amount is too large'. The outcome is still correct (RefundError), because such an amount would exceed any order total anyway",
+      "evidence": "refund(o, Decimal('1E+26'), 'c') -> RefundError('amount is too large') (shop/orders.py:18,68-71)"
+     },
+     {
+      "severity": "minor",
+      "what": "The public API (place_order, refund, Order, Refund) has no docstrings, although sibling modules (auth.py, receipt.py, money.py) document their public functions. refund() also reaches into the private order._lock and order._refunds from module level",
+      "evidence": "shop/orders.py:57-87 versus shop/auth.py:13 'Create a reset token for username.'"
+     }
+    ],
+    "strengths": [
+     "Every spec requirement holds: unique uuid ids, total snapshotted at placement, empty cart raises ValueError, RefundError subclasses ValueError, partial refunds are capped at the total, and idempotency keys are scoped per order",
+     "A per-order lock makes the check-then-insert step atomic. 20 threads making 20,000 one-cent refund attempts against a $100.00 order ended with exactly 100.00 refunded and 10,000 refunds recorded",
+     "A rejected refund changes nothing and does not use up its key, and both of these are tested",
+     "The validation is careful: non-Decimal types (float, int, str, bool, None), NaN, sNaN, Infinity, -0, fractional cents and huge exponents are all rejected, and fixed Decimal contexts keep the result independent of the caller's precision or traps",
+     "The tests are thorough and test meaningful behavior: 28 test methods using subTest tables, boundary checks at the exact remainder and one cent over, a caller-context test that traps Inexact and Rounded, and threaded races on both distinct keys and the same key",
+     "./check.sh passes (37 tests OK). The README feature summary was updated"
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 326,
+     "test_cases": 28
+    },
+    "summary": "Build U meets the full spec, and probing turned up no spec failures. I copied it to /tmp/inspect-risky-refunds-U and ran ./check.sh there: it passed with 37 tests OK (pytest is not installed, so I used unittest). shop/orders.py (67 non-blank lines) holds the per-order idempotency map under a threading.Lock, validates amounts with fixed Decimal contexts, and leaves state unchanged when a refund is rejected. A 20-thread stress run produced no over-refund, and the hostile inputs I tried were all rejected cleanly: wrong types, NaN, Infinity, zero, -0, negatives, fractional cents and huge values. tests/test_orders.py (28 test methods) covers the boundaries, idempotency, the caller's Decimal context and concurrency well. The remaining issues are all minor: refunded() and refundable() are not normalized to cents (they can print '2.000'), keys are not validated (an unhashable key raises TypeError), Order.total can be reassigned, one error message is misleading for very large amounts, and the public API lacks the docstrings that sibling modules have."
+   },
+   {
+    "letter": "V",
+    "overall": 6,
+    "scores": {
+     "correctness": 6,
+     "robustness": 4,
+     "code_quality": 8,
+     "tests": 7,
+     "docs": 6,
+     "product": 7
+    },
+    "defects": [
+     {
+      "severity": "major",
+      "what": "refund() is not thread-safe: the check (amount > order.refundable()) and the write (order._refunds[key] = new) are not atomic and there is no lock, so concurrent refunds can push an order's refunds above its total. That breaks the 'never add up to more than its total' invariant.",
+      "evidence": "Probe script: 8 threads behind a Barrier, each calling refund(o, Decimal('20.00'), f'k{i}') on a $31.77 order, with sys.setswitchinterval(1e-6). It printed 'overrefunds 10 /300', meaning o.refunded() > o.total in 10 of 300 runs. shop/orders.py:62-70."
+     },
+     {
+      "severity": "major",
+      "what": "Idempotency fails under concurrency. Concurrent calls with the same key and amount can each get past the _refunds.get(key) check and create separate Refund objects, so the caller gets different Refund objects for one key. The last write wins, but each caller has already been told its refund succeeded.",
+      "evidence": "Probe: 8 threads calling refund(o, Decimal('5.00'), 'same'). It printed 'dup same-key 32' (runs where more than one distinct Refund object was returned, out of 300). shop/orders.py:63-70."
+     },
+     {
+      "severity": "major",
+      "what": "Order.refunded() iterates self._refunds.values() while another thread inserts into the dict, so concurrent refunds can crash with RuntimeError. That is not a RefundError and not a ValueError.",
+      "evidence": "Probe output, repeated tracebacks: 'File shop/orders.py, line 28, in refunded ... RuntimeError: dictionary changed size during iteration'."
+     },
+     {
+      "severity": "minor",
+      "what": "Large valid whole-cent Decimals are rejected with a misleading 'whole cents' message, because quantize overflows the default 28-digit context. The result is still a RefundError, and such an amount would exceed the total anyway, so only the message is wrong.",
+      "evidence": "refund(o, Decimal('1E+26'), 'x') -> RefundError 'amount must be a positive, finite Decimal in whole cents'. shop/orders.py:50-53."
+     },
+     {
+      "severity": "minor",
+      "what": "Keys are not validated. An unhashable key raises TypeError instead of RefundError or ValueError.",
+      "evidence": "refund(o, Decimal('1.00'), ['list']) -> TypeError: unhashable type: 'list'."
+     },
+     {
+      "severity": "minor",
+      "what": "The tests do not cover concurrency, and the README mentions refunds in a single phrase without explaining idempotency keys or the refund rules.",
+      "evidence": "tests/test_orders.py has no threading tests. README.md line 3 is the only mention."
+     }
+    ],
+    "strengths": [
+     "Compact, readable implementation: frozen Refund dataclass, refunds stored as a key-to-Refund dict on the order, and the module reuses shop.money.CENT",
+     "Thorough amount validation: rejects float, int, bool, str, None, zero, -0, negative, sub-cent, NaN, sNaN, Infinity and Decimal subclasses that override comparisons",
+     "Validation runs before the idempotency lookup, so a rejected amount does not use up a key; over-refunds leave the order unchanged",
+     "Replays compare by value, so Decimal('5') and Decimal('5.00') with the same key return the same Refund",
+     "31 unittest tests pass, in the repo's style, covering boundaries, replays, keys scoped to their order, the cart-total snapshot and the frozen Refund; ./check.sh passes"
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 229,
+     "test_cases": 22
+    },
+    "summary": "Build V meets the single-threaded spec: ./check.sh passes with 31 tests (22 of them new in tests/test_orders.py), and the amount validation, partial refunds, over-refund rejection and idempotency all behave correctly in my probes. But refund() does no locking. With threads, an order's refunds exceeded its total in 10 of 300 runs, one idempotency key produced duplicate Refund objects in 32 of 300 runs, and refunded() sometimes crashed with 'RuntimeError: dictionary changed size during iteration'. For money-handling code, a reviewer would block on that. Smaller issues: valid whole-cent amounts of 26 or more digits are rejected with a misleading 'whole cents' message, an unhashable key raises TypeError, and the README covers refunds in only one phrase."
+   },
+   {
+    "defects": [
+     {
+      "severity": "major",
+      "what": "refund() is not thread-safe. The over-limit check and the insert into the refunds dict are separate steps with no lock, so concurrent refunds with different keys can push total refunds above the order total. The same race lets two refunds with the same key both get recorded. This breaks the requirement that refunds never add up to more than the total, which the task flagged as money and state.",
+      "evidence": "shop/orders.py:59-66 reads `amount > order.refundable()`, then later sets `order._refunds[key] = record`, with no lock anywhere in shop/. Probe: patched Order.refundable to sleep 1ms (this only widens the window), then ran 20 threads, each calling refund(od, Decimal('10.00'), f'k{i}') on a 48.00 order. It printed 'refunded with distinct keys 100.00 total 48.00'. The unpatched barrier test did not show the race in 200 trials, so the window is narrow but real."
+     },
+     {
+      "severity": "minor",
+      "what": "The key is not validated. An unhashable key raises TypeError instead of RefundError, and None or int keys are accepted silently.",
+      "evidence": "refund(order, Decimal('1'), []) -> TypeError: unhashable type: 'list'; refund(order, Decimal('1'), None) -> Refund(..., key=None)"
+     },
+     {
+      "severity": "minor",
+      "what": "Some tests check meta details instead of behaviour: that the module docstring is one line, and that a particular paragraph of the README contains certain words. Both are brittle and add no coverage of the feature. There are also no concurrency tests.",
+      "evidence": "tests/test_orders.py ModuleTest.test_one_line_docstring and test_readme_names_orders_and_refunds (README.read_text().split('\\n\\n')[1])"
+     },
+     {
+      "severity": "minor",
+      "what": "Order and its total are mutable and public, and refund() reaches into the private order._refunds from module level. Order has no __repr__ (the module already uses dataclasses for Refund).",
+      "evidence": "shop/orders.py:21-31, 58, 65; print(order) -> <shop.orders.Order object at 0x...>"
+     }
+    ],
+    "letter": "W",
+    "overall": 7,
+    "scores": {
+     "correctness": 8,
+     "robustness": 6,
+     "code_quality": 8,
+     "tests": 8,
+     "docs": 7,
+     "product": 8
+    },
+    "strengths": [
+     "Every single-threaded spec requirement passed under probing: non-Decimal, bool, str, float, NaN, sNaN, \u00b1Infinity, 0, -0, negative and sub-cent amounts all raise RefundError; 1E+40 is rejected as exceeding the total; trailing-zero amounts like 1.500 are accepted and stored as 1.50.",
+     "Validation runs before the idempotency lookup, and the key is recorded only after a refund succeeds, so a failed refund leaves nothing changed and the same key can be retried.",
+     "Idempotent replays compare amounts numerically (5.5 matches 5.50) and return the identical Refund object. Keys are scoped to their order.",
+     "The code is small and clear. It reuses CENT from money.py, gives Refund a frozen dataclass, and has a one-line docstring per module, following the codebase's style.",
+     "The tests are thorough and table-driven, using subTest and asserting exact error messages and the unchanged state after each failure. ./check.sh passes (33 tests). The README summary was updated."
+    ],
+    "stats": {
+     "files": 3,
+     "source_lines": 227,
+     "test_cases": 24
+    },
+    "summary": "Build W adds shop/orders.py (51 non-blank lines) and tests/test_orders.py (24 tests), and updates the README. ./check.sh passes. Against the spec run on a single thread, it is correct: probing every boundary, invalid input, very large amount and idempotency case turned up no failure. The main defect is the missing lock in refund(): the check against the total and the write are separate steps, so with an injected 1ms delay, concurrent refunds took a 48.00 order to 100.00 refunded. Smaller issues: unhashable keys raise TypeError instead of RefundError, some tests check the docstring and README instead of behaviour, and refund() reaches into Order's private refunds dict. Overall it is clean, idiomatic and well tested, but not safe under concurrent use."
+   }
+  ],
+  "judge": {
+   "ranking": [
+    {
+     "letter": "A",
+     "score": 8.5,
+     "confirmed_defects": [
+      "Key not validated (unhashable key raises TypeError)"
+     ],
+     "refuted_defects": [],
+     "rationale": "Global lock. No over-refunds or duplicates in an unpatched race probe (8 threads x 200 trials). Passed every single-threaded spec probe, including a low-precision caller context. check.sh passes. Strict validation and strong tests; some extra defensiveness."
+    },
+    {
+     "letter": "E",
+     "score": 8.3,
+     "confirmed_defects": [
+      "Mutable Order internals; amounts not normalized (minor)"
+     ],
+     "refuted_defects": [],
+     "rationale": "Locked and race-clean. Passed every spec probe, including low precision. Exact sums and burst tests."
+    },
+    {
+     "letter": "B",
+     "score": 8.2,
+     "confirmed_defects": [
+      "Key not validated; mutable Order (minor)"
+     ],
+     "refuted_defects": [],
+     "rationale": "Locked and race-clean. Passed all spec probes, including low precision. Thorough tests."
+    },
+    {
+     "letter": "U",
+     "score": 8.1,
+     "confirmed_defects": [
+      "refunded() not normalized to cents; key unvalidated (minor)"
+     ],
+     "refuted_defects": [],
+     "rationale": "Per-order lock and race-clean. Passed all spec probes. Good context isolation and concurrency tests."
+    },
+    {
+     "letter": "T",
+     "score": 8,
+     "confirmed_defects": [
+      "O(n) key scan; 1 and True count as the same key (minor)"
+     ],
+     "refuted_defects": [],
+     "rationale": "Locked and race-clean. Passed all spec probes, including low precision. Validation somewhat heavy."
+    },
+    {
+     "letter": "O",
+     "score": 8,
+     "confirmed_defects": [
+      "1/True key collision (minor)"
+     ],
+     "refuted_defects": [],
+     "rationale": "Per-order RLock and race-clean. Passed all spec probes. README updated."
+    },
+    {
+     "letter": "G",
+     "score": 7.9,
+     "confirmed_defects": [
+      "Amounts not normalized; over-defensive validation (minor)"
+     ],
+     "refuted_defects": [],
+     "rationale": "Per-order RLock and race-clean. Passed all spec probes. Heavier than the house style."
+    },
+    {
+     "letter": "P",
+     "score": 7.8,
+     "confirmed_defects": [
+      "Brittle meta-tests on the README and docstring; over-defensive (minor)"
+     ],
+     "refuted_defects": [],
+     "rationale": "Locked and race-clean. Passed all spec probes. Trimming the meta-tests would improve it."
+    },
+    {
+     "letter": "C",
+     "score": 7.8,
+     "confirmed_defects": [
+      "Valid amount rejected under a low-precision caller context; misleading message for huge amounts (minor)"
+     ],
+     "refuted_defects": [],
+     "rationale": "Locked and race-clean. Correct at the default context. Thin docs."
+    },
+    {
+     "letter": "F",
+     "score": 7.8,
+     "confirmed_defects": [
+      "Low-precision context rejects or raises on a valid amount; key collisions (minor)"
+     ],
+     "refuted_defects": [],
+     "rationale": "Locked and race-clean. Correct at the default context. Good tests."
+    },
+    {
+     "letter": "N",
+     "score": 7.8,
+     "confirmed_defects": [
+      "Low-precision context rejects a valid amount; amounts not normalized (minor)"
+     ],
+     "refuted_defects": [],
+     "rationale": "Per-order lock and race-clean. Correct at the default context. Barrier-based concurrency tests."
+    },
+    {
+     "letter": "M",
+     "score": 7.6,
+     "confirmed_defects": [
+      "Frozen dataclass that holds a lock and mutable state; over-built guards (minor)"
+     ],
+     "refuted_defects": [],
+     "rationale": "Per-order lock and race-clean. Passed all spec probes. Over-engineered for this codebase."
+    },
+    {
+     "letter": "S",
+     "score": 7.6,
+     "confirmed_defects": [
+      "Key restricted to non-empty str, beyond the spec; low-precision context rejects a valid amount (minor)"
+     ],
+     "refuted_defects": [],
+     "rationale": "Per-order lock and race-clean. Correct otherwise. The key restriction is an unrequested API constraint."
+    },
+    {
+     "letter": "R",
+     "score": 7.5,
+     "confirmed_defects": [
+      "Under a low-precision context, the key is stored before the total update raises InvalidOperation, so a later replay returns a Refund that was never counted (reproduced)"
+     ],
+     "refuted_defects": [],
+     "rationale": "Per-order lock and race-clean, and correct at the default context. The mutation order is not exception-safe."
+    },
+    {
+     "letter": "H",
+     "score": 6.5,
+     "confirmed_defects": [
+      "No lock: unpatched race over-refunded in 14/200 trials and gave 42/200 duplicate same-key results",
+      "README not updated"
+     ],
+     "refuted_defects": [],
+     "rationale": "Correct single-threaded, including low precision. Breaks the money cap under concurrency."
+    },
+    {
+     "letter": "K",
+     "score": 6.4,
+     "confirmed_defects": [
+      "No lock: 9/200 over-refunds and same-key duplicates, plus RuntimeError crashes"
+     ],
+     "refuted_defects": [],
+     "rationale": "Correct single-threaded, including low precision. Not safe under concurrency."
+    },
+    {
+     "letter": "D",
+     "score": 6.3,
+     "confirmed_defects": [
+      "No lock: 9/200 over-refunds and 4/200 same-key duplicates, without patching",
+      "Low-precision context leaks InvalidOperation"
+     ],
+     "refuted_defects": [],
+     "rationale": "Clean and small, but the money invariant is unsafe under concurrency."
+    },
+    {
+     "letter": "Q",
+     "score": 6.3,
+     "confirmed_defects": [
+      "No lock: 10/200 over-refunds and 17/200 same-key duplicates"
+     ],
+     "refuted_defects": [],
+     "rationale": "Correct single-threaded. No concurrency handling or tests."
+    },
+    {
+     "letter": "J",
+     "score": 6.2,
+     "confirmed_defects": [
+      "No lock: 8/200 over-refunds and 17/200 same-key duplicates"
+     ],
+     "refuted_defects": [],
+     "rationale": "Correct single-threaded. README not updated."
+    },
+    {
+     "letter": "L",
+     "score": 6.1,
+     "confirmed_defects": [
+      "No lock: 11/200 over-refunds, 47/200 same-key duplicates, RuntimeError crashes"
+     ],
+     "refuted_defects": [],
+     "rationale": "Good validation and context isolation. Unsafe under concurrency."
+    },
+    {
+     "letter": "I",
+     "score": 6,
+     "confirmed_defects": [
+      "No lock: over-refunds, same-key duplicates, RuntimeError crashes",
+      "Low-precision context leaks InvalidOperation"
+     ],
+     "refuted_defects": [],
+     "rationale": "Correct single-threaded. Unsafe under concurrency."
+    },
+    {
+     "letter": "W",
+     "score": 6,
+     "confirmed_defects": [
+      "No lock: 16/200 over-refunds, 41/200 same-key duplicates, RuntimeError crashes, without patching",
+      "Low-precision context leaks InvalidOperation"
+     ],
+     "refuted_defects": [],
+     "rationale": "Clean code, but the worst race rate. Brittle meta-tests."
+    },
+    {
+     "letter": "V",
+     "score": 6,
+     "confirmed_defects": [
+      "No lock: 8/200 over-refunds, 17/200 same-key duplicates, RuntimeError crashes"
+     ],
+     "refuted_defects": [],
+     "rationale": "Correct single-threaded. Unsafe under concurrency, with no concurrency tests."
+    }
+   ],
+   "verdict": "All 23 builds pass check.sh and meet the spec when used from a single thread. What separates them is whether refund() makes the check-and-record step atomic. I reproduced the claimed race in all 9 lockless builds (D, H, I, J, K, L, Q, V, W) without patching any code, using 8 threads, a barrier and a 1\u00b5s switch interval. Every one over-refunded orders and duplicated same-key refunds, and I, K, L, V and W also crashed with RuntimeError. All 14 locked builds stayed clean under the same probe. Among the locked builds, the differences are small: whether they hold up under a low-precision caller decimal context (C, F, N, S and R do not; R also leaves an order half-changed), and how much extra defensiveness they add."
+  },
+  "judges": [
+   {
+    "ranking": [
+     {
+      "letter": "A",
+      "score": 8.5,
+      "confirmed_defects": [
+       "Key not validated (unhashable key raises TypeError)"
+      ],
+      "refuted_defects": [],
+      "rationale": "Global lock. No over-refunds or duplicates in an unpatched race probe (8 threads x 200 trials). Passed every single-threaded spec probe, including a low-precision caller context. check.sh passes. Strict validation and strong tests; some extra defensiveness."
+     },
+     {
+      "letter": "E",
+      "score": 8.3,
+      "confirmed_defects": [
+       "Mutable Order internals; amounts not normalized (minor)"
+      ],
+      "refuted_defects": [],
+      "rationale": "Locked and race-clean. Passed every spec probe, including low precision. Exact sums and burst tests."
+     },
+     {
+      "letter": "B",
+      "score": 8.2,
+      "confirmed_defects": [
+       "Key not validated; mutable Order (minor)"
+      ],
+      "refuted_defects": [],
+      "rationale": "Locked and race-clean. Passed all spec probes, including low precision. Thorough tests."
+     },
+     {
+      "letter": "U",
+      "score": 8.1,
+      "confirmed_defects": [
+       "refunded() not normalized to cents; key unvalidated (minor)"
+      ],
+      "refuted_defects": [],
+      "rationale": "Per-order lock and race-clean. Passed all spec probes. Good context isolation and concurrency tests."
+     },
+     {
+      "letter": "T",
+      "score": 8,
+      "confirmed_defects": [
+       "O(n) key scan; 1 and True count as the same key (minor)"
+      ],
+      "refuted_defects": [],
+      "rationale": "Locked and race-clean. Passed all spec probes, including low precision. Validation somewhat heavy."
+     },
+     {
+      "letter": "O",
+      "score": 8,
+      "confirmed_defects": [
+       "1/True key collision (minor)"
+      ],
+      "refuted_defects": [],
+      "rationale": "Per-order RLock and race-clean. Passed all spec probes. README updated."
+     },
+     {
+      "letter": "G",
+      "score": 7.9,
+      "confirmed_defects": [
+       "Amounts not normalized; over-defensive validation (minor)"
+      ],
+      "refuted_defects": [],
+      "rationale": "Per-order RLock and race-clean. Passed all spec probes. Heavier than the house style."
+     },
+     {
+      "letter": "P",
+      "score": 7.8,
+      "confirmed_defects": [
+       "Brittle meta-tests on the README and docstring; over-defensive (minor)"
+      ],
+      "refuted_defects": [],
+      "rationale": "Locked and race-clean. Passed all spec probes. Trimming the meta-tests would improve it."
+     },
+     {
+      "letter": "C",
+      "score": 7.8,
+      "confirmed_defects": [
+       "Valid amount rejected under a low-precision caller context; misleading message for huge amounts (minor)"
+      ],
+      "refuted_defects": [],
+      "rationale": "Locked and race-clean. Correct at the default context. Thin docs."
+     },
+     {
+      "letter": "F",
+      "score": 7.8,
+      "confirmed_defects": [
+       "Low-precision context rejects or raises on a valid amount; key collisions (minor)"
+      ],
+      "refuted_defects": [],
+      "rationale": "Locked and race-clean. Correct at the default context. Good tests."
+     },
+     {
+      "letter": "N",
+      "score": 7.8,
+      "confirmed_defects": [
+       "Low-precision context rejects a valid amount; amounts not normalized (minor)"
+      ],
+      "refuted_defects": [],
+      "rationale": "Per-order lock and race-clean. Correct at the default context. Barrier-based concurrency tests."
+     },
+     {
+      "letter": "M",
+      "score": 7.6,
+      "confirmed_defects": [
+       "Frozen dataclass that holds a lock and mutable state; over-built guards (minor)"
+      ],
+      "refuted_defects": [],
+      "rationale": "Per-order lock and race-clean. Passed all spec probes. Over-engineered for this codebase."
+     },
+     {
+      "letter": "S",
+      "score": 7.6,
+      "confirmed_defects": [
+       "Key restricted to non-empty str, beyond the spec; low-precision context rejects a valid amount (minor)"
+      ],
+      "refuted_defects": [],
+      "rationale": "Per-order lock and race-clean. Correct otherwise. The key restriction is an unrequested API constraint."
+     },
+     {
+      "letter": "R",
+      "score": 7.5,
+      "confirmed_defects": [
+       "Under a low-precision context, the key is stored before the total update raises InvalidOperation, so a later replay returns a Refund that was never counted (reproduced)"
+      ],
+      "refuted_defects": [],
+      "rationale": "Per-order lock and race-clean, and correct at the default context. The mutation order is not exception-safe."
+     },
+     {
+      "letter": "H",
+      "score": 6.5,
+      "confirmed_defects": [
+       "No lock: unpatched race over-refunded in 14/200 trials and gave 42/200 duplicate same-key results",
+       "README not updated"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct single-threaded, including low precision. Breaks the money cap under concurrency."
+     },
+     {
+      "letter": "K",
+      "score": 6.4,
+      "confirmed_defects": [
+       "No lock: 9/200 over-refunds and same-key duplicates, plus RuntimeError crashes"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct single-threaded, including low precision. Not safe under concurrency."
+     },
+     {
+      "letter": "D",
+      "score": 6.3,
+      "confirmed_defects": [
+       "No lock: 9/200 over-refunds and 4/200 same-key duplicates, without patching",
+       "Low-precision context leaks InvalidOperation"
+      ],
+      "refuted_defects": [],
+      "rationale": "Clean and small, but the money invariant is unsafe under concurrency."
+     },
+     {
+      "letter": "Q",
+      "score": 6.3,
+      "confirmed_defects": [
+       "No lock: 10/200 over-refunds and 17/200 same-key duplicates"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct single-threaded. No concurrency handling or tests."
+     },
+     {
+      "letter": "J",
+      "score": 6.2,
+      "confirmed_defects": [
+       "No lock: 8/200 over-refunds and 17/200 same-key duplicates"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct single-threaded. README not updated."
+     },
+     {
+      "letter": "L",
+      "score": 6.1,
+      "confirmed_defects": [
+       "No lock: 11/200 over-refunds, 47/200 same-key duplicates, RuntimeError crashes"
+      ],
+      "refuted_defects": [],
+      "rationale": "Good validation and context isolation. Unsafe under concurrency."
+     },
+     {
+      "letter": "I",
+      "score": 6,
+      "confirmed_defects": [
+       "No lock: over-refunds, same-key duplicates, RuntimeError crashes",
+       "Low-precision context leaks InvalidOperation"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct single-threaded. Unsafe under concurrency."
+     },
+     {
+      "letter": "W",
+      "score": 6,
+      "confirmed_defects": [
+       "No lock: 16/200 over-refunds, 41/200 same-key duplicates, RuntimeError crashes, without patching",
+       "Low-precision context leaks InvalidOperation"
+      ],
+      "refuted_defects": [],
+      "rationale": "Clean code, but the worst race rate. Brittle meta-tests."
+     },
+     {
+      "letter": "V",
+      "score": 6,
+      "confirmed_defects": [
+       "No lock: 8/200 over-refunds, 17/200 same-key duplicates, RuntimeError crashes"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct single-threaded. Unsafe under concurrency, with no concurrency tests."
+     }
+    ],
+    "verdict": "All 23 builds pass check.sh and meet the spec when used from a single thread. What separates them is whether refund() makes the check-and-record step atomic. I reproduced the claimed race in all 9 lockless builds (D, H, I, J, K, L, Q, V, W) without patching any code, using 8 threads, a barrier and a 1\u00b5s switch interval. Every one over-refunded orders and duplicated same-key refunds, and I, K, L, V and W also crashed with RuntimeError. All 14 locked builds stayed clean under the same probe. Among the locked builds, the differences are small: whether they hold up under a low-precision caller decimal context (C, F, N, S and R do not; R also leaves an order half-changed), and how much extra defensiveness they add."
+   },
+   {
+    "ranking": [
+     {
+      "letter": "A",
+      "score": 8.5,
+      "confirmed_defects": [
+       "minor: keys not validated (None accepted, unhashable key raises TypeError)",
+       "minor: one global lock and public mutable refunds dict"
+      ],
+      "refuted_defects": [],
+      "rationale": "check.sh passes. Every spec probe passed, including the low-precision caller context. Under 8-thread races with and without injected delay, the cap and idempotency held. Somewhat over-defensive, but correct and well tested."
+     },
+     {
+      "letter": "E",
+      "score": 8.4,
+      "confirmed_defects": [
+       "minor: mutable Order, amounts not normalized, keys not validated, global lock"
+      ],
+      "refuted_defects": [],
+      "rationale": "Passed all functional, low-precision and race probes. Strong tests, including burst concurrency tests and a README update."
+     },
+     {
+      "letter": "B",
+      "score": 8.3,
+      "confirmed_defects": [
+       "minor: key not validated; Order mutable; check order can produce misleading messages"
+      ],
+      "refuted_defects": [],
+      "rationale": "Passed all probes, including low precision and races. Thorough tests. Slightly heavy precision machinery."
+     },
+     {
+      "letter": "U",
+      "score": 8.2,
+      "confirmed_defects": [
+       "minor: refunded()/refundable() not normalized to cents; key not validated; no docstrings"
+      ],
+      "refuted_defects": [],
+      "rationale": "Per-order lock held under races and all spec probes passed. Good tests. A few polish gaps."
+     },
+     {
+      "letter": "O",
+      "score": 8.2,
+      "confirmed_defects": [
+       "minor: keys 1 and True collide; InvalidOperation possible only with an absurd manually set total"
+      ],
+      "refuted_defects": [],
+      "rationale": "Passed all probes. Per-order RLock, good tests, README updated in the existing voice."
+     },
+     {
+      "letter": "T",
+      "score": 8.1,
+      "confirmed_defects": [
+       "minor: linear key scan; 1/True collision; global lock; mutable public refunds list"
+      ],
+      "refuted_defects": [],
+      "rationale": "Passed all probes, including low precision and races. The validation is somewhat elaborate, but the 30 tests are solid."
+     },
+     {
+      "letter": "G",
+      "score": 8,
+      "confirmed_defects": [
+       "minor: amounts not normalized; mutable Order; over-defensive guards"
+      ],
+      "refuted_defects": [],
+      "rationale": "Per-order RLock. All probes passed, including low precision. Heavier than the house style."
+     },
+     {
+      "letter": "P",
+      "score": 8,
+      "confirmed_defects": [
+       "minor: over-defensive subclass guards and brittle README/docstring meta-tests; 1/True key collision"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct and thread-safe, and passed all probes. Its meta-tests and extra defensiveness lower code quality a little."
+     },
+     {
+      "letter": "M",
+      "score": 7.8,
+      "confirmed_defects": [
+       "minor: a frozen dataclass that holds a lock and a mutable dict, so it cannot be deep-copied; over-built guards"
+      ],
+      "refuted_defects": [],
+      "rationale": "Per-order lock. All probes passed, including low precision. Over-engineered for the codebase."
+     },
+     {
+      "letter": "N",
+      "score": 7.8,
+      "confirmed_defects": [
+       "minor: a valid amount under a low-precision caller context is rejected as RefundError; misleading message for huge amounts; reaches into Order's private fields"
+      ],
+      "refuted_defects": [],
+      "rationale": "Thread-safe and correct at the default context. Good tests."
+     },
+     {
+      "letter": "F",
+      "score": 7.8,
+      "confirmed_defects": [
+       "minor: a low-precision context rejects a valid amount; 1/True key collision; global lock"
+      ],
+      "refuted_defects": [],
+      "rationale": "Thread-safe and spec-complete at the default context. Good tests."
+     },
+     {
+      "letter": "C",
+      "score": 7.7,
+      "confirmed_defects": [
+       "minor: a low-precision context rejects a valid amount; misleading 'whole cents' message for 1E+30; thin docstrings"
+      ],
+      "refuted_defects": [],
+      "rationale": "Thread-safe and spec-complete, with strong tests. Docs are thin."
+     },
+     {
+      "letter": "S",
+      "score": 7.7,
+      "confirmed_defects": [
+       "minor: keys limited to non-empty str; a low-precision context rejects a valid amount"
+      ],
+      "refuted_defects": [],
+      "rationale": "Per-order lock and correct behaviour. The str-only key restriction goes beyond the spec."
+     },
+     {
+      "letter": "R",
+      "score": 7.5,
+      "confirmed_defects": [
+       "minor: under a caller prec=3 context, refund raises InvalidOperation after storing the key, leaving the order half-changed (reproduced: key stored, refunded() still 0.00, replay returns the uncounted Refund)"
+      ],
+      "refuted_defects": [],
+      "rationale": "Thread-safe and correct at the default context. A narrow atomicity bug exists under a contrived Decimal context."
+     },
+     {
+      "letter": "Q",
+      "score": 6,
+      "confirmed_defects": [
+       "major: no lock. Without patching, 5/150 trials over-refunded and 10/150 duplicated a same-key refund; with injected delay, 200.00 was refunded on a 51.79 order"
+      ],
+      "refuted_defects": [],
+      "rationale": "Clean and correct single-threaded, but the money invariant breaks under concurrency, and no concurrency test exists."
+     },
+     {
+      "letter": "H",
+      "score": 5.9,
+      "confirmed_defects": [
+       "major: no lock. Unpatched, 16/150 trials over-refunded and 23/150 duplicated a same-key refund",
+       "minor: README not updated, no docstrings"
+      ],
+      "refuted_defects": [],
+      "rationale": "Strong single-threaded validation and context independence, but concurrency is unsafe and the docs are missing."
+     },
+     {
+      "letter": "D",
+      "score": 5.8,
+      "confirmed_defects": [
+       "major: no lock. Unpatched, 6/150 trials over-refunded and 4/150 duplicated a same-key refund",
+       "minor: a low-precision context leaks InvalidOperation"
+      ],
+      "refuted_defects": [],
+      "rationale": "Small and clean, but not concurrency-safe, and it leaks a raw decimal error."
+     },
+     {
+      "letter": "J",
+      "score": 5.8,
+      "confirmed_defects": [
+       "major: no lock. Unpatched, 5/150 trials over-refunded and 8/150 duplicated a same-key refund",
+       "minor: README not updated"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct single-threaded. Racy, with sparse docs."
+     },
+     {
+      "letter": "K",
+      "score": 5.7,
+      "confirmed_defects": [
+       "major: no lock. Unpatched, 6/150 trials over-refunded, 7/150 duplicated a same-key refund, and some calls raised non-RefundError exceptions"
+      ],
+      "refuted_defects": [],
+      "rationale": "Good context handling, but the race breaks the cap and idempotency."
+     },
+     {
+      "letter": "W",
+      "score": 5.6,
+      "confirmed_defects": [
+       "major: no lock. Unpatched, 5/150 trials over-refunded, 14/150 duplicated a same-key refund, and raw exceptions were raised",
+       "minor: brittle README/docstring meta-tests"
+      ],
+      "refuted_defects": [],
+      "rationale": "Clean single-threaded. Racy, with meta-tests that check text instead of behaviour."
+     },
+     {
+      "letter": "L",
+      "score": 5.5,
+      "confirmed_defects": [
+       "major: no lock. Unpatched, 7/150 trials over-refunded and 11/150 duplicated a same-key refund; with injected delay, 200.00 was refunded of 51.79"
+      ],
+      "refuted_defects": [],
+      "rationale": "Careful validation, but concurrency is unsafe. The inspector's RuntimeError claim is plausible; I did not see it here, though other builds did show it."
+     },
+     {
+      "letter": "I",
+      "score": 5.4,
+      "confirmed_defects": [
+       "major: no lock. Unpatched, 24/150 trials over-refunded, 30/150 duplicated a same-key refund, and 7 raw exceptions (dict changed size) were raised",
+       "minor: a low-precision context leaks InvalidOperation"
+      ],
+      "refuted_defects": [],
+      "rationale": "It showed the worst race rates, plus raw RuntimeErrors."
+     },
+     {
+      "letter": "V",
+      "score": 5.4,
+      "confirmed_defects": [
+       "major: no lock. Unpatched, 17/150 trials over-refunded and 15/150 duplicated a same-key refund",
+       "major: concurrent refunds raised raw exceptions (4)"
+      ],
+      "refuted_defects": [],
+      "rationale": "Correct single-threaded, but the race rates are high and it crashes with raw exceptions."
+     }
+    ],
+    "verdict": "All 23 builds pass ./check.sh and meet the spec when used from one thread. What separates them is whether the read-check-write in refund() is atomic. A, B, C, E, F, G, M, N, O, P, R, S, T and U lock it and held the cap and idempotency under 8-thread races. D, H, I, J, K, L, Q, V and W have no lock. Without any code patching, my race probe over-refunded orders and recorded duplicate refunds for one key in all nine of them, and I, K, L/V and W also raised raw exceptions. Among the locked builds, the smaller gaps are how they handle a low-precision caller Decimal context (C, F, N, S reject a valid amount; R leaves the order half-changed) and how much over-defensive code they carry."
+   }
+  ]
+ }
+]
