@@ -229,7 +229,7 @@ def describe(spawns):
 def spawn_models_are_aliases(t, sc, rule):
     bad = [
         s for s in t.spawns
-        if s["model"] not in ("opus", "sonnet", "haiku") and not (s["model"] is None and named_agent(s))
+        if s["model"] not in ("opus", "sonnet", "haiku", "fable") and not (s["model"] is None and named_agent(s))
     ]
     return not bad, f"unpinned or full-ID spawns: {describe(bad)}" if bad else f"all {len(t.spawns)} spawns pinned"
 
