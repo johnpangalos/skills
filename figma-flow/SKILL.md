@@ -58,13 +58,17 @@ They are in this skill's `scripts/` folder, not in the project:
 - `export-node.ts`: the exact values of one or more nodes, with a hash as its last line: size and
   position; fills, strokes (with their align and dash), radius and stroke weight, each a number or
   per side or corner when those differ; rings (spread-only drop shadows) and every other shadow;
-  opacity; sizing and min/max; auto layout's justify, align and wrap, each left out where it
-  can't show (justify on a box that hugs its direction with no min size on that axis, or where a
-  child fills it; align where every child fills or spans the box's content across); text type
+  `backdropBlur`, the radius of a visible background blur in px (the length CSS's
+  `backdrop-filter: blur()` takes; 0 with none; a layer blur isn't one; two or more on a box, or
+  a progressive one, throw, naming it, since CSS draws one uniform blur); opacity; sizing and
+  min/max; auto layout's justify, align and wrap, each left out where it can't show (justify on a
+  box that hugs its direction with no min size on that axis, or where a child fills it; align
+  where every child fills or spans the box's content across); text type
   (family, size, weight, line height in px, letter spacing, case, decoration, alignment); and
   `tokens`, the names of the variables and styles each value is bound to (a text style's own font
-  is not repeated; a stroke's only where there is a stroke). A shadow with no blur, offset or
-  spread draws nothing and is left out. Colours are `#rrggbb`, or `#rrggbbaa` when see-through.
+  is not repeated; a stroke's only where there is a stroke; a background blur's bound radius as
+  `backdropBlur`). A shadow with no blur, offset or spread draws nothing and is left out, and a
+  background blur of radius 0 records 0. Colours are `#rrggbb`, or `#rrggbbaa` when see-through.
   On a component's entry, `outline` is a focus ring Figma draws as a separate frame around the box
   (an even, solid, fill-less stroke; `{ width, offset, color }` as CSS draws an outline, its
   colour and weight named as `outline` and `outlineWidth` in `tokens`), and `unmeasured` names by
@@ -72,7 +76,7 @@ They are in this skill's `scripts/` folder, not in the project:
   draw exactly, such as a width or offset that isn't whole pixels, and a text that isn't the
   label), which the helper reports rather than drops. A ring whose stroke draws nothing is left out.
   The file is format 2 (`"format": 2` after `node`): a field at its default (`fill`, `stroke` and
-  `label` null, `strokeWeight` and `radius` 0, `opacity` 1, empty `rings`, `shadows` and `unmeasured`, `outline` null, letter
+  `label` null, `strokeWeight`, `radius` and `backdropBlur` 0, `opacity` 1, empty `rings`, `shadows` and `unmeasured`, `outline` null, letter
   spacing 0, case and decoration "none", inside stroke align) is left out, and the reader puts it
   back. Its entries are shaped by what the node is: a component set gives an entry per variant,
   and a frame that isn't a component gives an entry for every frame and text under it. Each entry

@@ -25,10 +25,15 @@
 // (with a stroke only), `radius` (a number, or top-left, top-right, bottom-right, bottom-left
 // when the corners differ), `rings` (spread-only drop shadows: no blur and no offset, a focus
 // ring, as colour and spread), `shadows` (every other visible shadow, an inset ring included: x,
-// y, blur, spread, colour, inset), `opacity`, `sizing` (hug, fill or fixed, across then down),
-// and `minWidth`/`maxWidth`/`minHeight`/`maxHeight` where set. A shadow (drop or inner) with no
-// blur, no offset and no spread draws nothing, so it is in neither list. Colours are "#rrggbb",
-// or "#rrggbbaa" when see-through.
+// y, blur, spread, colour, inset), `backdropBlur` (the radius of its visible background blur, in
+// px: Figma's radius is the length CSS's `backdrop-filter: blur()` takes; 0 with none), `opacity`,
+// `sizing` (hug, fill or fixed, across then down), and `minWidth`/`maxWidth`/`minHeight`/`maxHeight`
+// where set. A shadow (drop or inner) with no blur, no offset and no spread draws nothing, so it is
+// in neither list; a background blur of radius 0 draws nothing too. CSS has one backdrop-filter, so
+// a box with two or more visible background blurs throws, naming the node, rather than one being
+// picked, and so does a progressive blur with a radius above 0 at either end, whose radius changes
+// across the box, which `blur()` can't draw. A layer blur (CSS's `filter: blur()`) isn't a background blur and isn't recorded.
+// Colours are "#rrggbb", or "#rrggbbaa" when see-through.
 //
 // `layout` (two or more laid-out children) adds `justify` and `align` in CSS's words, and `wrap`
 // with `rowGap` when it wraps. Each is left out where it can't show. `justify`: when the box
@@ -54,13 +59,14 @@
 // `fontSize`, `fontWeight`, `lineHeight` (px; a percent is of the font size; null for AUTO),
 // `letterSpacing` (px), `textCase`, `textDecoration`, and `textAlign` where the text has a set
 // width. `tokens`, where anything is bound to a variable or style, names them: a variable by its
-// web code syntax, a style by its name. A text style names its own font, so `tokens` leaves out
+// web code syntax, a style by its name (a background blur's radius is named as `backdropBlur`; an
+// effect style, as `effect`). A text style names its own font, so `tokens` leaves out
 // fontFamily, fontSize, fontWeight, lineHeight and letterSpacing when the text has one. `tokens`
 // records `stroke` and `strokeWeight` only where there is a stroke.
 //
 // Format 2 (`"format": 2`, after `node`): a field at its default is left out. Those are `fill`,
-// `stroke` and `label` null; `strokeWeight` and `radius` 0; `rings` and `shadows` empty; `opacity`
-// 1; a text's `letterSpacing` 0; `textCase` and `textDecoration` "none"; `strokeAlign` "inside";
+// `stroke` and `label` null; `strokeWeight` and `radius` 0; `rings` and `shadows` empty;
+// `backdropBlur` 0; `opacity` 1; a text's `letterSpacing` 0; `textCase` and `textDecoration` "none"; `strokeAlign` "inside";
 // `outline` null and `unmeasured` empty.
 // The reader (figma.ts, loadFigmaNodes) fills them back in, so a file without a `format` (written
 // before this) has its absent fields skipped instead.
@@ -176,6 +182,7 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
         set(field, await variableName(bound[field]));
       }
       set("effect", await styleName(node.effectStyleId));
+      set("backdropBlur", await variableName(backgroundBlur(node)?.boundVariables?.radius));
     }
     set("opacity", await variableName(bound.opacity));
     const text = node.type === "TEXT" ? node : label;
@@ -195,6 +202,26 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
   }
 
   type Box = FrameNode | ComponentNode | InstanceNode;
+  // A box's background blur: its visible BACKGROUND_BLUR effect that blurs (a radius above 0 once
+  // rounded; for a progressive blur, its start or end radius), or undefined. CSS draws one
+  // backdrop-filter, so a box with two throws, naming the node, rather than one being picked. So does
+  // a progressive blur (its radius changes across the box, and `radius` is only its end), which
+  // `blur()` can't draw. A LAYER_BLUR is CSS's `filter`, not this, and isn't counted.
+  const progressive = (effect: BlurEffect) => "blurType" in effect && effect.blurType === "PROGRESSIVE";
+  const blurs = (effect: BlurEffect) =>
+    round(effect.radius) > 0 || (progressive(effect) && round((effect as BlurEffectProgressive).startRadius ?? 0) > 0);
+  const backgroundBlur = (node: Box) => {
+    const drawn = node.effects.filter(
+      (effect): effect is BlurEffect => effect.type === "BACKGROUND_BLUR" && effect.visible !== false && blurs(effect),
+    );
+    if (drawn.length > 1) {
+      throw new Error(`${node.name} (${node.id}) has ${drawn.length} visible background blurs, and CSS draws one backdrop-filter: keep one in Figma`);
+    }
+    if (drawn[0] && progressive(drawn[0])) {
+      throw new Error(`${node.name} (${node.id}) has a progressive background blur, which CSS's blur() can't draw: make it uniform in Figma`);
+    }
+    return drawn[0];
+  };
   const isBox = (node: BaseNode): node is Box =>
     node.type === "FRAME" || node.type === "COMPONENT" || node.type === "INSTANCE";
   // The children auto layout places: not hidden, not absolutely positioned.
@@ -252,7 +279,7 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
   // Format 2: a field at its default is left out, and the reader puts it back. `rings` and
   // `shadows` default to an empty list; the rest to the value here.
   const defaults: Record<string, unknown> = {
-    fill: null, stroke: null, strokeWeight: 0, radius: 0, rings: [], label: null, opacity: 1, shadows: [],
+    fill: null, stroke: null, strokeWeight: 0, radius: 0, rings: [], label: null, opacity: 1, shadows: [], backdropBlur: 0,
     letterSpacing: 0, textCase: "none", textDecoration: "none", strokeAlign: "inside",
   };
   const isDefault = (key: string, value: unknown) =>
@@ -329,6 +356,8 @@ export default async function exportNode(...nodeIds: string[]): Promise<string> 
           color: hex(effect.color, effect.color.a),
           inset: effect.type === "INNER_SHADOW",
         })),
+      // The background blur's radius, the length CSS's `backdrop-filter: blur()` takes; 0 with none.
+      backdropBlur: round(backgroundBlur(node)?.radius ?? 0),
       // How auto layout sizes it, across and down: hug its content, fill its parent, or fixed.
       sizing: [node.layoutSizingHorizontal, node.layoutSizingVertical].map((sizing) => sizing.toLowerCase()),
       ...Object.fromEntries(
