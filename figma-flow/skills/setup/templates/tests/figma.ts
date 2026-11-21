@@ -52,6 +52,12 @@ export type FigmaNode = Region & {
   root?: true;
   /** Every shadow that isn't a ring (a blur, an offset, an inset ring), in the order CSS lists them. */
   shadows?: Shadow[];
+  /**
+   * The radius of a background blur, in px: the length CSS's `backdrop-filter: blur()` takes. 0
+   * with none. Absent from a file without `format`, which isn't compared on it; a format-2 file
+   * written before export-node recorded it gets 0, as it does for `outline` and `unmeasured`.
+   */
+  backdropBlur?: number;
   /** Across, then down. Absent from an export that doesn't record it; a root is never checked for fill. */
   sizing?: [horizontal: Sizing, vertical: Sizing];
   minWidth?: number;
@@ -144,6 +150,7 @@ function restore(node: Json): Json {
     label: null,
     opacity: 1,
     shadows: [],
+    backdropBlur: 0,
     outline: null,
     unmeasured: [],
   });
@@ -570,11 +577,12 @@ async function expectFillMatches(element: Locator, sizing: [Sizing, Sizing]) {
 
 /**
  * Compares the values an element is drawn with against its Figma node, exactly: size, opacity,
- * fill, border (or outline), radius, shadows, focus rings, the layout's justify, align, wrap and
- * padding, the min and max sizes, and the label's colour and type. Screenshots are for a person or
- * a model to look at; this is the part that can't be fuzzy. A focus ring Figma draws as a separate
- * frame is compared as the element's outline (`outline`). A child the export couldn't read as one
- * (`unmeasured`) is named in a "figma: not measured" annotation; the test still passes on the rest.
+ * fill, border (or outline), radius, shadows, focus rings, background blur (`backdrop-filter`), the
+ * layout's justify, align, wrap and padding, the min and max sizes, and the label's colour and
+ * type. Screenshots are for a person or a model to look at; this is the part that can't be fuzzy.
+ * A focus ring Figma draws as a separate frame is compared as the element's outline (`outline`). A
+ * child the export couldn't read as one (`unmeasured`) is named in a "figma: not measured"
+ * annotation; the test still passes on the rest.
  *
  * Two allowances. The box may be under a pixel off: Figma snaps a text box to whole pixels
  * and a browser doesn't, so anything that hugs text differs by a fraction. Colours may
@@ -750,6 +758,7 @@ export async function expectToMatchFigma(
       radius: corners.map((corner) => parseFloat(style[`border${corner}Radius`])),
       rings,
       shadows,
+      backdropFilter: style.backdropFilter,
       minWidth: size(style.minWidth),
       maxWidth: size(style.maxWidth),
       minHeight: size(style.minHeight),
@@ -872,6 +881,20 @@ export async function expectToMatchFigma(
     figma.shadows.forEach((shadow, i) =>
       expectSameColor(rendered.shadows[i]?.color ?? null, shadow.color, `shadow ${i + 1} colour`),
     );
+  }
+
+  // A background blur is the element's backdrop-filter: none is 0, blur(12px) is 12. A backdrop-filter
+  // with anything besides one blur draws something Figma's blur doesn't, so it fails.
+  if (figma.backdropBlur !== undefined) {
+    let blur: number | null = null;
+    if (rendered.backdropFilter === "none") blur = 0;
+    const one = rendered.backdropFilter.match(/^blur\((-?[\d.]+)px\)$/);
+    if (one) blur = Number(one[1]);
+    let wanted = "none";
+    if (figma.backdropBlur !== 0) wanted = `blur(${figma.backdropBlur}px)`;
+    expect
+      .soft(blur, `backdrop-filter is ${rendered.backdropFilter}, Figma's is ${wanted}`)
+      .toBe(figma.backdropBlur);
   }
 
   for (const key of ["minWidth", "maxWidth", "minHeight", "maxHeight"] as const) {

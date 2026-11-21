@@ -484,6 +484,108 @@ test("S8: a drop or inner shadow with no blur, offset or spread draws nothing an
   assert.equal("rings" in nodes["Page > Lift"]!, false);
 });
 
+// A background blur as Figma writes it; `visible` is left off where a test says so.
+const backgroundBlur = (radius: number, extra: Record<string, unknown> = {}) =>
+  ({ type: "BACKGROUND_BLUR", blurType: "NORMAL", visible: true, radius, ...extra });
+const dropShadow = { type: "DROP_SHADOW", visible: true, radius: 8, spread: -2, offset: { x: 0, y: 4 }, color: { r: 0, g: 0, b: 0, a: 0.25 } };
+
+test("B1: a box records its visible background blur as backdropBlur, in px: on a page, a component and its laid-out children", async () => {
+  const glass = box("40:2", "FRAME", "Glass", { effects: [backgroundBlur(12)] });
+  const page = parse(await run([box("40:1", "FRAME", "Page", { effects: [backgroundBlur(24)], children: [glass] })], "40:1"));
+  assert.equal(page["Page"]!.backdropBlur, 24);
+  assert.equal(page["Page > Glass"]!.backdropBlur, 12);
+  const card = box("41:1", "COMPONENT", "Card", {
+    effects: [backgroundBlur(16)],
+    children: [box("41:2", "FRAME", "Header", { effects: [backgroundBlur(8)] }), box("41:3", "FRAME", "Body")],
+  });
+  const component = parse(await run([card], "41:1"));
+  assert.equal(component["Card"]!.backdropBlur, 16);
+  assert.equal(component["Card > Header"]!.backdropBlur, 8);
+  assert.equal("backdropBlur" in component["Card > Body"]!, false);
+});
+
+test("B1: a blur with visible undefined counts, as a shadow's does; one read back as a 32-bit float is rounded", async () => {
+  const unset = box("42:2", "FRAME", "Unset", { effects: [backgroundBlur(12.000000476837158, { visible: undefined })] });
+  const nodes = parse(await run([frame("42:1", [unset])], "42:1"));
+  assert.equal(nodes["Page > Unset"]!.backdropBlur, 12);
+});
+
+test("B1 hostile: a hidden background blur, one of radius 0 and one of radius 0.000001 record 0, left out in format 2", async () => {
+  const hidden = box("43:2", "FRAME", "Hidden", { effects: [backgroundBlur(12, { visible: false })] });
+  const zero = box("43:3", "FRAME", "Zero", { effects: [backgroundBlur(0)] });
+  const tiny = box("43:4", "FRAME", "Tiny", { effects: [backgroundBlur(0.000001)] });
+  const none = box("43:5", "FRAME", "None");
+  const out = await run([frame("43:1", [hidden, zero, tiny, none])], "43:1");
+  assert.equal(JSON.parse(out).format, 2);
+  for (const key of ["Page > Hidden", "Page > Zero", "Page > Tiny", "Page > None"]) {
+    assert.equal("backdropBlur" in parse(out)[key]!, false, key);
+  }
+  // A hidden or zero blur is no blur, so beside a real one it doesn't count as a second.
+  const one = box("43:7", "FRAME", "One", { effects: [backgroundBlur(4, { visible: false }), backgroundBlur(0), backgroundBlur(6)] });
+  assert.equal(parse(await run([frame("43:6", [one])], "43:6"))["Page > One"]!.backdropBlur, 6);
+});
+
+test("B1: a background blur beside shadows and a ring: all recorded, neither list disturbed", async () => {
+  const ring = { type: "DROP_SHADOW", visible: true, radius: 0, spread: 2, offset: { x: 0, y: 0 }, color: { r: 0, g: 0.4, b: 1, a: 1 } };
+  const glass = box("44:2", "FRAME", "Glass", { effects: [dropShadow, backgroundBlur(12), ring] });
+  const entry = parse(await run([frame("44:1", [glass])], "44:1"))["Page > Glass"]!;
+  assert.equal(entry.backdropBlur, 12);
+  assert.deepEqual(entry.shadows, [{ x: 0, y: 4, blur: 8, spread: -2, color: "#00000040", inset: false }]);
+  assert.deepEqual(entry.rings, [["#0066ff", 2]]);
+});
+
+test("B1: a layer blur is CSS's filter, not a background blur: it isn't recorded as backdropBlur", async () => {
+  const blurred = box("45:2", "FRAME", "Blurred", { effects: [{ ...backgroundBlur(8), type: "LAYER_BLUR" }] });
+  const both = box("45:3", "FRAME", "Both", { effects: [{ ...backgroundBlur(8), type: "LAYER_BLUR" }, backgroundBlur(12)] });
+  const nodes = parse(await run([frame("45:1", [blurred, both])], "45:1"));
+  assert.equal("backdropBlur" in nodes["Page > Blurred"]!, false);
+  assert.equal("shadows" in nodes["Page > Blurred"]!, false);
+  assert.equal(nodes["Page > Both"]!.backdropBlur, 12);
+});
+
+test("B1 hostile: two visible background blurs throw, naming the node, since CSS draws one backdrop-filter", async () => {
+  const twice = box("46:2", "FRAME", "Twice", { effects: [backgroundBlur(4), backgroundBlur(12, { visible: undefined })] });
+  await assert.rejects(run([frame("46:1", [twice])], "46:1"), /Twice \(46:2\) has 2 visible background blurs/);
+  const variant = box("47:2", "COMPONENT", "variant=glass", { effects: [backgroundBlur(4), backgroundBlur(8)] });
+  const set = { id: "47:1", type: "COMPONENT_SET", name: "Card", children: [variant] } as Fake;
+  await assert.rejects(run([set], "47:1"), /variant=glass \(47:2\) has 2 visible background blurs/);
+});
+
+test("B1 hostile: a progressive background blur throws, naming the node, since blur() draws one radius", async () => {
+  const fade = box("48:2", "FRAME", "Fade", { effects: [backgroundBlur(12, { blurType: "PROGRESSIVE" })] });
+  await assert.rejects(run([frame("48:1", [fade])], "48:1"), /Fade \(48:2\) has a progressive background blur/);
+  const even = box("48:3", "FRAME", "Even", { effects: [backgroundBlur(12, { blurType: "NORMAL" })] });
+  assert.equal(parse(await run([frame("48:1", [even])], "48:1"))["Page > Even"]!.backdropBlur, 12);
+});
+
+test("B1 hostile: a progressive blur that ends at 0 still throws: its radius is only its end, and it starts at 20", async () => {
+  const fadeOut = box("49:2", "FRAME", "FadeOut", { effects: [backgroundBlur(0, { blurType: "PROGRESSIVE", startRadius: 20 })] });
+  await assert.rejects(run([frame("49:1", [fadeOut])], "49:1"), /FadeOut \(49:2\) has a progressive background blur/);
+  // One from 0 to 0 blurs nothing, and a hidden one is no blur: both record 0, left out in format 2.
+  const flat = box("49:3", "FRAME", "Flat", { effects: [backgroundBlur(0, { blurType: "PROGRESSIVE", startRadius: 0.000001 })] });
+  const hidden = box("49:4", "FRAME", "Hidden", { effects: [backgroundBlur(0, { blurType: "PROGRESSIVE", startRadius: 20, visible: false })] });
+  const nodes = parse(await run([frame("49:1", [flat, hidden])], "49:1"));
+  assert.equal("backdropBlur" in nodes["Page > Flat"]!, false);
+  assert.equal("backdropBlur" in nodes["Page > Hidden"]!, false);
+});
+
+test("tokens: a background blur's bound radius is named as backdropBlur, and an effect style as effect", async () => {
+  const library: Library = {
+    variables: { "v:blur": { name: "blur/md", codeSyntax: { WEB: "var(--blur-md)" } } },
+    styles: { "s:glass": { name: "glass" } },
+  };
+  const bound = box("48:2", "FRAME", "Bound", { effects: [backgroundBlur(12, { boundVariables: { radius: alias("v:blur") } })] });
+  const styled = box("48:3", "FRAME", "Styled", { effects: [backgroundBlur(12)], effectStyleId: "s:glass" });
+  // A hidden blur's binding names nothing: there is no blur to bind it to.
+  const hidden = box("48:4", "FRAME", "Hidden", {
+    effects: [backgroundBlur(12, { visible: false, boundVariables: { radius: alias("v:blur") } })],
+  });
+  const nodes = parse(await runIn(library, [frame("48:1", [bound, styled, hidden])], ["48:1"]));
+  assert.deepEqual(nodes["Page > Bound"]!.tokens, { backdropBlur: "var(--blur-md)" });
+  assert.deepEqual(nodes["Page > Styled"]!.tokens, { effect: "glass" });
+  assert.equal("tokens" in nodes["Page > Hidden"]!, false);
+});
+
 test("G4: justify is left out where a hugging box has no room to justify, and kept on a fixed box", async () => {
   const children = (id: string) => [box(`${id}.a`, "FRAME", "A"), box(`${id}.b`, "FRAME", "B")];
   const hug = box("26:2", "COMPONENT", "Hug", {

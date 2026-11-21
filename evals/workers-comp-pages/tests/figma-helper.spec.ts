@@ -49,6 +49,9 @@ const PAGE = `<!doctype html>
   <p id="centred" style="width: 120px; height: 40px; margin: 0; text-align: center; font-family: Inter, sans-serif; font-size: 14px; font-weight: 400; line-height: 20px; color: #333333;">Some words that wrap onto more than one line of this text</p>
   <div id="inherited" style="width: 160px; height: 36px; padding: 8px 16px; border-radius: 6px; background: #a800b7; color: #ffffff; font-family: Inter, sans-serif; font-size: 14px; font-weight: 600; line-height: 20px; letter-spacing: 0.5px; text-transform: uppercase; text-decoration: underline;"><span>Save</span></div>
   <p id="under-p" style="margin: 0; width: 120px; text-decoration: underline; font-family: Inter, sans-serif; font-size: 14px; font-weight: 400; line-height: 20px; color: #333333;"><span id="under-span" style="display: block; width: 120px; height: 20px;">Save</span></p>
+  <div id="glass" style="width: 120px; height: 40px; backdrop-filter: blur(12px);"></div>
+  <div id="glass-zero" style="width: 120px; height: 40px; backdrop-filter: blur(0px);"></div>
+  <div id="glass-tinted" style="width: 120px; height: 40px; backdrop-filter: blur(12px) saturate(1.5);"></div>
   <div id="wrap-row" style="display: flex; flex-wrap: wrap; width: 200px; height: 80px;"><div id="wrap-full" style="width: 100%; height: 30px;"></div><div style="width: 50px; height: 30px;"></div></div>
 </body>
 </html>`;
@@ -67,6 +70,7 @@ function box(width: number, height: number, extra: Partial<FigmaNode> = {}): Fig
     radius: 0,
     rings: [],
     shadows: [],
+    backdropBlur: 0,
     label: null,
     outline: null,
     unmeasured: [],
@@ -156,6 +160,9 @@ const placeholder: FigmaNode = box(120, 40, {
   shadows: [{ x: 0, y: 2, blur: 4, spread: 0, color: "#00000033", inset: false }],
 });
 
+// A glass surface: Figma's background blur of radius 12 is CSS's backdrop-filter: blur(12px).
+const glass: FigmaNode = box(120, 40, { backdropBlur: 12 });
+
 const flex: FigmaNode = box(200, 60, {
   layout: {
     direction: "row",
@@ -233,6 +240,7 @@ const defaults: Json = {
   label: null,
   opacity: 1,
   shadows: [],
+  backdropBlur: 0,
   letterSpacing: 0,
   textCase: "none",
   textDecoration: "none",
@@ -296,12 +304,20 @@ test.describe("the loader", () => {
       fill: "#000000",
       strokeWeight: 0,
     });
-    expect(node).toMatchObject({ opacity: 1, stroke: null, radius: 0, rings: [], shadows: [], label: null });
+    expect(node).toMatchObject({
+      opacity: 1,
+      stroke: null,
+      radius: 0,
+      rings: [],
+      shadows: [],
+      backdropBlur: 0,
+      label: null,
+    });
     expect("strokeAlign" in node).toBe(false);
   });
 
   test("a format-2 node round-trips to the node it was written from", () => {
-    for (const node of [tinted, dashed, outlined, ringed, labelled, smallCaps, placeholder, flex, rootVariant]) {
+    for (const node of [tinted, dashed, outlined, ringed, labelled, smallCaps, placeholder, glass, flex, rootVariant]) {
       // Keyed "a", so a root: the loader marks it.
       expect(restored<FigmaNode>("a", node)).toEqual({ ...node, root: true });
     }
@@ -377,6 +393,7 @@ test.describe("the loader", () => {
       ]),
     );
     expect("opacity" in older["variant=default"]!).toBe(false);
+    expect("backdropBlur" in older["variant=default"]!).toBe(false);
   });
 
   test("loadFigmaPage fills a page's TEXT and frame defaults in", () => {
@@ -431,6 +448,7 @@ test.describe("the browser helper", () => {
     ["labelled", labelled],
     ["small-caps", smallCaps],
     ["placeholder", placeholder],
+    ["glass", glass],
     ["flex", flex],
   ];
   for (const [id, node] of fixtures) {
@@ -531,6 +549,9 @@ test.describe("the browser helper", () => {
       placeholder,
       (node) => ({ ...node, shadows: [{ ...node.shadows![0]!, blur: 6 }] }),
     ],
+    ["glass", "backdropBlur", glass, (node) => ({ ...node, backdropBlur: 8 })],
+    ["glass", "backdropBlur of none", glass, (node) => ({ ...node, backdropBlur: 0 })],
+    ["tinted", "backdropBlur", tinted, (node) => ({ ...node, backdropBlur: 4 })],
     ["flex", "justify", flex, layout({ justify: "start" })],
     ["flex", "align", flex, layout({ align: "start" })],
     ["flex", "gap", flex, layout({ gap: 4 })],
@@ -603,6 +624,30 @@ test.describe("the browser helper", () => {
       await expectTextToMatchFigma(page.locator("#centred"), change(centred));
     });
   }
+
+  test("a backdrop-filter of blur(0px) is a background blur of 0", async ({ page }) => {
+    await open(page);
+    await expectToMatchFigma(page.locator("#glass-zero"), box(120, 40));
+  });
+
+  test("a backdrop-filter with anything besides one blur fails", async ({ page }) => {
+    test.fail();
+    await open(page);
+    await expectToMatchFigma(page.locator("#glass-tinted"), glass);
+  });
+
+  test("an older node with no backdropBlur isn't compared on it", async ({ page }) => {
+    await open(page);
+    const older: FigmaNode = { ...glass };
+    delete older.backdropBlur;
+    await expectToMatchFigma(page.locator("#glass-tinted"), older);
+  });
+
+  test("a format-2 node with backdropBlur omitted fails against an element with a blur", async ({ page }) => {
+    test.fail();
+    await open(page);
+    await expectToMatchFigma(page.locator("#glass"), restored<FigmaNode>("glass", box(120, 40)));
+  });
 
   test("a transparent shadow layer beside a real one is ignored", async ({ page }) => {
     await open(page);

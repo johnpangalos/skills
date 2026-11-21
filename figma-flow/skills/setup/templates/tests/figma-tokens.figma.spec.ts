@@ -16,7 +16,9 @@ import { loadFigmaExport, nodesOf } from "./figma";
 // A variable matches when the export's value equals its value or one of its modes' values. A colour
 // compares its first six hex digits: an 8-digit colour's alpha is the paint's own, not the variable's.
 // `text` must agree with the entry's text (a null weight in the style is skipped); `effect` must agree
-// with its shadows and rings, layer by layer. The exports are read as the helper (figma.ts) reads
+// with its shadows and rings, layer by layer, and with its background blur (`backdropBlur`; an entry
+// from a file without `format` that has none isn't compared on it). A layer blur in a style isn't
+// compared: the export doesn't record one. The exports are read as the helper (figma.ts) reads
 // them, so a format-2 export has its defaults filled in and the hash is checked; a `lineHeight` that
 // is null on the label (AUTO) isn't compared.
 type Json = Record<string, unknown>;
@@ -166,6 +168,7 @@ const READ: Record<string, Read> = {
   outlineWidth: (entry) => (entry.outline as Json | null)?.width,
   radius: (entry) => entry.radius,
   opacity: (entry) => entry.opacity,
+  backdropBlur: (entry) => entry.backdropBlur,
   width: (entry) => entry.width,
   height: (entry) => entry.height,
   minWidth: (entry) => entry.minWidth,
@@ -277,7 +280,9 @@ function checkEffect(ctx: Context, at: string, token: unknown) {
     ctx.problems.push(`${at}: ${JSON.stringify(token)} is not an effect style in the token snapshot`);
     return;
   }
-  // Blurs aren't shadows, so the export doesn't list them. What draws nothing is left out.
+  // Shadows and rings are compared with the export's lists, and a background blur with its
+  // backdropBlur; a layer blur isn't compared, since the export doesn't record one. What draws
+  // nothing is left out.
   const drawn = layers.filter(
     (layer) => (layer.type === "DROP_SHADOW" || layer.type === "INNER_SHADOW") && !drawsNothing(layer),
   );
@@ -307,6 +312,19 @@ function checkEffect(ctx: Context, at: string, token: unknown) {
   if (!inOrder(shadows, listOf(entry.shadows), shadowMatches)) {
     ctx.problems.push(
       `${at}: the style's shadows are ${JSON.stringify(shadows)}, the export has ${JSON.stringify(entry.shadows ?? [])}`,
+    );
+  }
+  // A background blur of 0 draws nothing, and is the export's 0. An entry with no backdropBlur is from
+  // a file without `format`, written before export-node recorded it: not compared.
+  const blurs = layers.filter((layer) => layer.type === "BACKGROUND_BLUR" && !same(layer.blur ?? 0, 0));
+  let blur = 0;
+  if (blurs.length === 1) blur = blurs[0]!.blur!;
+  if (entry.backdropBlur === undefined) {
+    if (blurs.length > 0)
+      ctx.notMeasured.push(`${at}: the style's background blur isn't compared: the export records no backdropBlur`);
+  } else if (blurs.length > 1 || !same(entry.backdropBlur, blur)) {
+    ctx.problems.push(
+      `${at}: the style's background blurs are ${JSON.stringify(blurs)}, the export has backdropBlur ${JSON.stringify(entry.backdropBlur)}`,
     );
   }
 }
@@ -379,6 +397,7 @@ const fixture = readSnapshot({
   Sizing: { "size/80": { value: 320, web: "calc(var(--spacing) * 80)" } },
   Border: { "border-width/default": { value: 1, web: "1px" }, "border-width/focus": { value: 2, web: "2px" } },
   Opacity: { "opacity/50": { value: 0.5, web: "var(--opacity-50)" } },
+  Blur: { "blur/md": { value: 12, web: "var(--blur-md)" } },
   Typography: {
     "font/sans": { value: "Inter", web: "var(--font-sans)" },
     "font-weight/semibold": { value: 600, web: "var(--font-weight-semibold)" },
@@ -402,6 +421,10 @@ const fixture = readSnapshot({
     "shadow-md": [{ type: "DROP_SHADOW", x: 0, y: 4, blur: 6, spread: -1, color: "#000000", alpha: 0.1 }],
     "focus-ring": [{ type: "DROP_SHADOW", x: 0, y: 0, blur: 0, spread: 2, color: "#155dfc", alpha: 1 }],
     "blur-md": [{ type: "LAYER_BLUR", blur: 8 }],
+    glass: [
+      { type: "DROP_SHADOW", x: 0, y: 4, blur: 6, spread: -1, color: "#000000", alpha: 0.1 },
+      { type: "BACKGROUND_BLUR", blur: 12 },
+    ],
     nothing: [{ type: "INNER_SHADOW", x: 0, y: 0, blur: 0, spread: 0, color: "#000000", alpha: 1 }],
   },
 } as SnapshotFile);
@@ -563,6 +586,46 @@ test.describe("the checker", () => {
 
   test("a blur-only style has no shadows to match", () => {
     expect(problemsOf({ tokens: { effect: "blur-md" } })).toEqual([]);
+  });
+
+  test("a background blur bound to a variable matches its radius, and a different one fails", () => {
+    const tokens = { backdropBlur: "var(--blur-md)" };
+    expect(problemsOf({ backdropBlur: 12, tokens })).toEqual([]);
+    expect(problemsOf({ backdropBlur: 12, tokens }, 2)).toEqual([]);
+    const problems = problemsOf({ backdropBlur: 8, tokens });
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain('"var(--blur-md)" is 12 in Figma, but the export has 8');
+  });
+
+  test("a format-2 entry without backdropBlur has 0, so a bound blur fails", () => {
+    expect(problemsOf({ tokens: { backdropBlur: "var(--blur-md)" } }, 2)).toHaveLength(1);
+  });
+
+  test("an effect style's background blur matches the export's backdropBlur, and a different one fails", () => {
+    const shadows = [{ x: 0, y: 4, blur: 6, spread: -1, color: "#0000001a", inset: false }];
+    expect(problemsOf({ shadows, backdropBlur: 12, tokens: { effect: "glass" } })).toEqual([]);
+    const problems = problemsOf({ shadows, backdropBlur: 4, tokens: { effect: "glass" } });
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("background blurs");
+    // Format 2 left it out at 0, which isn't the style's 12.
+    expect(problemsOf({ shadows, tokens: { effect: "glass" } }, 2)).toHaveLength(1);
+    // A style with no background blur against a blurred entry fails too.
+    expect(problemsOf({ shadows, backdropBlur: 12, tokens: { effect: "shadow-md" } })).toHaveLength(1);
+  });
+
+  test("an entry from a file without format that has no backdropBlur isn't compared on it", () => {
+    const shadows = [{ x: 0, y: 4, blur: 6, spread: -1, color: "#0000001a", inset: false }];
+    const { problems, notMeasured } = checkExport(
+      "fixture.json",
+      exportOf({ Button: { shadows, tokens: { effect: "glass" } } }),
+      fixture,
+    );
+    expect(problems).toEqual([]);
+    expect(notMeasured).toHaveLength(1);
+  });
+
+  test("a layer blur in a style isn't compared with backdropBlur", () => {
+    expect(problemsOf({ tokens: { effect: "blur-md" } }, 2)).toEqual([]);
   });
 
   test("a label whose line height is null (AUTO) isn't compared with its style's; a px one is", () => {
